@@ -230,7 +230,6 @@ void loop() {
   //if ((ticks & 0x03) == 0)
   PollInputs(inputs);
 
-  const bool clk_run = inputs[RUN].held();
   const bool track_mode = inputs[TRACK_SEL].held();
   const bool write_mode = inputs[WRITE_MODE].held();
   const bool fn_mod = inputs[FUNCTION_KEY].held();
@@ -242,6 +241,31 @@ void loop() {
   const bool time_mod = inputs[TIME_KEY].held();
 
   if (inputs[WRITE_MODE].falling()) engine.Save();
+
+  // process all MIDI here
+  bool clocked = false;
+  static bool midi_clk = false;
+  while (MIDI.read()) {
+    if (MIDI.getType() == midi::MidiType::Clock) {
+      clocked = true;
+    }
+    if (MIDI.getType() == midi::MidiType::Start) {
+      midi_clk = true;
+      engine.Reset();
+    }
+    if (MIDI.getType() == midi::MidiType::Stop) {
+      midi_clk = false;
+      DAC::SetGate(false);
+      engine.Reset();
+    }
+  }
+
+  const bool clk_run = inputs[RUN].held() || midi_clk;
+
+  // DIN sync clock @ 24ppqn
+  if (!midi_clk) {
+    clocked = inputs[CLOCK].rising();
+  }
 
 #if DEBUG
   if (inputs[RUN].rising()) {
@@ -364,26 +388,6 @@ void loop() {
 
   if (inputs[FUNCTION_KEY].falling()) step_counter = false;
 
-  // process all MIDI here
-  bool clocked = false;
-  static bool midi_clk = false;
-  while (MIDI.read()) {
-    if (MIDI.getType() == midi::MidiType::Clock) {
-      clocked = true;
-    }
-    if (MIDI.getType() == midi::MidiType::Start) {
-      midi_clk = true;
-    }
-    if (MIDI.getType() == midi::MidiType::Stop) {
-      midi_clk = false;
-    }
-  }
-
-  // DIN sync clock @ 24ppqn
-  if (!midi_clk) {
-    clocked = inputs[CLOCK].rising();
-  }
-
   if (clocked) {
     ++clk_count %= 24;
   }
@@ -466,7 +470,7 @@ void loop() {
   }
 
   // catch falling edge of RUN
-  if (inputs[RUN].falling()) {
+  if (inputs[RUN].falling() && !midi_clk) {
     DAC::SetGate(false);
     engine.Reset();
   }
