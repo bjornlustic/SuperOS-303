@@ -28,19 +28,26 @@ static Engine engine;
 
 // crucial bits tying together the inputs + engine
 
-bool input_pitch() {
+bool input_pitch(bool mod = false) {
   for (uint8_t i = 0; i < ARRAY_SIZE(pitched_keys); ++i) {
     if (inputs[pitched_keys[i]].rising()) {
-      const uint8_t oct = 1 - inputs[DOWN_KEY].held() + inputs[UP_KEY].held();
-      engine.SetPitch(i, (inputs[ACCENT_KEY].held() << 6) |
-                         (inputs[SLIDE_KEY].held() << 7) | (oct << 4));
+      if (mod)
+        engine.SetPitch(i);
+      else {
+        const uint8_t oct = 1 - inputs[DOWN_KEY].held() + inputs[UP_KEY].held();
+        const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
+                              (inputs[SLIDE_KEY].held() << 7) | (oct << 4);
+        engine.SetPitch(i, flags);
+      }
       return true;
     }
   }
-  if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
-  if (inputs[SLIDE_KEY].rising()) engine.ToggleSlide();
-  if (inputs[UP_KEY].rising()) engine.NudgeOctave(1);
-  if (inputs[DOWN_KEY].rising()) engine.NudgeOctave(-1);
+  if (mod) {
+    if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
+    if (inputs[SLIDE_KEY].rising()) engine.ToggleSlide();
+    if (inputs[UP_KEY].rising()) engine.NudgeOctave(1);
+    if (inputs[DOWN_KEY].rising()) engine.NudgeOctave(-1);
+  }
   return false;
 }
 bool input_time() {
@@ -286,7 +293,7 @@ void loop() {
     switch (engine.get_mode()) {
       case PITCH_MODE: {
         if (write_mode) {
-          input_pitch();
+          input_pitch(true); // modify pitch
         }
 
         PrintPitch();
@@ -449,7 +456,7 @@ void loop() {
     }
 
     if (engine.get_mode() == PITCH_MODE) {
-      if (input_pitch()) { // record pitch
+      if (input_pitch(false)) { // record new pitch
         bool hold_plz = engine.get_sequence().reset;
         engine.get_sequence().AdvancePitch();
         if (!hold_plz && engine.get_sequence().pitch_pos == 0)
