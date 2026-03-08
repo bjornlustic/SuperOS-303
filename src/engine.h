@@ -369,6 +369,11 @@ struct Engine {
   void NudgeOctave(int dir) {
     get_sequence().SetOctave(int(get_sequence().get_octave()) + dir);
   }
+  // change pitch, preserving flags
+  void SetPitch(uint8_t p) {
+    get_sequence().SetPitch(p);
+    stale = true;
+  }
   void SetPitch(uint8_t p, uint8_t flags) {
     get_sequence().SetPitch(p, flags);
     stale = true;
