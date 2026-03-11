@@ -200,7 +200,6 @@ struct Engine {
   int8_t clk_count = -1;
 
   bool slide_on = false; // flag to keep raised
-  bool gate_on = false;
   bool stale = false;
   bool resting = false; // hey shutup
 
@@ -216,9 +215,14 @@ struct Engine {
         if (0 == pattern[i].length) pattern[i].SetLength(8);
       }
     } else {
+      Serial.println("EEPROM data invalid, initializing...");
       // initialize memory with defaults or zeroes
+      for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+        pattern[i].Clear();
+      }
       GlobalSettings.Save();
-      //Save();
+      stale = true;
+      Save();
     }
 
 #if DEBUG
@@ -232,28 +236,25 @@ struct Engine {
   void Save(int pidx = -1) {
     if (!stale) return;
     Serial.print("Saving to EEPROM... ");
-    // TODO: only update patterns that have changed
     if (pidx < 0) {
-      pidx = p_select;
-      /*
+      // save all
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
         Serial.print(".");
         WritePattern(pattern[i], i);
       }
-      */
-    }
-
-    WritePattern(pattern[pidx], pidx);
+    } else
+      WritePattern(pattern[pidx], pidx);
 
     stale = false;
     Serial.println("DONE!");
   }
 
   void Tick(uint8_t &state) {
-    if (gate_on != get_gate()) {
+    // static bool gate_on = 0;
+    // if (gate_on != get_gate()) {
       // rising or falling
-    }
-    gate_on = get_gate();
+    // }
+    // gate_on = get_gate();
   }
 
   // returns false for rests
@@ -288,8 +289,8 @@ struct Engine {
   void Reset() {
     get_sequence().Reset();
     clk_count = -1;
-    gate_on = false;
     slide_on = false;
+    resting = true;
   }
 
   void Generate() {
