@@ -261,8 +261,6 @@ void loop() {
   const bool pitch_mod = inputs[PITCH_KEY].held();
   const bool time_mod = inputs[TIME_KEY].held();
 
-  if (inputs[WRITE_MODE].falling()) engine.Save();
-
   bool clocked = false;
   static bool midi_clk = false;
   const bool clk_run = inputs[RUN].held() || midi_clk;
@@ -289,6 +287,14 @@ void loop() {
   // DIN sync clock @ 24ppqn
   if (!midi_clk) {
     clocked = inputs[CLOCK].rising();
+  }
+
+  // Save pattern data - only if clock isn't running, to prevent stuttering
+  // - when exiting write mode
+  // - when stopping the clock
+  if ((inputs[WRITE_MODE].falling() && !clk_run) ||
+      (inputs[RUN].falling() && !midi_clk)) {
+    engine.Save();
   }
 
 #if DEBUG
