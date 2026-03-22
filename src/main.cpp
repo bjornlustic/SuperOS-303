@@ -8,7 +8,6 @@
 #include "drivers.h"
 #include "engine.h"
 #include "MIDI.h"
-#include "bootloader/sync.h"
 
 MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, MIDI);
 
@@ -150,8 +149,7 @@ void setup() {
   }
 
   PollInputs(inputs);
-  boot_sync_flag = inputs[TAP_NEXT].held();
-  if (boot_sync_flag) {
+  if (inputs[TAP_NEXT].held()) {
     jumptoboot();
   }
 
