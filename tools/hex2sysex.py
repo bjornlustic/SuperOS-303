@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import sys
 from intelhex import IntelHex
@@ -63,13 +63,9 @@ def build_sysex(page, page_data):
     return bytes(msg)
 
 
-def main():
+def process(in_file, outbuf):
 
-    if len(sys.argv) < 2:
-        print("usage: hex2sysex firmware.hex")
-        return
-
-    ih = IntelHex(sys.argv[1])
+    ih = IntelHex(in_file)
 
     maxaddr = ih.maxaddr()
 
@@ -82,7 +78,7 @@ def main():
 
         msg = build_sysex(page, data)
 
-        sys.stdout.buffer.write(msg)
+        outbuf.write(msg)
 
     msg = [
         SYSEX_START,
@@ -90,7 +86,16 @@ def main():
         CMD_EXECUTE,
         SYSEX_END
     ]
-    sys.stdout.buffer.write(bytes(msg))
+    outbuf.write(bytes(msg))
+
+
+def main():
+
+    if len(sys.argv) < 2:
+        print("usage: hex2sysex firmware.hex")
+        return
+
+    process(sys.argv[1], sys.stdout.buffer)
 
 if __name__ == "__main__":
     main()
