@@ -4,3 +4,16 @@ compile_commands.json
 *.hex
 *.syx
 __pycache__
+
+# Local reference material — not for publication
+SonicPotionsPaper/
+docs/
+release/
+testing/
+
+# Keep markdown documentation local only (README is tracked for GitHub)
+*.md
+!README.md
+
+# macOS
+.DS_Store
