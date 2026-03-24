@@ -14,14 +14,21 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, MIDI);
 EEPROMClass storage;
 PersistentSettings GlobalSettings;
 
+enum MenuState {
+  MENU_NONE,
+  MENU_CONFIG,
+};
+
 // -=-=- Globals -=-=-
 static uint8_t ticks = 0;
 static uint8_t clk_count = 0;
+static uint8_t menu_state = MENU_NONE;
 
 static PinState inputs[INPUT_COUNT];
 
 static uint8_t tracknum = 0;
 static bool step_counter = false;
+static bool midi_clk = false;
 
 // this is where the magic happens
 static Engine engine;
@@ -148,6 +155,7 @@ void setup() {
     digitalWriteFast(select_pin[i], HIGH);
   }
 
+  /* This won't be necessary in production, bootloader runs first */
   PollInputs(inputs);
   if (inputs[TAP_NEXT].held()) {
     jumptoboot();
@@ -259,6 +267,79 @@ void PrintTime() {
   Leds::Set(ACCENT_KEY_LED, engine.get_time() == 0);
 }
 
+void ProcessEdit(const bool &write_mode) {
+  switch (engine.get_mode()) {
+  case PITCH_MODE: {
+    if (write_mode) {
+      input_pitch(true); // modify pitch
+    }
+
+    PrintPitch();
+    break;
+  }
+  case TIME_MODE:
+    if (write_mode) {
+      input_time(true);
+    }
+
+    PrintTime();
+  case NORMAL_MODE:
+    break;
+  }
+}
+void ProcessDefault(const bool &write_mode, const bool &clear_mod,
+               const bool &clk_run) {
+  switch (engine.get_mode()) {
+  case PITCH_MODE:
+    PrintPitch();
+    if (!write_mode)
+      engine.SetMode(NORMAL_MODE); // you're not supposed to be in here
+    break;
+
+  case TIME_MODE:
+    PrintTime();
+    if (!write_mode)
+      engine.SetMode(NORMAL_MODE); // you're not supposed to be in here
+    break;
+
+  case NORMAL_MODE:
+    // flash LED for current pattern
+    Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
+    // solid LED for queued pattern
+    if (engine.get_patsel() != engine.get_next())
+      Leds::Set(OutputIndex(engine.get_next() & 0x7), true);
+    Leds::Set(ACCENT_KEY_LED, !(engine.get_patsel() >> 3)); // A
+    Leds::Set(SLIDE_KEY_LED, (engine.get_patsel() >> 3));   // B
+
+    if (clk_run && write_mode) {
+      // chasing light for pattern step
+      Leds::Set(OutputIndex(engine.get_time_pos() & 0x7), true);
+      Leds::Set(OutputIndex(CSHARP_KEY_LED + (engine.get_time_pos() >> 3)), true);
+    }
+    // Inputs for Pattern Select
+    for (uint8_t i = 0; i < 8; ++i) {
+      if (inputs[i].rising()) {
+        const uint8_t patsel = (engine.get_patsel() >> 3) * 8 + i;
+        if (clear_mod)
+          engine.ClearPattern(patsel);
+        else
+          engine.SetPattern(patsel, !clk_run);
+      }
+    }
+    if (inputs[ACCENT_KEY].rising())
+      engine.SetPattern(engine.get_patsel() % 8, !clk_run); // A
+    if (inputs[SLIDE_KEY].rising())
+      engine.SetPattern(engine.get_patsel() % 8 + 8, !clk_run); // B
+    break;
+  }
+
+  // no modifier - show current mode
+  Leds::Set(TIME_MODE_LED, engine.get_mode() == TIME_MODE);
+  Leds::Set(PITCH_MODE_LED, engine.get_mode() == PITCH_MODE);
+  Leds::Set(FUNCTION_MODE_LED, engine.get_mode() == NORMAL_MODE);
+  // hmmm
+  //Leds::Set(ASHARP_KEY_LED, inputs[ASHARP_KEY].held() || (engine.get_pitch() % 12 == 10));
+}
 void loop() {
   // Poll all inputs... every single tick
   //if ((ticks & 0x03) == 0)
@@ -266,17 +347,17 @@ void loop() {
 
   const bool track_mode = inputs[TRACK_SEL].held();
   const bool write_mode = inputs[WRITE_MODE].held();
-  const bool fn_mod = inputs[FUNCTION_KEY].held();
   const bool clear_mod = inputs[CLEAR_KEY].held();
   const bool edit_mode = inputs[TAP_NEXT].held();
 
   // todo: transpose, performance stuff, config menus
+  const bool fn_mod = inputs[FUNCTION_KEY].held();
   const bool pitch_mod = inputs[PITCH_KEY].held();
   const bool time_mod = inputs[TIME_KEY].held();
 
-  bool clocked = false;
-  static bool midi_clk = false;
   const bool clk_run = inputs[RUN].held() || midi_clk;
+
+  bool clocked = false;
 
   // process all MIDI here
   while (MIDI.read()) {
@@ -325,109 +406,67 @@ void loop() {
   }
 #endif
 
-  if (edit_mode) {
-    switch (engine.get_mode()) {
-      case PITCH_MODE: {
-        if (write_mode) {
-          input_pitch(true); // modify pitch
-        }
+  // -=-=- Process inputs and set LEDs -=-=-
 
-        PrintPitch();
-        break;
-      }
-      case TIME_MODE:
-        if (write_mode) {
-          input_time(true);
-        }
+  if (edit_mode) { // holding WRITE/NEXT/TAP
+    ProcessEdit(write_mode);
+  } else {
+    // Flash lights for modifiers
+    if (pitch_mod) {
+      Leds::Set(PITCH_MODE_LED, clk_count & (1 << 2));
+      // TODO: performance transpose, pitch effects, etc.
+    } else if (time_mod) {
+      Leds::Set(TIME_MODE_LED, clk_count & (1 << 2));
+      // TODO: performance time effects
+    } else if (fn_mod) {
+      Leds::Set(FUNCTION_MODE_LED, clk_count & (1 << 2));
 
-        PrintTime();
-      case NORMAL_MODE:
-        break;
-    }
-  } else { // not holding a modifier
-    switch (engine.get_mode()) {
-      case PITCH_MODE:
-        PrintPitch();
-        if (!write_mode) engine.SetMode(NORMAL_MODE); // you're not supposed to be in here
-        break;
+      if (write_mode) {
+        // show step length on LEDs
+        Leds::Set(OutputIndex((engine.get_length() - 1) & 0x7), true);
+        Leds::Set(CSHARP_KEY_LED, true);
+        Leds::Set(DSHARP_KEY_LED, (engine.get_length() - 1) >> 3);
+        Leds::Set(FSHARP_KEY_LED, (engine.get_length() - 1) >> 4);
+        Leds::Set(GSHARP_KEY_LED, (engine.get_length() - 1) >= 24);
 
-      case TIME_MODE:
-        PrintTime();
-        if (!write_mode) engine.SetMode(NORMAL_MODE); // you're not supposed to be in here
-        break;
-
-      case NORMAL_MODE:
-        // flash LED for current pattern
-        Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
-        // solid LED for queued pattern
-        if (engine.get_patsel() != engine.get_next())
-          Leds::Set(OutputIndex(engine.get_next() & 0x7), true);
-        Leds::Set(ACCENT_KEY_LED, !(engine.get_patsel() >> 3)); // A
-        Leds::Set(SLIDE_KEY_LED, (engine.get_patsel() >> 3));   // B
-
-        if (clk_run && write_mode) {
-          // chasing light for pattern step
-          Leds::Set(OutputIndex(engine.get_time_pos() & 0x7), true);
-          Leds::Set(OutputIndex(CSHARP_KEY_LED + (engine.get_time_pos() >> 3)), true);
-        } 
-        // Inputs for Pattern Select
-        for (uint8_t i = 0; i < 8; ++i) {
-          if (inputs[i].rising()) {
-            const uint8_t patsel = (engine.get_patsel() >> 3) * 8 + i;
-            if (clear_mod)
-              engine.ClearPattern(patsel);
-            else
-              engine.SetPattern(patsel, !clk_run);
+        // tap in number of steps
+        if (inputs[DOWN_KEY].rising()) {
+          if (step_counter)
+            step_counter = engine.BumpLength();
+          else {
+            engine.SetLength(1);
+            step_counter = true;
           }
         }
-        if (inputs[ACCENT_KEY].rising()) engine.SetPattern(engine.get_patsel() % 8, !clk_run);    // A
-        if (inputs[SLIDE_KEY].rising()) engine.SetPattern(engine.get_patsel() % 8 + 8, !clk_run); // B
-        break;
+        // TODO: modify length with pitch keys
+      }
+
+      if (inputs[CLEAR_KEY].rising()) // enter system config
+        menu_state = MENU_CONFIG;
+
+    } else {
+      ProcessDefault(write_mode, clear_mod, clk_run);
     }
   }
 
+  // show all pressed buttons
   for (uint8_t i = 0; i < 16; ++i) {
-    // show all pressed buttons
     if (inputs[switched_leds[i].button].held())
       Leds::Set(OutputIndex(i), true);
   }
 
-  // extra non-switched LEDs
-  Leds::Set(TIME_MODE_LED, engine.get_mode() == TIME_MODE);
-  Leds::Set(PITCH_MODE_LED, engine.get_mode() == PITCH_MODE);
-  Leds::Set(FUNCTION_MODE_LED, engine.get_mode() == NORMAL_MODE);
-  // hmmm
-  //Leds::Set(ASHARP_KEY_LED, inputs[ASHARP_KEY].held() || (engine.get_pitch() % 12 == 10));
-
   Leds::Send(ticks); // hardware output, framebuffer reset
 
-  // -=-=- process all inputs -=-=-
-  //
   tracknum = uint8_t(inputs[TRACK_BIT0].held()
            | (inputs[TRACK_BIT1].held() << 1)
            | (inputs[TRACK_BIT2].held() << 2));
 
+  // --- other input handling
   if (inputs[TIME_KEY].rising() && write_mode) engine.SetMode(TIME_MODE, !clk_run);
   if (inputs[PITCH_KEY].rising() && write_mode) engine.SetMode(PITCH_MODE, !clk_run);
   if (inputs[FUNCTION_KEY].rising()) engine.SetMode(NORMAL_MODE, !clk_run);
 
   if (inputs[CLEAR_KEY].rising()) engine.Reset();
-
-  if (fn_mod && write_mode) {
-    if (step_counter) {
-      Leds::Set(OutputIndex((engine.get_length() - 1) & 0x7), true);
-      Leds::Set(CSHARP_KEY_LED, true);
-      Leds::Set(DSHARP_KEY_LED, (engine.get_length() - 1) >> 3);
-    }
-    if (inputs[DOWN_KEY].rising()) {
-      if (step_counter)
-        step_counter = engine.BumpLength();
-      else {
-        engine.SetLength(1);
-        step_counter = true;
-      }
-    }
-  }
 
   if (inputs[FUNCTION_KEY].falling()) step_counter = false;
 
@@ -445,13 +484,15 @@ void loop() {
     }
   }
 
-  if (inputs[TAP_NEXT].rising()) {
-    DAC::SetGate(engine.Advance());
-  }
-  if (inputs[TAP_NEXT].falling()) {
-    DAC::SetGate(false);
-    if (!clk_run && engine.get_time_pos() >= engine.get_length() - 1)
-      engine.SetMode(NORMAL_MODE, true);
+  if (!clk_run) {
+    if (inputs[TAP_NEXT].rising()) {
+      DAC::SetGate(engine.Advance());
+    }
+    if (inputs[TAP_NEXT].falling()) {
+      DAC::SetGate(false);
+      if (engine.get_time_pos() >= engine.get_length() - 1)
+        engine.SetMode(NORMAL_MODE, true);
+    }
   }
 
   // regular pattern write mode
