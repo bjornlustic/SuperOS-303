@@ -108,7 +108,7 @@ const MatrixPin note_led[] = {
 void PewPew(uint8_t note, const bool accent = false) {
   Leds::Set(note_led[note], true);
   for (uint8_t oct = 0; oct < 4; ++oct) {
-    DAC::SetPitch(note, accent ? 4 - oct : oct);
+    DAC::SetPitch(note + 12*(accent ? 4 - oct : oct));
     DAC::SetGate(true);
     DAC::SetSlide(oct == 0); // PEW!
     DAC::SetAccent(accent);

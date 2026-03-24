@@ -11,7 +11,6 @@ static constexpr uint16_t SWITCH_DELAY = 15; // microseconds
 
 namespace DAC {
   static uint8_t pitch_ = 0;
-  static uint8_t octave_bits_ = 0;
   static uint8_t slide_ = false;
   static uint8_t accent_ = false;
   static uint8_t gate_ = false;
@@ -23,7 +22,7 @@ namespace DAC {
     //digitalWriteFast(PE0_PIN, accent_ ? HIGH : LOW);
 
     // set 6-bit pitch for CV Out
-    PORTC = pitch_ | (octave_bits_ << 4); // & 0x3f;
+    PORTC = pitch_; // & 0x3f;
 
     PORTE = 0; // disable latch
     // set gate and accent pins, enable latch/slide
@@ -44,9 +43,8 @@ namespace DAC {
     */
   }
 
-  inline void SetPitch(uint8_t p, uint8_t oct = 0) {
+  inline void SetPitch(uint8_t p) {
     pitch_ = p;
-    octave_bits_ = oct;
   }
   inline void SetGate(bool on) {
     gate_ = on;
@@ -63,11 +61,13 @@ namespace Leds {
   // like a framebuffer, each bit corresponds to an entry in the switched_leds table
   static uint8_t ledstate[3];
 
+  // set a bit in the framebuffer
   void Set(OutputIndex ledidx, bool enable = true) {
     const uint8_t bit_idx = ledidx & 0x7;
     const uint8_t row = ledidx >> 3;
     ledstate[row] = (ledstate[row] & ~(1 << bit_idx)) | (enable << bit_idx);
   }
+  // directly set hardware
   void Set(const MatrixPin pins, bool enable = true) {
     if (enable && pins.select) {
       PORTF = 0x0f;
@@ -77,6 +77,7 @@ namespace Leds {
     //if (enable && pins.select) digitalWriteFast(pins.select, HIGH);
   }
 
+  // helper function
   void SetLedSelection(uint8_t select_pin, uint8_t enable_mask) {
     const uint8_t switched_pins[4] = {
       PG0_PIN, PG1_PIN, PG2_PIN, PG3_PIN,
@@ -90,6 +91,7 @@ namespace Leds {
     }
   }
 
+  // hardware output, framebuffer reset
   void Send(const uint8_t tick, const bool clear = true) {
     //const uint8_t cycle = (tick >> 2) & 0x3; // scanner for select pins, bits 0-3
 
