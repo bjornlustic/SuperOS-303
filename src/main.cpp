@@ -23,6 +23,7 @@ enum MenuState {
 static uint8_t ticks = 0;
 static uint8_t clk_count = 0;
 static uint8_t menu_state = MENU_NONE;
+static uint8_t transpose = 12;
 
 static PinState inputs[INPUT_COUNT];
 
@@ -61,13 +62,13 @@ void input_pitch(bool mod = false) {
   for (uint8_t i = 0; i < ARRAY_SIZE(pitched_keys); ++i) {
     if (inputs[pitched_keys[i]].rising()) {
       if (mod)
-        engine.SetPitch(i);
+        engine.SetPitchSemitone(i);
       else {
         engine.get_sequence().AdvancePitch();
         const uint8_t oct = 1 - inputs[DOWN_KEY].held() + inputs[UP_KEY].held();
         const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
-                              (inputs[SLIDE_KEY].held() << 7) | (oct << 4);
-        engine.SetPitch(i, flags);
+                              (inputs[SLIDE_KEY].held() << 7); // | (oct << 4);
+        engine.SetPitch(i + 12*oct, flags);
       }
     }
   }
@@ -251,15 +252,13 @@ void setup() {
 }
 
 void PrintPitch() {
-  const uint8_t pitch = engine.get_pitch() & 0x0f;
-  Leds::Set(pitch_leds[pitch % 13], true);
+  const uint8_t pitch = engine.get_pitch();
+  Leds::Set(pitch_leds[(pitch + transpose) % 12], true);
 
   Leds::Set(ACCENT_KEY_LED, engine.get_accent());
   Leds::Set(SLIDE_KEY_LED, engine.get_slide());
-  Leds::Set(DOWN_KEY_LED,
-            engine.get_sequence().get_octave() == OCTAVE_DOWN ||
-                engine.get_sequence().get_octave() == OCTAVE_DOUBLE_UP);
-  Leds::Set(UP_KEY_LED, engine.get_sequence().get_octave() > OCTAVE_ZERO);
+  Leds::Set(DOWN_KEY_LED, (pitch / 12) == OCTAVE_DOWN || (pitch / 12) == OCTAVE_DOUBLE_UP);
+  Leds::Set(UP_KEY_LED, (pitch / 12) > OCTAVE_ZERO);
 }
 void PrintTime() {
   Leds::Set(DOWN_KEY_LED, engine.get_time() == 1);
@@ -520,13 +519,13 @@ void loop() {
 
   if (clk_run) {
     // send sequence step
-    DAC::SetPitch(engine.get_pitch());
+    DAC::SetPitch(engine.get_pitch() + 4 + transpose);
     DAC::SetSlide(engine.get_slide());
     DAC::SetAccent(engine.get_accent());
     DAC::SetGate(engine.get_gate());
   } else {
     // not run mode - send notes from keys
-    DAC::SetPitch(engine.get_pitch());
+    DAC::SetPitch(engine.get_pitch() + 4);
     DAC::SetSlide(inputs[SLIDE_KEY].held());
     DAC::SetAccent(inputs[ACCENT_KEY].held());
   }

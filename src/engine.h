@@ -31,7 +31,8 @@ enum OctaveState {
 
 struct Sequence {
   // --- sequence data - 64 bytes
-                                 // TODO: octave up/down flags?
+  // for DAC pitch, 0 is a low G#; 4 is lowest C; and middle C is 28
+  // We're gonna store pitch as if the lowest C is 0, so it needs +4 when sent to DAC
   uint8_t pitch[MAX_STEPS]; // 6-bit Pitch, Accent, and Slide
   uint8_t time_data[MAX_STEPS/2];  // 0=rest, 1=note, 2=tie, 3=triplets?
   // time is stored as nibbles, so there's actually a lot of padding
@@ -44,12 +45,15 @@ struct Sequence {
   bool reset; // hold plz
 
   // --- functions
-  const uint8_t get_octave() const {
-    return pitch[pitch_pos] >> 4 & 0x3;
-  }
-  // 4-bit pitch with 2-bit octave flags
+  // 6-bit pitch, 0 == low C
   const uint8_t get_pitch() const {
     return pitch[pitch_pos] & 0x3f;
+  }
+  const uint8_t get_octave() const {
+    return get_pitch() / 12;
+  }
+  const uint8_t get_semitone() const {
+    return get_pitch() % 12;
   }
   const uint8_t get_accent() const {
     return pitch[pitch_pos] & (1<<6);
@@ -76,16 +80,17 @@ struct Sequence {
     data = (~(0x0f << 4*upper) & data) | (t << 4*upper);
   }
   void SetPitch(uint8_t p, uint8_t flags) {
-    pitch[pitch_pos] = (p & 0x0f) | (flags & 0xf0);
+    pitch[pitch_pos] = (p & 0x3f) | (flags & 0xc0);
   }
-  void SetPitch(uint8_t p) {
-    // 4-bit pitch value
-    pitch[pitch_pos] = (p & 0x0f) | (pitch[pitch_pos] & 0xf0);
+  void SetPitchSemitone(uint8_t p) {
+    pitch[pitch_pos] =
+        ((get_octave() * 12 + p) & 0x3f) | (pitch[pitch_pos] & 0xc0);
   }
   void SetLength(uint8_t len) { length = constrain(len, 1, MAX_STEPS); }
   void SetOctave(int oct) {
     CONSTRAIN(oct, 0, 3);
-    pitch[pitch_pos] = (uint8_t(oct & 0x3) << 4) | (pitch[pitch_pos] & 0xcf);
+    pitch[pitch_pos] =
+        ((uint8_t)oct * 12 + get_semitone()) | (pitch[pitch_pos] & 0xc0);
   }
 
   void ToggleSlide() { pitch[pitch_pos] ^= (1 << 7); }
@@ -360,8 +365,8 @@ struct Engine {
     get_sequence().SetOctave(int(get_sequence().get_octave()) + dir);
   }
   // change pitch, preserving flags
-  void SetPitch(uint8_t p) {
-    get_sequence().SetPitch(p);
+  void SetPitchSemitone(uint8_t p) {
+    get_sequence().SetPitchSemitone(p);
     stale = true;
   }
   void SetPitch(uint8_t p, uint8_t flags) {
