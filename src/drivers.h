@@ -5,6 +5,9 @@
 
 static constexpr uint16_t SWITCH_DELAY = 15; // microseconds
 
+static constexpr uint32_t SLIDE_LATCH_US   = 44; // latch pulse width for new notes
+static constexpr uint32_t SLIDE_RELATCH_US = 9;  // re-latch pulse during multi-note slides
+
 //
 // --- 303 CPU driver functions
 //
@@ -15,32 +18,35 @@ namespace DAC {
   static uint8_t accent_ = false;
   static uint8_t gate_ = false;
 
+  // Set by Engine when a new note step begins (triggers 44μs latch pulse).
+  static bool new_note_ = false;
+  // Set by Engine when pitch changes mid-slide (triggers 8.75μs re-latch pulse).
+  static bool slide_relatch_ = false;
+
   inline void Send() {
-    // send to gate pin
-    //digitalWriteFast(PI2_PIN, gate_ ? HIGH : LOW);
-    // send to accent pin
-    //digitalWriteFast(PE0_PIN, accent_ ? HIGH : LOW);
-
     // set 6-bit pitch for CV Out
-    PORTC = pitch_; // & 0x3f;
+    PORTC = pitch_;
 
-    PORTE = 0; // disable latch
-    // set gate and accent pins, enable latch/slide
-    PORTE = (gate_ << 1) | (accent_ << 6) | 0x1;
-
-    if (!slide_) // turn slide bit back off
-      PORTE ^= 0x1;
-
-    // toggle the latch/slide pin
-    //PORTE ^= 1;
-    //PORTE ^= 1;
-    // ...but this other way is... smarter? dumber? better.
-    // Clock for the D/A converter chip
-    /*
-    if (slide) digitalWriteFast(PI1_PIN, LOW);
-    digitalWriteFast(PI1_PIN, HIGH);
-    if (!slide) digitalWriteFast(PI1_PIN, LOW);
-    */
+    if (new_note_) {
+      new_note_ = false;
+      // Pulse slide line high for 44μs to latch the new pitch and accent into the
+      // R2R DAC buffer (IC13 flip-flop), even on non-slide notes (per Sonic Potions paper §3).
+      PORTE = 0;
+      PORTE = (gate_ << 1) | (accent_ << 6) | 0x1; // slide high
+      delayMicroseconds(SLIDE_LATCH_US);
+      if (!slide_) PORTE ^= 0x1; // pull slide back low for non-slide notes
+    } else if (slide_relatch_) {
+      slide_relatch_ = false;
+      // During a multi-note slide, briefly pull slide low to re-latch the new pitch
+      // value into the DAC, then restore slide high (per Sonic Potions paper §6).
+      PORTE &= ~0x1; // slide low
+      delayMicroseconds(SLIDE_RELATCH_US);
+      PORTE |= 0x1;  // slide high again
+    } else {
+      PORTE = 0; // disable latch
+      PORTE = (gate_ << 1) | (accent_ << 6) | 0x1;
+      if (!slide_) PORTE ^= 0x1;
+    }
   }
 
   inline void SetPitch(uint8_t p) {
@@ -55,6 +61,14 @@ namespace DAC {
   }
   inline void SetSlide(bool on) {
     slide_ = on;
+  }
+  // Call once per new note step (gate rising edge) to trigger the 44μs latch pulse.
+  inline void NotifyNewNote() {
+    new_note_ = true;
+  }
+  // Call when pitch changes during an active slide to trigger the 8.75μs re-latch.
+  inline void NotifySlideRelatch() {
+    slide_relatch_ = true;
   }
 } // namespace DAC
 
@@ -117,42 +131,25 @@ namespace Leds {
 } // namespace Leds
 
 void PollInputs(PinState *inputs) {
-  //PORTF = 0x00;
+  // Raise all select pins and drive all LED pins LOW before reading.
+  // This clears any residual LED drive state from the previous Leds::Send() call,
+  // which would otherwise cause matrix crosstalk and ghost button reads.
   PORTF = 0x0f;
-  delayMicroseconds(SWITCH_DELAY);
-  //PORTF = 0xff;
-
-  /*
-  digitalWriteFast(select_pin[0], HIGH);
-  digitalWriteFast(select_pin[1], HIGH);
-  digitalWriteFast(select_pin[2], HIGH);
-  digitalWriteFast(select_pin[3], HIGH);
-  // all LEDs
-  digitalWriteFast(PG0_PIN, HIGH);
-  digitalWriteFast(PG1_PIN, HIGH);
-  digitalWriteFast(PG2_PIN, HIGH);
-  digitalWriteFast(PG3_PIN, HIGH);
-  */
-
-  // read PA and PB pins while select pins are high
-  for (uint8_t i = 0; i < 4; ++i) {
-    inputs[EXTRA_PIN_OFFSET + i].push(digitalReadFast(status_pins[i])); // PAx
-    // not sure if these are actually used...
-    //inputs[EXTRA_PIN_OFFSET + i+4].push(digitalReadFast(button_pins[i])); // PBx
-  }
-
-  //PORTF = 0x0f;
-
-  /*
   digitalWriteFast(PG0_PIN, LOW);
   digitalWriteFast(PG1_PIN, LOW);
   digitalWriteFast(PG2_PIN, LOW);
   digitalWriteFast(PG3_PIN, LOW);
-  */
+  delayMicroseconds(SWITCH_DELAY);
+
+  // read PA and PB pins while select pins are high
+  for (uint8_t i = 0; i < 4; ++i) {
+    inputs[EXTRA_PIN_OFFSET + i].push(digitalReadFast(status_pins[i])); // PAx
+  }
 
   // open each switched channel with select pin
   for (uint8_t i = 0; i < 4; ++i) {
     digitalWriteFast(select_pin[i], LOW); // PHx
+    delayMicroseconds(SWITCH_DELAY);
     for (uint8_t j = 0; j < 4; ++j) {
       // read pins
       inputs[ 0 + i*4 + j].push(digitalReadFast(button_pins[j])); // PBx
