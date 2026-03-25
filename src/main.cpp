@@ -14,16 +14,10 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, MIDI);
 EEPROMClass storage;
 PersistentSettings GlobalSettings;
 
-enum MenuState {
-  MENU_NONE,
-  MENU_CONFIG,
-};
-
 // -=-=- Globals -=-=-
 static uint8_t ticks = 0;
 static uint8_t clk_count = 0;
-static uint8_t menu_state = MENU_NONE;
-static uint8_t transpose = 12; // range is 0 to 47
+static uint8_t transpose = 0; // range is 0 to 47; 0 = no transpose
 
 static PinState inputs[INPUT_COUNT];
 
@@ -65,14 +59,20 @@ void input_pitch(bool mod = false) {
   }
   for (uint8_t i = 0; i < ARRAY_SIZE(pitched_keys); ++i) {
     if (inputs[pitched_keys[i]].rising()) {
-      if (mod)
+      if (mod) {
         engine.SetPitchSemitone(i);
-      else {
-        engine.get_sequence().AdvancePitch();
+      } else {
+        // Snapshot octave/flags at the moment the key rises, before advancing,
+        // so the flags reflect the actual held modifier state for this note.
         const uint8_t oct = 1 - inputs[DOWN_KEY].held() + inputs[UP_KEY].held();
         const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
-                              (inputs[SLIDE_KEY].held() << 7); // | (oct << 4);
+                              (inputs[SLIDE_KEY].held() << 7);
+        engine.get_sequence().AdvancePitch();
         engine.SetPitch(i + 12*oct, flags);
+        // Stop after the first rising key — matrix crosstalk can cause ghost
+        // rising() signals on other keys in the same scan cycle. Processing only
+        // the first key found prevents a phantom note from overwriting the real one.
+        break;
       }
     }
   }
@@ -160,7 +160,6 @@ void setup() {
     digitalWriteFast(select_pin[i], HIGH);
   }
 
-  /* This won't be necessary in production, bootloader runs first */
   PollInputs(inputs);
   if (inputs[TAP_NEXT].held()) {
     jumptoboot();
@@ -255,16 +254,18 @@ void setup() {
   engine.Load();
 }
 
-void PrintPitch(const uint8_t pitch, const bool acc, const bool slide) {
+void PrintPitch() {
+  const uint8_t semitone = engine.get_semitone();
+  if (semitone != Sequence::PITCH_EMPTY) {
+    Leds::Set(pitch_leds[semitone % 13], true);
+    Leds::Set(ACCENT_KEY_LED, engine.get_sequence().get_accent() != 0);
+    Leds::Set(SLIDE_KEY_LED, engine.get_sequence().get_slide());
+    Leds::Set(DOWN_KEY_LED,
+              engine.get_sequence().get_octave() == OCTAVE_DOWN ||
+                  engine.get_sequence().get_octave() == OCTAVE_DOUBLE_UP);
+    Leds::Set(UP_KEY_LED, engine.get_sequence().get_octave() > OCTAVE_ZERO);
+  }
   // empty step: no LEDs lit — pattern is blank here
-  if (pitch == Sequence::PITCH_EMPTY) return;
-
-  Leds::Set(pitch_leds[pitch % 12], true);
-
-  Leds::Set(ACCENT_KEY_LED, acc);
-  Leds::Set(SLIDE_KEY_LED, slide);
-  Leds::Set(DOWN_KEY_LED, (pitch / 12) == OCTAVE_DOWN || (pitch / 12) == OCTAVE_DOUBLE_UP);
-  Leds::Set(UP_KEY_LED, (pitch / 12) > OCTAVE_ZERO);
 }
 void PrintTime() {
   Leds::Set(DOWN_KEY_LED, engine.get_time() == 1);
@@ -279,7 +280,7 @@ void ProcessEdit(const bool &write_mode) {
       input_pitch(true); // modify pitch
     }
 
-    PrintPitch(engine.get_pitch(), engine.get_accent(), engine.get_slide());
+    PrintPitch();
     break;
   }
   case TIME_MODE:
@@ -298,7 +299,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                const bool &clk_run) {
   switch (engine.get_mode()) {
   case PITCH_MODE:
-    PrintPitch(engine.get_pitch(), engine.get_accent(), engine.get_slide());
+    PrintPitch();
     if (!write_mode)
       engine.SetMode(NORMAL_MODE); // you're not supposed to be in here
     break;
@@ -350,7 +351,9 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
 }
 void ProcessPitchMod() {
   Leds::Set(PITCH_MODE_LED, clk_count & (1 << 2));
-  PrintPitch(transpose, false, false);
+  Leds::Set(pitch_leds[transpose % 12], true);
+  Leds::Set(DOWN_KEY_LED, (transpose / 12) == OCTAVE_DOWN || (transpose / 12) == OCTAVE_DOUBLE_UP);
+  Leds::Set(UP_KEY_LED, (transpose / 12) > OCTAVE_ZERO);
 
   // TODO: beat-synced transpose change?
 
@@ -375,6 +378,7 @@ void loop() {
   // Poll all inputs... every single tick
   //if ((ticks & 0x03) == 0)
   PollInputs(inputs);
+  engine.Tick();
 
 #if DEBUG
   if (Serial.available() && Serial.read()) {
@@ -469,9 +473,6 @@ void loop() {
         // TODO: modify length with pitch keys
       }
 
-      if (inputs[CLEAR_KEY].rising()) // enter system config
-        menu_state = MENU_CONFIG;
-
     } else {
       ProcessDefault(write_mode, clear_mod, clk_run);
     }
@@ -518,17 +519,31 @@ void loop() {
     engine.Clock();
   }
 
-  if (!clk_run) {
-    // handle TAP button advance for step editing when stopped
-    // With clock running, TAP does nothing - Clock() drives advance
-    if (inputs[TAP_NEXT].rising()) {
+  if (inputs[TAP_NEXT].rising()) {
+    if (write_mode) {
+      if (!clk_run) {
+        if (engine.get_mode() == PITCH_MODE) {
+          // Audition current pitch step, then advance to the next pitch slot
+          if (!engine.get_sequence().step_is_empty()) {
+            DAC::SetPitch(engine.get_pitch());
+            DAC::SetGate(true);
+          }
+          engine.get_sequence().AdvancePitch();
+        } else if (engine.get_mode() == TIME_MODE) {
+          const bool send = engine.Advance();
+          engine.SyncAfterManualAdvance(send);
+        }
+      }
+      // With clock running, TAP does nothing in write mode (Clock() drives advance)
+    } else {
       DAC::SetGate(engine.Advance());
     }
-    if (inputs[TAP_NEXT].falling()) {
-      DAC::SetGate(false);
-      if (!wrap_edit && engine.get_time_pos() >= engine.get_length() - 1)
-        engine.SetMode(NORMAL_MODE, true);
-    }
+  }
+  if (inputs[TAP_NEXT].falling()) {
+    DAC::SetGate(false);
+    if (!wrap_edit && !clk_run && engine.get_mode() == TIME_MODE &&
+        engine.get_time_pos() >= engine.get_length() - 1)
+      engine.SetMode(NORMAL_MODE, true);
   }
 
   // regular pattern write mode
