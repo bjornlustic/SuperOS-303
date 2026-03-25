@@ -252,16 +252,18 @@ struct Engine {
 
   int8_t clk_count = -1;
 
-  // slide_on: gate-hold flag — true when the CURRENT step has slide, so the current
-  //           step's gate is not dropped (paper §4.3: "gate stays high in front of a slid step").
-  //           Also stays high through ties and rests per paper §6 / Fig. 17.
+  // slide_on: gate-hold flag for SLIDE only — true when the current step has the slide
+  //           attribute, suppressing gate-off so the gate stays high into the next step.
+  //           Must NEVER be set by a tie — ties use gate_hold instead.
   // slide_cv: slide signal flag — true when the CURRENT step has the slide attribute,
   //           meaning the slide CV line is asserted (paper §6: "slide signal set high
   //           at the beginning of the slid step").
-  bool slide_on    = false; // gate-hold: suppress gate-off so gate stays high into next step
+  // gate_hold: gate-hold flag for TIE — keeps gate high through tied steps without
+  //            asserting any slide signal or triggering a slide relatch.
+  bool slide_on    = false; // slide gate-hold: suppress gate-off due to slide flag only
   bool slide_cv    = false; // slide CV: current step has slide attribute, assert slide signal
-  bool was_sliding = false; // true if gate was held high INTO the current step (needs re-latch)
-  bool gate_hold = false;   // keep gate high when current step is tied into the next
+  bool was_sliding = false; // true if gate was held high INTO the current step due to SLIDE
+  bool gate_hold   = false; // tie gate-hold: keep gate high through tied steps, no slide
   bool stale = false;
   bool resting = false; // hey shutup
 
@@ -346,7 +348,7 @@ struct Engine {
     }
     if (gate_pending_off && gate_off_timer >= gate_off_delay_us) {
       gate_pending_off = false;
-      if (!slide_on) {
+      if (!slide_on && !gate_hold) {
         gate_state = false;
         // accent_state holds through full step; cleared at next gate-on or reset
       }
@@ -363,25 +365,29 @@ struct Engine {
       result = get_sequence().Advance();
     }
 
-    // was_sliding: capture whether the gate was held high INTO this step (from prev step's slide).
-    // Used in Tick() to decide between 44μs new-note latch and 8.75μs re-latch.
-    was_sliding = slide_on;
-
     // slide_cv: the CURRENT step has the slide attribute.
     // The slid step IS the step with the slide flag. The slide CV asserts here,
     // and the gate of THIS step is held high into the next step.
     slide_cv = result && get_sequence().get_slide();
 
-    // slide_on: gate-hold — suppress gate-off on THIS step so gate stays high into the next.
-    // Set from the CURRENT step's own slide flag (not a lookahead).
-    // Also stays high through ties and rests.
-    if (result) {
-      slide_on = slide_cv || get_sequence().is_tie() || get_sequence().next_is_tie();
-      gate_hold = get_sequence().is_tied();
+    // was_sliding: true only when arriving at a real note step (not a tie) with slide_on
+    // set from a previous slide flag. Ties pass the gate through silently — no relatch,
+    // no slide CV. The slide resolves only when the next real note step is reached.
+    was_sliding = slide_on && !get_sequence().is_tie();
+
+    if (get_sequence().is_tie()) {
+      // Tie: extend the previous note's gate silently. slide_on carries forward unchanged
+      // so a slide that preceded this tie still resolves on the next real note step.
+      gate_hold = true;
+      // slide_on unchanged — preserved from previous step
+    } else if (result) {
+      // Real note step: update slide_on from this step's own slide flag only.
+      slide_on  = slide_cv;
+      gate_hold = get_sequence().next_is_tie(); // hold gate if the next step is a tie
     } else {
+      // Rest: clear everything.
+      slide_on  = false;
       gate_hold = false;
-      // On a rest: slide_on carried forward unchanged — cleared when the next non-slid
-      // note arrives and sets slide_on = false.
     }
     resting = !result;
     return result;
@@ -416,7 +422,7 @@ struct Engine {
 
     if (clk_count == 3) {
       // need to take a second look at figs 9 - 10 to see the isr processing.
-      if (!resting && !slide_on) {
+      if (!resting && !slide_on && !gate_hold) {
         const uint32_t phase = isr_timer % ISR_PERIOD_US;
         const uint32_t time_to_next_isr = ISR_PERIOD_US - phase;
         gate_off_delay_us = time_to_next_isr + GATE_OFF_LATENCY_US;
