@@ -17,7 +17,7 @@ PersistentSettings GlobalSettings;
 // -=-=- Globals -=-=-
 static uint8_t ticks = 0;
 static uint8_t clk_count = 0;
-static uint8_t transpose = 0; // range is 0 to 47; 0 = no transpose
+static uint8_t transpose = 12; // range is 0 to 47; 0 = no transpose
 
 static PinState inputs[INPUT_COUNT];
 
