@@ -6,6 +6,7 @@
 #pragma once
 #include <Arduino.h>
 #include <EEPROM.h>
+#include "drivers.h"
 
 //
 // *** Utilities ***
@@ -73,8 +74,26 @@ struct Sequence {
   const bool is_sliding() const {
     return (pitch_pos < length) && get_slide(pitch_pos+1);
   }
+  // True if the CURRENT step is a tie.
+  const bool is_tie() const {
+    return time(time_pos) == 2;
+  }
+  // True if the NEXT step is a tie.
+  const bool next_is_tie() const {
+    const uint8_t next = (time_pos + 1) % length;
+    return time(next) == 2;
+  }
+  // True if the NEXT step has the slide flag set.
+  // Used to suppress gate-off on the current step (gate stays high into the slid step).
+  const bool next_has_slide() const {
+    const uint8_t next_tp = (time_pos + 1) % length;
+    if (time(next_tp) != 1) return false; // next step is not a note (tie/rest) — no slide flag
+    const uint8_t next_pp = pitch_pos + 1;
+    if (next_pp >= length) return false; // out of bounds
+    return get_slide(next_pp);
+  }
   const bool is_tied() const {
-    return (time_pos < length) && (time(time_pos+1) == 2);
+    return next_is_tie();
   }
   inline uint8_t time(uint8_t idx) const {
     return (time_data[idx >> 1] >> 4*(idx & 1)) & 0xf;
@@ -217,9 +236,12 @@ void ReadPattern(Sequence &seq, int idx) {
   }
 }
 
-struct Engine {
-  //elapsedMillis delay_timer = 0;
+// μPD650C-133 timing constants from Sonic Potions paper (gate/ISR timing)
+static constexpr uint32_t ISR_PERIOD_US       = 1800; // fixed 1.8ms interrupt period
+static constexpr uint32_t GATE_ON_LATENCY_US  =  990; // fixed ISR processing: mean of 0.917–1.062ms
+static constexpr uint32_t GATE_OFF_LATENCY_US = 2350; // fixed ISR processing: mean of 2.3–2.4ms
 
+struct Engine {
   // pattern storage
   Sequence pattern[NUM_PATTERNS]; // 32 steps each
   uint8_t p_select = 0;
@@ -227,14 +249,35 @@ struct Engine {
                       // TODO: start & end for chains
 
   SequencerMode mode_ = NORMAL_MODE;
-  //uint8_t chains[16][7]; // 7 tracks, up to 16 chained patterns
 
   int8_t clk_count = -1;
 
-  bool slide_on = false; // flag to keep raised
-  bool gate_hold = false; // flag to keep raised
+  // slide_on: gate-hold flag — true when the CURRENT step has slide, so the current
+  //           step's gate is not dropped (paper §4.3: "gate stays high in front of a slid step").
+  //           Also stays high through ties and rests per paper §6 / Fig. 17.
+  // slide_cv: slide signal flag — true when the CURRENT step has the slide attribute,
+  //           meaning the slide CV line is asserted (paper §6: "slide signal set high
+  //           at the beginning of the slid step").
+  bool slide_on    = false; // gate-hold: suppress gate-off so gate stays high into next step
+  bool slide_cv    = false; // slide CV: current step has slide attribute, assert slide signal
+  bool was_sliding = false; // true if gate was held high INTO the current step (needs re-latch)
+  bool gate_hold = false;   // flag to keep raised
   bool stale = false;
   bool resting = false; // hey shutup
+
+  // ISR simulation: free-running timer that wraps at ISR_PERIOD_US, mirroring the
+  // original CPU's fixed 1.8ms interrupt. Gate on/off are each scheduled from the
+  // ISR edge nearest to their respective clock edges (0 and 3), giving each its own
+  // independent sawtooth beat pattern as seen in Figs 7–10 of the paper.
+  elapsedMicros isr_timer;
+  elapsedMicros gate_on_timer;   // started at clock 0
+  elapsedMicros gate_off_timer;  // started at clock 3
+  uint32_t gate_on_delay_us  = 0;
+  uint32_t gate_off_delay_us = 0;
+  bool gate_pending_on  = false;
+  bool gate_pending_off = false;
+  bool gate_state       = false; // actual driven gate value
+  bool accent_state     = false; // latched accent for full step duration
 
   // actions
   void Load() {
@@ -282,12 +325,32 @@ struct Engine {
     Serial.println("DONE!");
   }
 
-  void Tick(uint8_t &state) {
-    // static bool gate_on = 0;
-    // if (gate_on != get_gate()) {
-      // rising or falling
-    // }
-    // gate_on = get_gate();
+  // Called every loop() iteration. Fires pending gate on/off transitions once
+  // their ISR-relative delay has elapsed, reproducing the original CPU latency.
+  void Tick() {
+    if (gate_pending_on && gate_on_timer >= gate_on_delay_us) {
+      gate_pending_on = false;
+      if (!resting) {
+        gate_state   = true;
+        accent_state = get_sequence().get_accent() != 0;
+        // Notify DAC to latch the new pitch into the R2R DAC.
+        // If the gate was held high into this step (was_sliding), the slide signal is
+        // already high and we need the 8.75μs re-latch to update the DAC.
+        // Otherwise use the 44μs new-note latch pulse.
+        if (was_sliding) {
+          DAC::NotifySlideRelatch();
+        } else {
+          DAC::NotifyNewNote();
+        }
+      }
+    }
+    if (gate_pending_off && gate_off_timer >= gate_off_delay_us) {
+      gate_pending_off = false;
+      if (!slide_on) {
+        gate_state = false;
+        // accent_state holds through full step; cleared at next gate-on or reset
+      }
+    }
   }
 
   // returns false for rests
@@ -299,12 +362,26 @@ struct Engine {
       get_sequence().Reset();
       result = get_sequence().Advance();
     }
+
+    // was_sliding: capture whether the gate was held high INTO this step (from prev step's slide).
+    // Used in Tick() to decide between 44μs new-note latch and 8.75μs re-latch.
+    was_sliding = slide_on;
+
+    // slide_cv: the CURRENT step has the slide attribute.
+    // The slid step IS the step with the slide flag. The slide CV asserts here,
+    // and the gate of THIS step is held high into the next step.
+    slide_cv = result && get_sequence().get_slide();
+
+    // slide_on: gate-hold — suppress gate-off on THIS step so gate stays high into the next.
+    // Set from the CURRENT step's own slide flag (not a lookahead).
+    // Also stays high through ties and rests.
     if (result) {
-      slide_on = get_slide() || get_sequence().is_tied();
+      slide_on = slide_cv || get_sequence().is_tie() || get_sequence().next_is_tie();
       gate_hold = get_sequence().is_tied() || get_sequence().is_sliding();
     } else {
-      slide_on = false;
       gate_hold = false;
+      // On a rest: slide_on carried forward unchanged — cleared when the next non-slid
+      // note arrives and sets slide_on = false.
     }
     resting = !result;
     return result;
@@ -317,7 +394,35 @@ struct Engine {
 
     if (clk_count == 0) { // sixteenth note advance
       send_note = Advance();
-      //delay_timer = 0;
+      resting = !send_note;
+      accent_state = false; // clear before new step latches it in Tick()
+
+      // need to take a second look at fig 7-10 to see the isr processing
+      // we are using sawtooth jitter as it looks to go up and down but we
+      // need a way to actually test this against another 303 cpu.
+      if (send_note) {
+        const uint32_t phase = isr_timer % ISR_PERIOD_US;
+        const uint32_t time_to_next_isr = ISR_PERIOD_US - phase;
+        gate_on_delay_us = time_to_next_isr + GATE_ON_LATENCY_US;
+        gate_pending_on  = true;
+        gate_on_timer    = 0;
+      } else {
+        // Rest: cancel any pending transitions and drop gate immediately
+        gate_pending_on  = false;
+        gate_pending_off = false;
+        gate_state       = false;
+      }
+    }
+
+    if (clk_count == 3) {
+      // need to take a second look at figs 9 - 10 to see the isr processing.
+      if (!resting && !slide_on) {
+        const uint32_t phase = isr_timer % ISR_PERIOD_US;
+        const uint32_t time_to_next_isr = ISR_PERIOD_US - phase;
+        gate_off_delay_us = time_to_next_isr + GATE_OFF_LATENCY_US;
+        gate_pending_off  = true;
+        gate_off_timer    = 0;
+      }
     }
 
     return send_note;
@@ -325,9 +430,34 @@ struct Engine {
 
   void Reset() {
     get_sequence().Reset();
-    clk_count = -1;
-    slide_on = false;
-    resting = true;
+    clk_count   = -1;
+    slide_on    = false;
+    slide_cv    = false;
+    was_sliding = false;
+    resting     = true;
+    gate_pending_on  = false;
+    gate_pending_off = false;
+    gate_state       = false;
+    accent_state     = false;
+  }
+
+  // After Advance() from TAP_NEXT in pattern write: Clock() does not run, so resting/slide
+  // must match the new step or gate/CV stays wrong and causes noise.
+  void SyncAfterManualAdvance(bool send_note) {
+    resting = !send_note;
+    if (!send_note) {
+      slide_on     = false;
+      slide_cv     = false;
+      was_sliding  = false;
+      gate_state   = false;
+      accent_state = false;
+    } else {
+      // Manual advance: no ISR latency simulation, fire gate immediately
+      gate_pending_on  = false;
+      gate_pending_off = false;
+      gate_state       = true;
+      accent_state     = get_sequence().get_accent() != 0;
+    }
   }
 
   void Generate() {
@@ -353,14 +483,14 @@ struct Engine {
   const Sequence &get_sequence() const { return pattern[p_select]; }
   const Sequence &get_pattern(uint8_t idx) const { return pattern[idx & 0xf]; }
 
+  // Gate state is driven by Tick() using ISR-latency scheduling.
+  // slide_on keeps gate high through tied/slid notes as before.
   bool get_gate() const {
-    // TODO: fancy stuff for shuffle, ratchets, etc.
-    // also for emulated jitter
-    //delay_timer > 0 && 
-    return ((clk_count < 3) || slide_on || gate_hold) && !resting;
+    return (gate_state || slide_on || gate_hold) && !resting;
   }
+  // Accent is latched for the full step duration once the gate fires.
   bool get_accent() const {
-    return !resting && get_sequence().get_accent() && (clk_count < 2 || get_sequence().is_tied());
+    return !resting && accent_state;
   }
   uint8_t get_semitone() const {
     return get_sequence().get_semitone();
@@ -376,11 +506,12 @@ struct Engine {
     return 36 + semitone + (oct * 12);
   }
   bool get_slide() const {
-    return get_sequence().get_slide();
+    return slide_cv;
   }
-  /** Slide line for CV hardware: per-step flag plus tie/slide gate legato. */
+  // Slide CV line: high ONLY on the step being slid INTO (was_sliding=true).
+  // The step with the slide flag does NOT assert slide — it only holds its gate high.
   bool get_slide_dac() const {
-    return get_sequence().get_slide() || slide_on;
+    return was_sliding;
   }
   uint8_t get_time_pos() const {
     return get_sequence().time_pos;
