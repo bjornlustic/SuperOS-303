@@ -365,6 +365,19 @@ struct Engine {
       result = get_sequence().Advance();
     }
 
+    // On loop wrap, force the gate low and clear all hold flags so step 0 always gets
+    // a clean gate-off → gate-on transition. A trailing tie at the end of a pattern
+    // leaves gate_state high; without this reset the gate never drops and step 0's
+    // attack is swallowed, making it sound like the first note was skipped.
+    if (0 == get_sequence().time_pos) {
+      gate_hold        = false;
+      slide_on         = false;
+      was_sliding      = false;
+      gate_state       = false;
+      gate_pending_on  = false;
+      gate_pending_off = false;
+    }
+
     // slide_cv: the CURRENT step has the slide attribute.
     // The slid step IS the step with the slide flag. The slide CV asserts here,
     // and the gate of THIS step is held high into the next step.
