@@ -70,6 +70,9 @@ struct Sequence {
   const bool get_slide() const {
     return get_slide(pitch_pos);
   }
+  const bool is_sliding() const {
+    return (pitch_pos < length) && get_slide(pitch_pos+1);
+  }
   const bool is_tied() const {
     return (time_pos < length) && (time(time_pos+1) == 2);
   }
@@ -229,6 +232,7 @@ struct Engine {
   int8_t clk_count = -1;
 
   bool slide_on = false; // flag to keep raised
+  bool gate_hold = false; // flag to keep raised
   bool stale = false;
   bool resting = false; // hey shutup
 
@@ -297,8 +301,10 @@ struct Engine {
     }
     if (result) {
       slide_on = get_slide() || get_sequence().is_tied();
+      gate_hold = get_sequence().is_tied() || get_sequence().is_sliding();
     } else {
       slide_on = false;
+      gate_hold = false;
     }
     resting = !result;
     return result;
@@ -348,8 +354,10 @@ struct Engine {
   const Sequence &get_pattern(uint8_t idx) const { return pattern[idx & 0xf]; }
 
   bool get_gate() const {
+    // TODO: fancy stuff for shuffle, ratchets, etc.
+    // also for emulated jitter
     //delay_timer > 0 && 
-    return ((clk_count < 3) || slide_on) && !resting;
+    return ((clk_count < 3) || slide_on || gate_hold) && !resting;
   }
   bool get_accent() const {
     return !resting && get_sequence().get_accent() && (clk_count < 2 || get_sequence().is_tied());
