@@ -14,7 +14,7 @@
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 #define CONSTRAIN(x, lb, ub) do { if (x < (lb)) x = lb; else if (x > (ub)) x = ub; } while (0)
 
-static constexpr int MAX_STEPS = 32;
+static constexpr int MAX_STEPS = 64;
 static constexpr int NUM_PATTERNS = 16;
 
 enum SequencerMode {
@@ -261,7 +261,7 @@ struct Engine {
   bool slide_on    = false; // gate-hold: suppress gate-off so gate stays high into next step
   bool slide_cv    = false; // slide CV: current step has slide attribute, assert slide signal
   bool was_sliding = false; // true if gate was held high INTO the current step (needs re-latch)
-  bool gate_hold = false;   // flag to keep raised
+  bool gate_hold = false;   // keep gate high when current step is tied into the next
   bool stale = false;
   bool resting = false; // hey shutup
 
@@ -377,7 +377,7 @@ struct Engine {
     // Also stays high through ties and rests.
     if (result) {
       slide_on = slide_cv || get_sequence().is_tie() || get_sequence().next_is_tie();
-      gate_hold = get_sequence().is_tied() || get_sequence().is_sliding();
+      gate_hold = get_sequence().is_tied();
     } else {
       gate_hold = false;
       // On a rest: slide_on carried forward unchanged — cleared when the next non-slid
