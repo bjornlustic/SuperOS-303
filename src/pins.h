@@ -1,7 +1,9 @@
 // Copyright (c) 2026, Nicholas J. Michalek
 //
-// these symbols should help make sense of the TB-303 CPU pinouts
+// pins.h — TB-303–style matrix and Teensy++ 2.0 GPIO mapping
 //
+// Defines: logical CPU port names → Arduino pins, debounced PinState, switched_leds table,
+// and indices used by main.cpp and drivers.h for scan order and LED framebuffers.
 
 /*
  * The PH pins are used to select which buttons/LEDs to engage using PG, PA, and PB.
@@ -20,8 +22,10 @@
 
 #pragma once
 #include <Arduino.h>
-//const int MAXPIN = 45;
 
+// =============================================================================
+// Teensy++ 2.0 pinout (logical TB-303 CPU port names → GPIO numbers)
+// =============================================================================
 // pinout with Teensy++ 2.0 fitted
 // - enum symbol names correspond to the TB-303 CPU pins
 // - comments indicate Teensy Port designations
@@ -81,6 +85,9 @@ enum TppPinout : uint8_t {
   PG3_PIN = 45, // [4], [G#], [SLIDE], [8] - PF7
 };
 
+// =============================================================================
+// GPIO lists for setup(): all inputs vs all outputs
+// =============================================================================
 const uint8_t INPUTS[] = {
   // Teensy Port B
   PA0_PIN, PA1_PIN, PA2_PIN, PA3_PIN,
@@ -104,6 +111,9 @@ const uint8_t OUTPUTS[] = {
 
 };
 
+// =============================================================================
+// Logical inputs — order matches PollInputs() fill sequence (matrix + status)
+// =============================================================================
 // switched inputs, polled sequentially
 enum InputIndex : uint8_t {
   C_KEY, // 0 - PB0 with PH0 low
@@ -160,9 +170,9 @@ enum InputIndex : uint8_t {
 };
 
 
-//
-// --- useful pin correlations ---
-//
+// =============================================================================
+// Physical row/column pins for matrix scan (PH selects, PB buttons, PA status)
+// =============================================================================
 const uint8_t select_pin[4] = {
   PH0_PIN, PH1_PIN, PH2_PIN, PH3_PIN,
 };
@@ -177,6 +187,7 @@ const uint8_t status_pins[] = {
 // which can simply be written as one byte.
 // Each LED in the switchboard matrix can be defined as series of bytes as addresses.
 // Welcome to CS-450
+// Encoded PG+PH patterns per matrix LED (alternative encoding; primary path uses MatrixPin).
 const uint8_t led_bytes[16] = {
   // PG  PH
   0b00011110,
@@ -200,6 +211,9 @@ const uint8_t led_bytes[16] = {
   0b10000111,
 };
 
+// =============================================================================
+// Debounced digital input (4-bit shift register → edges)
+// =============================================================================
 // data + function bundles
 struct PinPair {
   uint8_t led, button, pitch;
@@ -228,7 +242,9 @@ struct PinState {
   const bool read() const { return state & 1; }
 };
 
-// more useful correlations
+// =============================================================================
+// Matrix cell table: mux select, LED pin, button index (16 cells + 4 direct LEDs)
+// =============================================================================
 const MatrixPin switched_leds[16 + 4] = {
   // select,  LED,   pitch, Button,
   {PH0_PIN, PG0_PIN,  1, C_KEY}, // [1] key, C
@@ -262,6 +278,9 @@ const InputIndex pitched_keys[] = {
   G_KEY, GSHARP_KEY, A_KEY, ASHARP_KEY, B_KEY, C_KEY2
 };
 
+// =============================================================================
+// LED framebuffer indices (Leds::Set) — 0–15 matrix, 16–19 direct mode LEDs
+// =============================================================================
 // index into switched_leds array
 enum OutputIndex {
   C_KEY_LED,

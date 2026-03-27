@@ -1,6 +1,6 @@
 // Copyright (c) 2026, Nicholas J. Michalek
-/* 
- * Sequencer engine logic and data model for TB-303 CPU
+/*
+ * engine.h — TB-303 pattern model + EEPROM; Engine handles patterns, clock, and gate.
  */
 
 #pragma once
@@ -8,9 +8,6 @@
 #include <EEPROM.h>
 #include "drivers.h"
 
-//
-// *** Utilities ***
-//
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 #define CONSTRAIN(x, lb, ub) do { if (x < (lb)) x = lb; else if (x > (ub)) x = ub; } while (0)
 
@@ -30,88 +27,115 @@ enum OctaveState {
   OCTAVE_DOUBLE_UP,
 };
 
+static constexpr uint8_t PITCH_EMPTY = 0xFF;
+static constexpr uint8_t PITCH_DEFAULT = (OCTAVE_ZERO * 12);
+
+// =============================================================================
+// Sequence — one pattern (matches reference OS-303 layout)
+// =============================================================================
+static constexpr int STEP_LOCK_BYTES = (MAX_STEPS + 7) / 8;
+
 struct Sequence {
-  // --- sequence data - 64 bytes
-  // for DAC pitch, 0 is a low G#; 4 is lowest C; and middle C is 28
-  // We're gonna store pitch as if the lowest C is 0, so it needs +4 when sent to DAC
-  uint8_t pitch[MAX_STEPS]; // 6-bit Pitch, Accent, and Slide
-  uint8_t time_data[MAX_STEPS/2];  // 0=rest, 1=note, 2=tie, 3=triplets?
-  // time is stored as nibbles, so there's actually a lot of padding
-  uint8_t reserved[MAX_STEPS/2 - 1];
+  uint8_t pitch[MAX_STEPS];
+  uint8_t time_data[MAX_STEPS / 2];
+  /// Per-step live-write lock for TIME_MODE (same physical key as slide; not pitch slide).
+  uint8_t step_lock[STEP_LOCK_BYTES];
+  uint8_t reserved[MAX_STEPS / 2 - 1 - STEP_LOCK_BYTES];
   uint8_t length = 16;
-  // --- end sequence data
 
-  // state
   int pitch_pos, time_pos;
-  bool reset; // hold plz
+  bool reset;
+  bool first_step = true; // suppresses slide_from_prev on the very first step after Reset()
 
-  // --- functions
-  // 6-bit pitch, 0 == low C
+  bool step_locked(uint8_t idx) const {
+    idx &= (MAX_STEPS - 1);
+    return (step_lock[idx >> 3] >> (idx & 7)) & 1;
+  }
+  void ToggleStepLock(uint8_t idx) {
+    idx &= (MAX_STEPS - 1);
+    step_lock[idx >> 3] ^= uint8_t(1u << (idx & 7));
+  }
+
   const uint8_t get_pitch() const {
-    if (step_is_empty()) return (OCTAVE_ZERO * 12); // silent default, gate will be off
+    if (step_is_empty()) return PITCH_DEFAULT;
     return pitch[pitch_pos] & 0x3f;
   }
   const uint8_t get_octave() const {
     if (step_is_empty()) return OCTAVE_ZERO;
     return get_pitch() / 12;
   }
-  // semitone index (0–11) for LED display. Returns 0xFF if step is unwritten.
   const uint8_t get_semitone() const {
     if (step_is_empty()) return PITCH_EMPTY;
     return get_pitch() % 12;
   }
   const uint8_t get_accent() const {
     if (step_is_empty()) return 0;
-    return pitch[pitch_pos] & (1<<6);
+    return pitch[pitch_pos] & (1 << 6);
   }
   const bool get_slide(uint8_t step) const {
     if (pitch_is_empty(step)) return false;
-    return pitch[step] & (1<<7);
+    return pitch[step] & (1 << 7);
   }
-  const bool get_slide() const {
-    return get_slide(pitch_pos);
+  const bool get_slide() const { return get_slide(pitch_pos); }
+  /// TB-303 slide: slide is stored on the *source* pitch step;
+  /// slide CV is on the *destination* pitch step. Ties after the source do not break the glide,
+  /// but any *rest* (time 0) between source and destination cancels slide.
+  bool slide_from_prev() const {
+    if (length <= 1) return false;
+    if (time(time_pos) == 0) return false;
+    if (first_step) return false;
+
+    // Find the previous pitch step by walking backward through time slots.
+    // Ties don't advance pitch_pos, so we skip them to find the actual source.
+    uint8_t src_p = uint8_t((pitch_pos + length - 1) % length);
+    if (!get_slide(src_p)) return false;
+
+    // Walk backward through time slots from current position to confirm no rest.
+    uint8_t tp = uint8_t((time_pos + length - 1) % length);
+    bool saw_rest = false;
+    for (uint8_t guard = 0; guard < length; ++guard) {
+      if (time(tp) == 0) { saw_rest = true; break; }
+      if (time(tp) == 1) return !saw_rest; // reached the source note slot
+      tp = uint8_t((tp + length - 1) % length);
+    }
+    return false;
   }
-  const bool is_sliding() const {
-    return (pitch_pos < length) && get_slide(pitch_pos+1);
-  }
-  // True if the CURRENT step is a tie.
-  const bool is_tie() const {
-    return time(time_pos) == 2;
-  }
-  // True if the NEXT step is a tie.
-  const bool next_is_tie() const {
-    const uint8_t next = (time_pos + 1) % length;
-    return time(next) == 2;
-  }
-  // True if the NEXT step has the slide flag set.
-  // Used to suppress gate-off on the current step (gate stays high into the slid step).
-  const bool next_has_slide() const {
-    const uint8_t next_tp = (time_pos + 1) % length;
-    if (time(next_tp) != 1) return false; // next step is not a note (tie/rest) — no slide flag
-    const uint8_t next_pp = pitch_pos + 1;
-    if (next_pp >= length) return false; // out of bounds
-    return get_slide(next_pp);
-  }
+  /// Next time slot is a tie (extends previous note).
   const bool is_tied() const {
-    return next_is_tie();
+    return (time_pos < length) && (time(time_pos + 1) == 2);
   }
+  /// Current time slot is a tie.
+  bool is_tie() const {
+    return (time_pos < length) && (time(time_pos) == 2);
+  }
+  /// Next step (wrapped) is a tie.
+  bool next_is_tie() const {
+    if (length == 0) return false;
+    const uint8_t n = (time_pos + 1) % length;
+    return time(n) == 2;
+  }
+  /// Last tie in a run: on a tie step whose next step is not a tie.
+  bool tie_chain_ending() const {
+    return is_tie() && !next_is_tie();
+  }
+
   inline uint8_t time(uint8_t idx) const {
-    return (time_data[idx >> 1] >> 4*(idx & 1)) & 0xf;
+    return (time_data[idx >> 1] >> (4 * (idx & 1))) & 0xf;
   }
-  const uint8_t get_time() const {
-    return time(time_pos);
-  }
+  inline uint8_t effective_time(uint8_t idx) const { return time(idx); }
+
+  const uint8_t get_time() const { return time(time_pos); }
 
   void SetTime(uint8_t t) {
     const uint8_t upper = time_pos & 1;
     uint8_t &data = time_data[time_pos >> 1];
-    data = (~(0x0f << 4*upper) & data) | (t << 4*upper);
+    data = (~(0x0f << (4 * upper)) & data) | (t << (4 * upper));
   }
   void SetPitch(uint8_t p, uint8_t flags) {
     pitch[pitch_pos] = (p & 0x3f) | (flags & 0xc0);
   }
   void SetPitchSemitone(uint8_t p) {
-    init_if_empty(); 
+    init_if_empty();
     pitch[pitch_pos] =
         ((get_octave() * 12 + p) & 0x3f) | (pitch[pitch_pos] & 0xc0);
   }
@@ -123,8 +147,14 @@ struct Sequence {
         ((uint8_t)oct * 12 + get_semitone()) | (pitch[pitch_pos] & 0xc0);
   }
 
-  void ToggleSlide() { init_if_empty(); pitch[pitch_pos] ^= (1 << 7); }
-  void ToggleAccent() { init_if_empty(); pitch[pitch_pos] ^= (1 << 6); }
+  void ToggleSlide() {
+    init_if_empty();
+    pitch[pitch_pos] ^= (1 << 7);
+  }
+  void ToggleAccent() {
+    init_if_empty();
+    pitch[pitch_pos] ^= (1 << 6);
+  }
   void SetSlide(bool on) {
     init_if_empty();
     pitch[pitch_pos] = (pitch[pitch_pos] & ~(1 << 7)) | (on << 7);
@@ -139,20 +169,15 @@ struct Sequence {
     return true;
   }
 
-  void RegenTime() {
-    time_data[time_pos] = random();
-  }
-  void RegenPitch() {
-    pitch[pitch_pos] = random();
-  }
+  void RegenTime() { time_data[time_pos] = random(); }
+  void RegenPitch() { pitch[pitch_pos] = random(); }
 
   void Reset() {
     pitch_pos = 0;
     time_pos = 0;
     reset = true;
+    first_step = true;
   }
-  static constexpr uint8_t PITCH_EMPTY = 0xFF; // unwritten step sentinel
-  static constexpr uint8_t PITCH_DEFAULT = (OCTAVE_ZERO*12); // clean default: C, octave zero, no flags
 
   bool pitch_is_empty(uint8_t pos) const { return pitch[pos] == PITCH_EMPTY; }
   bool step_is_empty() const { return pitch_is_empty(pitch_pos); }
@@ -164,17 +189,19 @@ struct Sequence {
   void Clear() {
     for (uint8_t i = 0; i < MAX_STEPS; ++i) {
       pitch[i] = PITCH_DEFAULT;
-      time_data[i>>1] = 0; // all rests
+      time_data[i >> 1] = 0;
     }
+    for (uint8_t i = 0; i < STEP_LOCK_BYTES; ++i)
+      step_lock[i] = 0;
     length = 8;
   }
 
-  // returns false for rests
   bool Advance() {
     if (reset) {
       reset = false;
-      return true;
+      return time(0);
     }
+    first_step = false;
     ++time_pos %= length;
     if (time_pos == 0)
       pitch_pos = 0;
@@ -183,120 +210,99 @@ struct Sequence {
     return time(time_pos);
   }
 
-  // used in write mode — advances to next pitch slot, stops at length-1 (no wrap)
   void AdvancePitch() {
-    if (reset) {
+    if (reset)
       reset = false;
-    } else if (pitch_pos < length - 1) {
-      ++pitch_pos;
+    else {
+      first_step = false;
+      ++pitch_pos %= length;
     }
   }
 };
 
-// --- EEPROM data layout
+// =============================================================================
+// EEPROM
+// =============================================================================
 static constexpr int SETTINGS_SIZE = 128;
 static constexpr int PATTERN_SIZE = MAX_STEPS * 2;
 
-const char* const sig_pew = "PewPewPew!!!";
+const char *const sig_pew = "PewPewPew!!!";
 
 extern EEPROMClass storage;
 
 struct PersistentSettings {
   char signature[16];
 
-  void Load() {
-    storage.get(0, signature);
+  void Load() { 
+    storage.get(0, signature); 
   }
-  void Save() {
-    storage.put(0, signature);
+  void Save() { 
+    storage.put(0, signature); 
   }
   bool Validate() const {
     if (0 == strncmp(signature, sig_pew, 12))
       return true;
 
-    strcpy((char*)signature, sig_pew);
+    strcpy((char *)signature, sig_pew);
     return false;
   }
 };
 
 extern PersistentSettings GlobalSettings;
 
-void WritePattern(Sequence &seq, int idx) {
+inline void WritePattern(Sequence &seq, int idx) {
   uint8_t *src = seq.pitch;
   idx *= PATTERN_SIZE;
-  for (uint8_t i = 0; i < PATTERN_SIZE; ++i) {
+  for (uint8_t i = 0; i < PATTERN_SIZE; ++i)
     storage.update(SETTINGS_SIZE + idx + i, src[i]);
-  }
 }
-void ReadPattern(Sequence &seq, int idx) {
+inline void ReadPattern(Sequence &seq, int idx) {
   uint8_t *dst = seq.pitch;
   idx *= PATTERN_SIZE;
-  for (uint8_t i = 0; i < PATTERN_SIZE; ++i) {
+  for (uint8_t i = 0; i < PATTERN_SIZE; ++i)
     dst[i] = storage.read(SETTINGS_SIZE + idx + i);
-  }
 }
 
-// μPD650C-133 timing constants from Sonic Potions paper (gate/ISR timing)
-static constexpr uint32_t ISR_PERIOD_US       = 1800; // fixed 1.8ms interrupt period
-static constexpr uint32_t GATE_ON_LATENCY_US  =  990; // fixed ISR processing: mean of 0.917–1.062ms
-static constexpr uint32_t GATE_OFF_LATENCY_US = 2350; // fixed ISR processing: mean of 2.3–2.4ms
-
+// =============================================================================
+// Engine — patterns + clock + gate
+// =============================================================================
 struct Engine {
+  //elapsedMillis delay_timer = 0;
+
   // pattern storage
-  Sequence pattern[NUM_PATTERNS]; // 32 steps each
+  Sequence pattern[NUM_PATTERNS]; // 64 steps each
   uint8_t p_select = 0;
   uint8_t next_p = 0; // queued pattern
                       // TODO: start & end for chains
 
   SequencerMode mode_ = NORMAL_MODE;
+  //uint8_t chains[16][7]; // 7 tracks, up to 16 chained patterns
 
   int8_t clk_count = -1;
 
-  // slide_on: gate-hold flag for SLIDE only — true when the current step has the slide
-  //           attribute, suppressing gate-off so the gate stays high into the next step.
-  //           Must NEVER be set by a tie — ties use gate_hold instead.
-  // slide_cv: slide signal flag — true when the CURRENT step has the slide attribute,
-  //           meaning the slide CV line is asserted (paper §6: "slide signal set high
-  //           at the beginning of the slid step").
-  // gate_hold: gate-hold flag for TIE — keeps gate high through tied steps without
-  //            asserting any slide signal or triggering a slide relatch.
-  bool slide_on    = false; // slide gate-hold: suppress gate-off due to slide flag only
-  bool slide_cv    = false; // slide CV: current step has slide attribute, assert slide signal
-  bool was_sliding = false; // true if gate was held high INTO the current step due to SLIDE
-  bool gate_hold   = false; // tie gate-hold: keep gate high through tied steps, no slide
+  bool slide_gate = false; // tie/slide: hold gate across 16ths (firstpr.com 303 slide / gate)
   bool stale = false;
   bool resting = false; // hey shutup
 
-  // ISR simulation: free-running timer that wraps at ISR_PERIOD_US, mirroring the
-  // original CPU's fixed 1.8ms interrupt. Gate on/off are each scheduled from the
-  // ISR edge nearest to their respective clock edges (0 and 3), giving each its own
-  // independent sawtooth beat pattern as seen in Figs 7–10 of the paper.
-  elapsedMicros isr_timer;
-  elapsedMicros gate_on_timer;   // started at clock 0
-  elapsedMicros gate_off_timer;  // started at clock 3
-  uint32_t gate_on_delay_us  = 0;
-  uint32_t gate_off_delay_us = 0;
-  bool gate_pending_on  = false;
-  bool gate_pending_off = false;
-  bool gate_state       = false; // actual driven gate value
-  bool accent_state     = false; // latched accent for full step duration
+  // Updated when the 16th advances (Clock, Reset, manual advance).
+  uint32_t step_start_us_ = 0;
 
-  // actions
-  void Load() {
+  // progress_cb(step, total): called after each pattern loads; lights a loading bar.
+  // 8 note LEDs (C→D→E→F→G→A→B→C2) fill as NUM_PATTERNS patterns load.
+  void Load(void (*progress_cb)(uint8_t, uint8_t) = nullptr) {
     Serial.println("Loading from EEPROM...");
-
-    // TODO: settings and calibration
     GlobalSettings.Load();
     if (GlobalSettings.Validate()) {
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
         ReadPattern(pattern[i], i);
         if (0 == pattern[i].length) pattern[i].SetLength(8);
+        if (progress_cb) progress_cb(i + 1, NUM_PATTERNS);
       }
     } else {
       Serial.println("EEPROM data invalid, initializing...");
-      // initialize memory with defaults or zeroes
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
         pattern[i].Clear();
+        if (progress_cb) progress_cb(i + 1, NUM_PATTERNS);
       }
       GlobalSettings.Save();
       stale = true;
@@ -305,55 +311,33 @@ struct Engine {
 
 #if DEBUG
     Serial.println("First pattern:");
-    for (uint8_t i = 0; i < 64; ++i) {
+    for (uint8_t i = 0; i < 64; ++i)
       Serial.printf("%2x ", pattern[0].pitch[i]);
-    }
     Serial.print("\n");
 #endif
   }
+
   void Save(int pidx = -1) {
     if (!stale) return;
     Serial.print("Saving to EEPROM... ");
     if (pidx < 0) {
-      // save all
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
         Serial.print(".");
         WritePattern(pattern[i], i);
       }
     } else
       WritePattern(pattern[pidx], pidx);
-
     stale = false;
     Serial.println("DONE!");
   }
 
-  // Called every loop() iteration. Fires pending gate on/off transitions once
-  // their ISR-relative delay has elapsed, reproducing the original CPU latency.
-  void Tick() {
-    if (gate_pending_on && gate_on_timer >= gate_on_delay_us) {
-      gate_pending_on = false;
-      if (!resting) {
-        gate_state   = true;
-        accent_state = get_sequence().get_accent() != 0;
-        // Notify DAC to latch the new pitch into the R2R DAC.
-        // If the gate was held high into this step (was_sliding), the slide signal is
-        // already high and we need the 8.75μs re-latch to update the DAC.
-        // Otherwise use the 44μs new-note latch pulse.
-        if (was_sliding) {
-          DAC::NotifySlideRelatch();
-        } else {
-          DAC::NotifyNewNote();
-        }
-      }
-    }
-    if (gate_pending_off && gate_off_timer >= gate_off_delay_us) {
-      gate_pending_off = false;
-      if (!slide_on && !gate_hold) {
-        gate_state = false;
-        // accent_state holds through full step; cleared at next gate-on or reset
-      }
-    }
-  }
+  void Tick() {}
+
+  // After Advance() outside Clock() — re-anchor step time.
+  void SyncAfterManualAdvance(bool) { step_start_us_ = micros(); }
+
+  /// Slide CV: only during the *destination* note after a slid step (not during the slid note).
+  bool get_slide_dac() const { return get_sequence().slide_from_prev(); }
 
   // returns false for rests
   bool Advance() {
@@ -364,119 +348,34 @@ struct Engine {
       get_sequence().Reset();
       result = get_sequence().Advance();
     }
-
-    // On loop wrap, force the gate low and clear all hold flags so step 0 always gets
-    // a clean gate-off → gate-on transition. A trailing tie at the end of a pattern
-    // leaves gate_state high; without this reset the gate never drops and step 0's
-    // attack is swallowed, making it sound like the first note was skipped.
-    if (0 == get_sequence().time_pos) {
-      gate_hold        = false;
-      slide_on         = false;
-      was_sliding      = false;
-      gate_state       = false;
-      gate_pending_on  = false;
-      gate_pending_off = false;
-    }
-
-    // slide_cv: the CURRENT step has the slide attribute.
-    // The slid step IS the step with the slide flag. The slide CV asserts here,
-    // and the gate of THIS step is held high into the next step.
-    slide_cv = result && get_sequence().get_slide();
-
-    // was_sliding: true only when arriving at a real note step (not a tie) with slide_on
-    // set from a previous slide flag. Ties pass the gate through silently — no relatch,
-    // no slide CV. The slide resolves only when the next real note step is reached.
-    was_sliding = slide_on && !get_sequence().is_tie();
-
-    if (get_sequence().is_tie()) {
-      // Tie: extend the previous note's gate silently. slide_on carries forward unchanged
-      // so a slide that preceded this tie still resolves on the next real note step.
-      gate_hold = true;
-      // slide_on unchanged — preserved from previous step
-    } else if (result) {
-      // Real note step: update slide_on from this step's own slide flag only.
-      slide_on  = slide_cv;
-      gate_hold = get_sequence().next_is_tie(); // hold gate if the next step is a tie
-    } else {
-      // Rest: clear everything.
-      slide_on  = false;
-      gate_hold = false;
+    if (result) {
+      // Gate: 3.5 pulses on per 16th, or held — tie, slide out of this step, or slide into this step
+      slide_gate =
+          get_slide() || get_sequence().slide_from_prev() || get_sequence().is_tied();
     }
     resting = !result;
     return result;
   }
 
-  // returns true for new pitch step
+  // returns true on step advance (clock divide by 6)
   bool Clock() {
-    bool send_note = false;
     ++clk_count %= 6;
 
     if (clk_count == 0) { // sixteenth note advance
-      send_note = Advance();
-      resting = !send_note;
-      accent_state = false; // clear before new step latches it in Tick()
-
-      // need to take a second look at fig 7-10 to see the isr processing
-      // we are using sawtooth jitter as it looks to go up and down but we
-      // need a way to actually test this against another 303 cpu.
-      if (send_note) {
-        const uint32_t phase = isr_timer % ISR_PERIOD_US;
-        const uint32_t time_to_next_isr = ISR_PERIOD_US - phase;
-        gate_on_delay_us = time_to_next_isr + GATE_ON_LATENCY_US;
-        gate_pending_on  = true;
-        gate_on_timer    = 0;
-      } else {
-        // Rest: cancel any pending transitions and drop gate immediately
-        gate_pending_on  = false;
-        gate_pending_off = false;
-        gate_state       = false;
-      }
+      Advance();
+      step_start_us_ = micros();
+      return true;
     }
 
-    if (clk_count == 3) {
-      // need to take a second look at figs 9 - 10 to see the isr processing.
-      if (!resting && !slide_on && !gate_hold) {
-        const uint32_t phase = isr_timer % ISR_PERIOD_US;
-        const uint32_t time_to_next_isr = ISR_PERIOD_US - phase;
-        gate_off_delay_us = time_to_next_isr + GATE_OFF_LATENCY_US;
-        gate_pending_off  = true;
-        gate_off_timer    = 0;
-      }
-    }
-
-    return send_note;
+    return false;
   }
 
   void Reset() {
     get_sequence().Reset();
-    clk_count   = -1;
-    slide_on    = false;
-    slide_cv    = false;
-    was_sliding = false;
-    resting     = true;
-    gate_pending_on  = false;
-    gate_pending_off = false;
-    gate_state       = false;
-    accent_state     = false;
-  }
-
-  // After Advance() from TAP_NEXT in pattern write: Clock() does not run, so resting/slide
-  // must match the new step or gate/CV stays wrong and causes noise.
-  void SyncAfterManualAdvance(bool send_note) {
-    resting = !send_note;
-    if (!send_note) {
-      slide_on     = false;
-      slide_cv     = false;
-      was_sliding  = false;
-      gate_state   = false;
-      accent_state = false;
-    } else {
-      // Manual advance: no ISR latency simulation, fire gate immediately
-      gate_pending_on  = false;
-      gate_pending_off = false;
-      gate_state       = true;
-      accent_state     = get_sequence().get_accent() != 0;
-    }
+    clk_count = -1;
+    slide_gate = false;
+    resting = true;
+    step_start_us_ = micros();
   }
 
   void Generate() {
@@ -502,14 +401,16 @@ struct Engine {
   const Sequence &get_sequence() const { return pattern[p_select]; }
   const Sequence &get_pattern(uint8_t idx) const { return pattern[idx & 0xf]; }
 
-  // Gate state is driven by Tick() using ISR-latency scheduling.
-  // slide_on keeps gate high through tied/slid notes as before.
   bool get_gate() const {
-    return (gate_state || slide_on || gate_hold) && !resting;
+    if (resting) return false;
+    if (slide_gate) return true; // tie/slide: hold through the 16th (cf. full clk_count span)
+    // First 3 of 6 DIN clocks per 16th — matches reference OS-303. A ~1.3ms micros() window
+    // here is easy to miss if loop() is slower than that (MIDI/LEDs/etc.), so non-slide
+    // notes go silent while slide/tie still work (slide_gate holds high all 6 clocks).
+    return clk_count < 3;
   }
-  // Accent is latched for the full step duration once the gate fires.
   bool get_accent() const {
-    return !resting && accent_state;
+    return !resting && get_sequence().get_accent();
   }
   uint8_t get_semitone() const {
     return get_sequence().get_semitone();
@@ -525,12 +426,7 @@ struct Engine {
     return 36 + semitone + (oct * 12);
   }
   bool get_slide() const {
-    return slide_cv;
-  }
-  // Slide CV line: high ONLY on the step being slid INTO (was_sliding=true).
-  // The step with the slide flag does NOT assert slide — it only holds its gate high.
-  bool get_slide_dac() const {
-    return was_sliding;
+    return get_sequence().get_slide();
   }
   uint8_t get_time_pos() const {
     return get_sequence().time_pos;
@@ -581,7 +477,6 @@ struct Engine {
     get_sequence().SetTime(t);
     stale = true;
   }
-
   void ToggleSlide() {
     if (mode_ == PITCH_MODE)
       get_sequence().ToggleSlide();
@@ -593,4 +488,19 @@ struct Engine {
     stale = true;
   }
 
+  /// True when the edited step is note-locked (bit set from TIME_MODE). Used with clk_run
+  /// in input_time / input_pitch to block live writes for that step in both modes.
+  bool is_step_locked() const {
+    const Sequence &s = get_sequence();
+    if (mode_ == TIME_MODE)
+      return s.step_locked(uint8_t(s.time_pos));
+    if (mode_ == PITCH_MODE)
+      return s.step_locked(uint8_t(s.pitch_pos));
+    return false;
+  }
+  void ToggleStepLockFromTimeMode() {
+    if (mode_ != TIME_MODE) return;
+    get_sequence().ToggleStepLock(uint8_t(get_sequence().time_pos));
+    stale = true;
+  }
 };

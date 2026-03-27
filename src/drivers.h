@@ -1,77 +1,57 @@
 // Copyright (c) 2026, Nicholas J. Michalek
+//
+// drivers.h — CV/gate/accent/slide output and LED matrix multiplex + input polling
+//
+// CV out: same PORTE wiring as reference/OS-303 (gate bit 1, accent bit 6, slide/latch bit 0).
 
 #pragma once
 #include "pins.h"
 
 static constexpr uint16_t SWITCH_DELAY = 15; // microseconds
 
-static constexpr uint32_t SLIDE_LATCH_US   = 44; // latch pulse width for new notes
-static constexpr uint32_t SLIDE_RELATCH_US = 9;  // re-latch pulse during multi-note slides
-
 //
 // --- 303 CPU driver functions
 //
-
 namespace DAC {
   static uint8_t pitch_ = 0;
   static uint8_t slide_ = false;
   static uint8_t accent_ = false;
   static uint8_t gate_ = false;
 
-  // Set by Engine when a new note step begins (triggers 44μs latch pulse).
-  static bool new_note_ = false;
-  // Set by Engine when pitch changes mid-slide (triggers 8.75μs re-latch pulse).
-  static bool slide_relatch_ = false;
-
   inline void Send() {
     // set 6-bit pitch for CV Out
-    PORTC = pitch_;
 
-    if (new_note_) {
-      new_note_ = false;
-      // Pulse slide line high for 44μs to latch the new pitch and accent into the
-      // R2R DAC buffer (IC13 flip-flop), even on non-slide notes (per Sonic Potions paper §3).
-      PORTE = 0;
-      PORTE = (gate_ << 1) | (accent_ << 6) | 0x1; // slide high
-      delayMicroseconds(SLIDE_LATCH_US);
-      if (!slide_) PORTE ^= 0x1; // pull slide back low for non-slide notes
-    } else if (slide_relatch_) {
-      slide_relatch_ = false;
-      // During a multi-note slide, briefly pull slide low to re-latch the new pitch
-      // value into the DAC, then restore slide high (per Sonic Potions paper §6).
-      PORTE &= ~0x1; // slide low
-      delayMicroseconds(SLIDE_RELATCH_US);
-      PORTE |= 0x1;  // slide high again
-    } else {
-      PORTE = 0; // disable latch
-      PORTE = (gate_ << 1) | (accent_ << 6) | 0x1;
-      if (!slide_) PORTE ^= 0x1;
-    }
+
+    PORTC = pitch_; // & 0x3f;
+
+    PORTE = 0; // disable latch
+    // set gate and accent pins, enable latch/slide
+    PORTE = (gate_ << 1) | (accent_ << 6) | 0x1;
+    delayMicroseconds(10); // make sure the latch stays on long enough
+    if (!slide_) // turn slide bit back off
+      PORTE ^= 0x1;
   }
 
   inline void SetPitch(uint8_t p) {
-    if (p > 63) gate_ = false;
-    pitch_ = p;
+    if (p > 63)
+      gate_ = false;
+    else
+      pitch_ = p;
   }
-  inline void SetGate(bool on) {
-    gate_ = on;
+  inline void SetGate(bool on) { 
+    gate_ = on; 
   }
-  inline void SetAccent(bool on) {
-    accent_ = on;
+  inline void SetAccent(bool on) { 
+    accent_ = on; 
   }
-  inline void SetSlide(bool on) {
-    slide_ = on;
-  }
-  // Call once per new note step (gate rising edge) to trigger the 44μs latch pulse.
-  inline void NotifyNewNote() {
-    new_note_ = true;
-  }
-  // Call when pitch changes during an active slide to trigger the 8.75μs re-latch.
-  inline void NotifySlideRelatch() {
-    slide_relatch_ = true;
+  inline void SetSlide(bool on) { 
+    slide_ = on; 
   }
 } // namespace DAC
 
+// =============================================================================
+// Leds namespace — 3-byte framebuffer + time-multiplexed matrix output
+// =============================================================================
 namespace Leds {
   // like a framebuffer, each bit corresponds to an entry in the switched_leds table
   static uint8_t ledstate[3];
@@ -130,6 +110,9 @@ namespace Leds {
 
 } // namespace Leds
 
+// =============================================================================
+// PollInputs — read full button matrix; clears mux ghosting before sampling
+// =============================================================================
 void PollInputs(PinState *inputs) {
   // Raise all select pins and drive all LED pins LOW before reading.
   // This clears any residual LED drive state from the previous Leds::Send() call,

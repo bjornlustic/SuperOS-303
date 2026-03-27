@@ -8,12 +8,20 @@ __pycache__
 # Local reference material — not for publication
 SonicPotionsPaper/
 docs/
+!docs/
+!docs/COMPARISON-SuperOS-vs-OS-303.md
+!docs/OS-303-UPSTREAM-ARCHITECTURE.md
 release/
 testing/
+
+# Cloned upstream TB-303 CPU firmware (https://github.com/djphazer/OS-303) for local diff/compare
+reference/OS-303/
 
 # Keep markdown documentation local only (README is tracked for GitHub)
 *.md
 !README.md
+!docs/COMPARISON-SuperOS-vs-OS-303.md
+!docs/OS-303-UPSTREAM-ARCHITECTURE.md
 
 # macOS
 .DS_Store

@@ -1,5 +1,7 @@
 // Copyright (c) 2026, Nicholas J. Michalek
 //
+// main.cpp — setup/loop, MIDI & DIN clock, UI modes, Engine → DAC output
+//
 
 #define DEBUG 0
 
@@ -14,7 +16,9 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, MIDI);
 EEPROMClass storage;
 PersistentSettings GlobalSettings;
 
-// -=-=- Globals -=-=-
+// =============================================================================
+// Globals — timing, debounced inputs, engine, UI timers
+// =============================================================================
 static uint8_t ticks = 0;
 static uint8_t clk_count = 0;
 static uint8_t transpose = 12; // range is 0 to 47; 0 = no transpose
@@ -29,10 +33,11 @@ static bool wrap_edit = false;
 static elapsedMillis pattern_cleared_flash_timer;
 static constexpr uint16_t PATTERN_CLEARED_FLASH_MS = 400;
 
-// this is where the magic happens
 static Engine engine;
 
-// crucial bits tying together the inputs + engine
+// =============================================================================
+// Write-mode input helpers — map matrix keys to Engine sequence edits
+// =============================================================================
 
 uint8_t check_pitch_inputs() {
   uint8_t notes = 0;
@@ -47,10 +52,10 @@ bool check_time_inputs() {
   if (inputs[DOWN_KEY].held()) { return true; }
   if (inputs[UP_KEY].held()) { return true; }
   if (inputs[ACCENT_KEY].held()) { return true; }
-  //if (inputs[SLIDE_KEY].held()) return true; // TODO: spicy time option, ratchets maybe
   return false;
 }
-void input_pitch(bool mod = false) {
+void input_pitch(bool mod = false, bool clk_run = false) {
+  if (clk_run && engine.is_step_locked()) return;
   if (mod) {
     if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
     if (inputs[SLIDE_KEY].rising()) engine.ToggleSlide();
@@ -77,7 +82,8 @@ void input_pitch(bool mod = false) {
     }
   }
 }
-void input_time(bool mod = false) {
+void input_time(bool mod = false, bool clk_run = false) {
+  if (clk_run && engine.is_step_locked()) return;
   if (inputs[DOWN_KEY].rising()) {
     if (!mod) engine.Advance();
     engine.SetTime(1); // note
@@ -93,8 +99,9 @@ void input_time(bool mod = false) {
 }
 
 
-// ===== MAIN CODE LOGIC =====
-
+// =============================================================================
+// Note LED map (chromatic order → switched_leds entries) — UI / future use
+// =============================================================================
 const MatrixPin note_led[] = {
   switched_leds[0],
   switched_leds[12],
@@ -110,40 +117,37 @@ const MatrixPin note_led[] = {
   switched_leds[6],
   switched_leds[7],
 };
-void PewPew(uint8_t note, const bool accent = false) {
-  Leds::Set(note_led[note], true);
-  for (uint8_t oct = 0; oct < 4; ++oct) {
-    DAC::SetPitch(note + 12*(accent ? 4 - oct : oct));
-    DAC::SetGate(true);
-    DAC::SetSlide(oct == 0); // PEW!
-    DAC::SetAccent(accent);
-    // DAC::SetAccent(random(2));
-    DAC::Send();
-    delay(40);
-    DAC::SetGate(false);
-    DAC::Send();
-    delay(10);
-  }
-  Leds::Set(note_led[note], false);
-  DAC::SetSlide(false);
-  DAC::SetAccent(false);
-}
-void PewPewPew() {
-  for (uint8_t note = 0; note <= 12; ++note) {
-    // ascending
-    PewPew(note, false); // accent off
-  }
-  for (uint8_t note = 0; note <= 12; ++note) {
-    // descending
-    PewPew(12 - note, true); // accent on
+
+extern "C" {
+  // Bootloader entry (Teensy++ layout); invoked at power-up if TAP_NEXT held.
+  static void jumptoboot(void) {
+    ((int (*)(void))0x1F000)();
   }
 }
 
-extern "C" {
-  static void jumptoboot(void) {
-    // call bootloader to test
-    ((int (*)(void))0x1F000)();
-  }
+// =============================================================================
+// setup — MIDI, GPIO, optional bootloader, EEPROM load
+// =============================================================================
+
+// Loading bar: lights C→D→E→F→G→A→B→C2 as patterns load (2 patterns per LED).
+// Called after each pattern is read; step runs 1..total.
+static void LoadingBarUpdate(uint8_t step, uint8_t total) {
+  // 8 note LEDs map to the 8 white keys C through C2
+  static const OutputIndex bar_leds[8] = {
+    C_KEY_LED, D_KEY_LED, E_KEY_LED, F_KEY_LED,
+    G_KEY_LED, A_KEY_LED, B_KEY_LED, C_KEY2_LED,
+  };
+  // How many LEDs should be lit after this step
+  const uint8_t lit = (uint8_t)((uint16_t)step * 8 / total);
+  for (uint8_t i = 0; i < 8; ++i)
+    Leds::Set(bar_leds[i], i < lit);
+  // Multiplex all four LED rows so every LED in the matrix gets a chance to show
+  for (uint8_t t = 0; t < 4; ++t)
+    Leds::Send(t, false);
+  delay(20);
+  // Clear framebuffer for next call
+  for (uint8_t t = 0; t < 4; ++t)
+    Leds::Send(t, true);
 }
 
 void setup() {
@@ -167,97 +171,18 @@ void setup() {
 
   Serial.begin(9600);
 
-  const OutputIndex loadingbar[] = {
-    PITCH_MODE_LED, FUNCTION_MODE_LED,
-    C_KEY_LED, CSHARP_KEY_LED,
-    D_KEY_LED, DSHARP_KEY_LED,
-    E_KEY_LED, F_KEY_LED, FSHARP_KEY_LED,
-    G_KEY_LED, GSHARP_KEY_LED,
-    A_KEY_LED, ASHARP_KEY_LED,
-    B_KEY_LED, C_KEY2_LED, DOWN_KEY_LED, UP_KEY_LED,
-    TIME_MODE_LED, ACCENT_KEY_LED, SLIDE_KEY_LED
-  };
-
-
-  // once backward
-  /*
-  const MatrixPin ledseq[] = {
-    switched_leds[16 + 2],
-    switched_leds[12],
-    switched_leds[13],
-    switched_leds[14],
-    switched_leds[15],
-    switched_leds[16 + 1],
-    switched_leds[16 + 0],
-    switched_leds[11],
-    switched_leds[10],
-    switched_leds[9],
-    switched_leds[8],
-    switched_leds[7],
-    switched_leds[6],
-    switched_leds[5],
-    switched_leds[4],
-    switched_leds[3],
-    switched_leds[2],
-    switched_leds[1],
-    switched_leds[0],
-  };
-  const int len = ARRAY_SIZE(ledseq);
-  for (uint8_t i = 0; i < len; ++i) {
-    Leds::Set(ledseq[len - i], true);
-    delay(50);
-    Leds::Set(ledseq[len - i], false);
-    delay(10);
-  }
-  */
-
-  // making progress
-  elapsedMillis timer = 0;
-  const uint8_t len = ARRAY_SIZE(loadingbar);
-  for (uint8_t i = 0; i < len; ++i) {
-    Leds::Set(loadingbar[i], true);
-    for (int tail = i; tail > 0 && tail > i-4; --tail) {
-      Leds::Set(loadingbar[tail-1], true);
-    }
-    while (timer < 50) {
-      Leds::Send(timer, false); // don't clear
-      delay(1);
-    }
-    timer = 0;
-    // clear
-    Leds::Send(0, true);
-    Leds::Send(1, true);
-    Leds::Send(2, true);
-    Leds::Send(3, true);
-  }
-  // backwards progress
-  for (uint8_t i = 0; i < len; ++i) {
-    Leds::Set(loadingbar[len - i], true);
-    for (int tail = len - i; tail < len; ++tail) {
-      Leds::Set(loadingbar[tail-1], true);
-    }
-    while (timer < 50) {
-      Leds::Send(timer, false); // don't clear
-      delay(1);
-    }
-    timer = 0;
-    // clear
-    Leds::Send(0, true);
-    Leds::Send(1, true);
-    Leds::Send(2, true);
-    Leds::Send(3, true);
-  }
-
-  // 4-octave pewpew test for all 13 semitones
-  PewPewPew();
-
-  engine.Load();
+  engine.Load(LoadingBarUpdate);
 }
 
+// =============================================================================
+// Edit-mode LED feedback — current step pitch / time / flags
+// =============================================================================
 void PrintPitch() {
   const uint8_t semitone = engine.get_semitone();
-  if (semitone != Sequence::PITCH_EMPTY) {
+  if (semitone != PITCH_EMPTY) {
+
     Leds::Set(pitch_leds[semitone % 13], true);
+    
     Leds::Set(ACCENT_KEY_LED, engine.get_sequence().get_accent() != 0);
     Leds::Set(SLIDE_KEY_LED, engine.get_sequence().get_slide());
     Leds::Set(DOWN_KEY_LED,
@@ -271,30 +196,37 @@ void PrintTime() {
   Leds::Set(DOWN_KEY_LED, engine.get_time() == 1);
   Leds::Set(UP_KEY_LED, engine.get_time() == 2);
   Leds::Set(ACCENT_KEY_LED, engine.get_time() == 0);
+  Leds::Set(SLIDE_KEY_LED,
+            engine.get_sequence().step_locked(uint8_t(engine.get_sequence().time_pos)));
 }
 
-void ProcessEdit(const bool &write_mode) {
+// TAP_NEXT held: pitch/time edit UI; BACK resets sequence position
+void ProcessEdit(const bool &write_mode, const bool clk_run) {
   switch (engine.get_mode()) {
   case PITCH_MODE: {
-    if (write_mode) {
-      input_pitch(true); // modify pitch
-    }
+    if (write_mode)
+      input_pitch(true, clk_run);
 
     PrintPitch();
     break;
   }
   case TIME_MODE:
     if (write_mode) {
-      input_time(true);
+      if (inputs[SLIDE_KEY].rising())
+        engine.ToggleStepLockFromTimeMode();
+      input_time(true, clk_run);
     }
 
     PrintTime();
+    // fall through: TIME_MODE shares NORMAL_MODE exit (no extra handling)
   case NORMAL_MODE:
     break;
   }
   if (inputs[BACK_KEY].rising())
     engine.Reset();
 }
+
+// Default overlay: pattern select, bank A/B, mode LEDs, running step chase
 void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                const bool &clk_run) {
   switch (engine.get_mode()) {
@@ -349,6 +281,8 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
   Leds::Set(FUNCTION_MODE_LED, engine.get_mode() == NORMAL_MODE && !pat_clr_flash);
   if (pat_clr_flash) Leds::Set(ASHARP_KEY_LED, true);
 }
+
+// PITCH modifier: live transpose root / octave for performance
 void ProcessPitchMod() {
   Leds::Set(PITCH_MODE_LED, clk_count & (1 << 2));
   Leds::Set(pitch_leds[transpose % 12], true);
@@ -374,6 +308,10 @@ void ProcessPitchMod() {
   }
   // TODO: other pitch effects?
 }
+
+// =============================================================================
+// loop — poll, Tick, MIDI/clock, UI, DAC output every iteration
+// =============================================================================
 void loop() {
   // Poll all inputs... every single tick
   //if ((ticks & 0x03) == 0)
@@ -442,7 +380,7 @@ void loop() {
   // -=-=- Process inputs and set LEDs -=-=-
 
   if (edit_mode) { // holding WRITE/NEXT/TAP
-    ProcessEdit(write_mode);
+    ProcessEdit(write_mode, clk_run);
   } else {
     // Flash lights for modifiers
     if (pitch_mod) {
@@ -552,8 +490,10 @@ void loop() {
     // ok, dilemma... we want to advance first, then record the step.
 
     if (engine.get_mode() == TIME_MODE) {
-      if (clk_run || check_time_inputs()) { // record time
-        input_time(clk_run);
+      if (write_mode && inputs[SLIDE_KEY].rising())
+        engine.ToggleStepLockFromTimeMode();
+      if (clk_run || check_time_inputs()) {
+        input_time(clk_run, clk_run);
       } else if (!clk_run && engine.get_time_pos() >= engine.get_length() - 1)
         engine.SetMode(NORMAL_MODE, true);
     }
@@ -561,18 +501,21 @@ void loop() {
     if (engine.get_mode() == PITCH_MODE) {
       const bool check = check_pitch_inputs();
       DAC::SetGate(check);
-      if (clk_run || check) { // record new pitch
-        input_pitch(clk_run);
+      if (clk_run || check) {
+        input_pitch(clk_run, clk_run);
       } else if (!clk_run && engine.get_sequence().pitch_pos >= engine.get_length() - 1)
         engine.SetMode(NORMAL_MODE, true);
     }
 
   }
 
+  // ---------------------------------------------------------------------------
+  // CV output: running = sequenced pitch + engine gate/accent/slide; stopped = keys
+  // ---------------------------------------------------------------------------
   if (clk_run) {
     // send sequence step
     DAC::SetPitch(engine.get_pitch() + 4 + transpose);
-    // Slide CV: step flag plus tie/slide gate extension (legato) so analog path sees slide.
+    // Slide CV: portamento during the *destination* note only (Robin Whittle 303 slide model).
     DAC::SetSlide(engine.get_slide_dac());
     DAC::SetAccent(engine.get_accent());
     DAC::SetGate(engine.get_gate());
