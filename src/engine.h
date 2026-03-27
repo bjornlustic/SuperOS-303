@@ -344,9 +344,9 @@ struct Engine {
       result = get_sequence().Advance();
     }
     if (result) {
-      // Gate: 3.5 pulses on per 16th, or held — tie, slide out of this step, or slide into this step
-      slide_gate =
-          get_slide() || get_sequence().slide_from_prev() || get_sequence().is_tied();
+      // Gate: held high only when THIS step extends into the next (slide out or tie).
+      // slide_from_prev() only enables portamento CV — it does not lengthen this step's gate.
+      slide_gate = get_slide() || get_sequence().is_tied();
     }
     resting = !result;
     return result;
