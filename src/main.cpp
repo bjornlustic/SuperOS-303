@@ -128,28 +128,6 @@ extern "C" {
 // =============================================================================
 // setup — MIDI, GPIO, optional bootloader, EEPROM load
 // =============================================================================
-
-// Loading bar: lights C→D→E→F→G→A→B→C2 as patterns load (2 patterns per LED).
-// Called after each pattern is read; step runs 1..total.
-static void LoadingBarUpdate(uint8_t step, uint8_t total) {
-  // 8 note LEDs map to the 8 white keys C through C2
-  static const OutputIndex bar_leds[8] = {
-    C_KEY_LED, D_KEY_LED, E_KEY_LED, F_KEY_LED,
-    G_KEY_LED, A_KEY_LED, B_KEY_LED, C_KEY2_LED,
-  };
-  // How many LEDs should be lit after this step
-  const uint8_t lit = (uint8_t)((uint16_t)step * 8 / total);
-  for (uint8_t i = 0; i < 8; ++i)
-    Leds::Set(bar_leds[i], i < lit);
-  // Multiplex all four LED rows so every LED in the matrix gets a chance to show
-  for (uint8_t t = 0; t < 4; ++t)
-    Leds::Send(t, false);
-  delay(20);
-  // Clear framebuffer for next call
-  for (uint8_t t = 0; t < 4; ++t)
-    Leds::Send(t, true);
-}
-
 void setup() {
   Serial1.begin(31250);
   MIDI.begin(MIDI_CHANNEL_OMNI);
@@ -171,7 +149,7 @@ void setup() {
 
   Serial.begin(9600);
 
-  engine.Load(LoadingBarUpdate);
+  engine.Load();
 }
 
 // =============================================================================

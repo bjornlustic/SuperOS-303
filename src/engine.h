@@ -287,23 +287,18 @@ struct Engine {
   // Updated when the 16th advances (Clock, Reset, manual advance).
   uint32_t step_start_us_ = 0;
 
-  // progress_cb(step, total): called after each pattern loads; lights a loading bar.
-  // 8 note LEDs (C→D→E→F→G→A→B→C2) fill as NUM_PATTERNS patterns load.
-  void Load(void (*progress_cb)(uint8_t, uint8_t) = nullptr) {
+  void Load() {
     Serial.println("Loading from EEPROM...");
     GlobalSettings.Load();
     if (GlobalSettings.Validate()) {
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
         ReadPattern(pattern[i], i);
         if (0 == pattern[i].length) pattern[i].SetLength(8);
-        if (progress_cb) progress_cb(i + 1, NUM_PATTERNS);
       }
     } else {
       Serial.println("EEPROM data invalid, initializing...");
-      for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+      for (uint8_t i = 0; i < NUM_PATTERNS; ++i)
         pattern[i].Clear();
-        if (progress_cb) progress_cb(i + 1, NUM_PATTERNS);
-      }
       GlobalSettings.Save();
       stale = true;
       Save();
