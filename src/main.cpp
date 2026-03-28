@@ -3,7 +3,9 @@
 // main.cpp — setup/loop, MIDI & DIN clock, UI modes, Engine → DAC output
 //
 
+#ifndef DEBUG
 #define DEBUG 0
+#endif
 
 #include <Arduino.h>
 #include "pins.h"
@@ -147,7 +149,9 @@ void setup() {
     jumptoboot();
   }
 
+#if DEBUG
   Serial.begin(9600);
+#endif
 
   engine.Load();
 }

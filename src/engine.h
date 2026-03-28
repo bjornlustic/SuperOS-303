@@ -288,7 +288,9 @@ struct Engine {
   uint32_t step_start_us_ = 0;
 
   void Load() {
+#if DEBUG
     Serial.println("Loading from EEPROM...");
+#endif
     GlobalSettings.Load();
     if (GlobalSettings.Validate()) {
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
@@ -296,7 +298,9 @@ struct Engine {
         if (0 == pattern[i].length) pattern[i].SetLength(8);
       }
     } else {
+#if DEBUG
       Serial.println("EEPROM data invalid, initializing...");
+#endif
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i)
         pattern[i].Clear();
       GlobalSettings.Save();
@@ -314,16 +318,22 @@ struct Engine {
 
   void Save(int pidx = -1) {
     if (!stale) return;
+#if DEBUG
     Serial.print("Saving to EEPROM... ");
+#endif
     if (pidx < 0) {
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+#if DEBUG
         Serial.print(".");
+#endif
         WritePattern(pattern[i], i);
       }
     } else
       WritePattern(pattern[pidx], pidx);
     stale = false;
+#if DEBUG
     Serial.println("DONE!");
+#endif
   }
 
   void Tick() {}
