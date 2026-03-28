@@ -2,6 +2,8 @@
 *.hex
 *.syx
 
+.vscode/
+
 # Local reference material — not for publication
 docs/
 release/
