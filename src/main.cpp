@@ -11,9 +11,7 @@
 #include "pins.h"
 #include "drivers.h"
 #include "engine.h"
-#include "MIDI.h"
-
-MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, MIDI);
+#include "midi_api.h"
 
 EEPROMClass storage;
 PersistentSettings GlobalSettings;
@@ -36,6 +34,100 @@ static elapsedMillis pattern_cleared_flash_timer;
 static constexpr uint16_t PATTERN_CLEARED_FLASH_MS = 400;
 
 static Engine engine;
+
+// =============================================================================
+// Setup menu: hold FUNCTION + press CLEAR (TAP not held) → main menu.
+//   C → MIDI channel (C# + white keys 1–8, D# then 9–16; CLEAR → main).
+//   D → MIDI clock: TIME_MODE_LED on = internal only; LED off = MIDI clock receive.
+//     Press TIME_KEY to toggle; CLEAR → main. CLEAR in main exits menu entirely.
+//   EEPROM bytes 16–17 + midi_apply_settings() — survives power cycle.
+// =============================================================================
+static const OutputIndex kCfgWhiteNoteLeds[8] = {
+    C_KEY_LED, D_KEY_LED, E_KEY_LED, F_KEY_LED,
+    G_KEY_LED, A_KEY_LED, B_KEY_LED, C_KEY2_LED};
+static const InputIndex kCfgWhiteKeys[8] = {
+    C_KEY, D_KEY, E_KEY, F_KEY, G_KEY, A_KEY, B_KEY, C_KEY2};
+
+enum class CfgMenu : uint8_t { Off, Main, MidiCh, MidiChHigh, MidiClk };
+static CfgMenu s_cfg_menu = CfgMenu::Off;
+/// FN+CLEAR opens Main on CLEAR's rising edge; ignore that same edge for "CLEAR exits Main".
+static bool s_cfg_suppress_clear_exit = false;
+
+static uint8_t cfg_display_channel() {
+  uint8_t c = GlobalSettings.midi_channel;
+  if (c == 0 || c > 16)
+    c = 1;
+  return c;
+}
+
+static void cfg_save_midi() {
+  GlobalSettings.save_midi_to_storage();
+  midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive);
+}
+
+static void process_config_menu() {
+  switch (s_cfg_menu) {
+  case CfgMenu::Off:
+    return;
+  case CfgMenu::Main:
+    Leds::Set(FUNCTION_MODE_LED, true);
+    if (inputs[CLEAR_KEY].rising()) {
+      if (s_cfg_suppress_clear_exit)
+        s_cfg_suppress_clear_exit = false;
+      else {
+        s_cfg_menu = CfgMenu::Off;
+        break;
+      }
+    }
+    if (inputs[C_KEY].rising())
+      s_cfg_menu = CfgMenu::MidiCh;
+    if (inputs[D_KEY].rising())
+      s_cfg_menu = CfgMenu::MidiClk;
+    break;
+  case CfgMenu::MidiCh: {
+    Leds::Set(CSHARP_KEY_LED, true);
+    const uint8_t dc = cfg_display_channel();
+    if (dc <= 8)
+      Leds::Set(kCfgWhiteNoteLeds[dc - 1], true);
+    else
+      Leds::Set(kCfgWhiteNoteLeds[dc - 9], true);
+    if (inputs[DSHARP_KEY].rising())
+      s_cfg_menu = CfgMenu::MidiChHigh;
+    if (inputs[CLEAR_KEY].rising())
+      s_cfg_menu = CfgMenu::Main;
+    for (uint8_t wi = 0; wi < 8; ++wi) {
+      if (inputs[kCfgWhiteKeys[wi]].rising()) {
+        GlobalSettings.midi_channel = uint8_t(wi + 1);
+        cfg_save_midi();
+      }
+    }
+    break;
+  }
+  case CfgMenu::MidiChHigh:
+    if (inputs[CLEAR_KEY].rising())
+      s_cfg_menu = CfgMenu::Main;
+    if (inputs[DSHARP_KEY].rising())
+      s_cfg_menu = CfgMenu::MidiCh;
+    for (uint8_t wi = 0; wi < 8; ++wi) {
+      if (inputs[kCfgWhiteKeys[wi]].rising()) {
+        GlobalSettings.midi_channel = uint8_t(wi + 9);
+        cfg_save_midi();
+        s_cfg_menu = CfgMenu::MidiCh;
+      }
+    }
+    break;
+  case CfgMenu::MidiClk:
+    // TIME_MODE_LED on = internal (ignore MIDI Clock/Start/Stop); off = MIDI clock receive.
+    Leds::Set(TIME_MODE_LED, !GlobalSettings.midi_clock_receive);
+    if (inputs[TIME_KEY].rising()) {
+      GlobalSettings.midi_clock_receive = !GlobalSettings.midi_clock_receive;
+      cfg_save_midi();
+    }
+    if (inputs[CLEAR_KEY].rising())
+      s_cfg_menu = CfgMenu::Main;
+    break;
+  }
+}
 
 // =============================================================================
 // Write-mode input helpers — map matrix keys to Engine sequence edits
@@ -134,8 +226,7 @@ extern "C" {
 // setup — MIDI, GPIO, optional bootloader, EEPROM load
 // =============================================================================
 void setup() {
-  Serial1.begin(31250);
-  MIDI.begin(MIDI_CHANNEL_OMNI);
+  midi_init(&engine);
 
   for (uint8_t i = 0; i < ARRAY_SIZE(INPUTS); ++i) {
     pinMode(INPUTS[i], INPUT); // pullup?
@@ -157,6 +248,7 @@ void setup() {
 #endif
 
   engine.Load();
+  midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive);
 }
 
 // =============================================================================
@@ -326,28 +418,20 @@ void loop() {
   const bool pitch_mod = inputs[PITCH_KEY].held();
   const bool time_mod = inputs[TIME_KEY].held();
 
-  const bool clk_run = inputs[RUN].held() || midi_clk;
+  if (s_cfg_menu == CfgMenu::Off && !edit_mode && fn_mod &&
+      inputs[CLEAR_KEY].rising()) {
+    s_cfg_menu = CfgMenu::Main;
+    s_cfg_suppress_clear_exit = true;
+  }
+
+  const bool clk_run =
+      inputs[RUN].held() || (midi_clk && GlobalSettings.midi_clock_receive);
 
   bool clocked = false;
-
-  // process all MIDI here
-  while (MIDI.read()) {
-    if (MIDI.getType() == midi::MidiType::Clock) {
-      clocked = true;
-    }
-    if (MIDI.getType() == midi::MidiType::Start) {
-      midi_clk = true;
-      engine.Reset();
-    }
-    if (MIDI.getType() == midi::MidiType::Stop) {
-      midi_clk = false;
-      DAC::SetGate(false);
-      engine.Reset();
-    }
-    if (MIDI.getType() == midi::MidiType::ProgramChange) {
-      engine.SetPattern(MIDI.getData1(), !clk_run);
-    }
-  }
+  bool midi_clock_pulse = false;
+  midi_poll(engine, clk_run, midi_clk, midi_clock_pulse);
+  if (midi_clock_pulse)
+    clocked = true;
 
   // DIN sync clock @ 24ppqn
   if (!midi_clk) {
@@ -369,7 +453,9 @@ void loop() {
 
   // -=-=- Process inputs and set LEDs -=-=-
 
-  if (edit_mode) { // holding WRITE/NEXT/TAP
+  if (s_cfg_menu != CfgMenu::Off) {
+    process_config_menu();
+  } else if (edit_mode) { // holding WRITE/NEXT/TAP
     ProcessEdit(write_mode, clk_run);
   } else {
     // Flash lights for modifiers
@@ -407,14 +493,16 @@ void loop() {
   }
 
   // show all pressed buttons
-  for (uint8_t i = 0; i < 16; ++i) {
-    const InputIndex b = switched_leds[i].button;
-    if (!inputs[b].held())
-      continue;
-    // High C already implies upper register; skip UP LED (often ghosts with C_KEY2 on same mux).
-    if (b == UP_KEY && inputs[C_KEY2].held())
-      continue;
-    Leds::Set(OutputIndex(i), true);
+  if (s_cfg_menu == CfgMenu::Off) {
+    for (uint8_t i = 0; i < 16; ++i) {
+      const InputIndex b = switched_leds[i].button;
+      if (!inputs[b].held())
+        continue;
+      // High C already implies upper register; skip UP LED (often ghosts with C_KEY2 on same mux).
+      if (b == UP_KEY && inputs[C_KEY2].held())
+        continue;
+      Leds::Set(OutputIndex(i), true);
+    }
   }
 
   Leds::Send(ticks); // hardware output, framebuffer reset
@@ -424,63 +512,77 @@ void loop() {
            | (inputs[TRACK_BIT2].held() << 2));
 
   // --- other input handling
-  if (inputs[TIME_KEY].rising() && write_mode) engine.SetMode(TIME_MODE, !clk_run);
-  if (inputs[PITCH_KEY].rising() && write_mode) engine.SetMode(PITCH_MODE, !clk_run);
-  if (inputs[FUNCTION_KEY].rising()) engine.SetMode(NORMAL_MODE, !clk_run);
- 
-  if (inputs[CLEAR_KEY].rising()) {
-    uint8_t clear_pat = 0xFF;
-    for (uint8_t i = 0; i < 8; ++i) {
-      if (inputs[i].held()) {
-        clear_pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
-        break;
-      }
-    }
-    if (clear_pat != 0xFF) {
-      engine.ClearPattern(clear_pat);
-      pattern_cleared_flash_timer = 0;
-    }
+  if (inputs[FUNCTION_KEY].rising()) {
+    if (s_cfg_menu == CfgMenu::Main)
+      s_cfg_menu = CfgMenu::Off;
+    else if (s_cfg_menu == CfgMenu::Off)
+      engine.SetMode(NORMAL_MODE, !clk_run);
   }
 
-  if (inputs[FUNCTION_KEY].falling()) step_counter = false;
+  if (s_cfg_menu == CfgMenu::Off) {
+    if (inputs[TIME_KEY].rising() && write_mode) engine.SetMode(TIME_MODE, !clk_run);
+    if (inputs[PITCH_KEY].rising() && write_mode) engine.SetMode(PITCH_MODE, !clk_run);
+
+    if (inputs[CLEAR_KEY].rising() && !fn_mod) {
+      uint8_t clear_pat = 0xFF;
+      for (uint8_t i = 0; i < 8; ++i) {
+        if (inputs[i].held()) {
+          clear_pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
+          break;
+        }
+      }
+      if (clear_pat != 0xFF) {
+        engine.ClearPattern(clear_pat);
+        pattern_cleared_flash_timer = 0;
+      }
+    }
+
+    if (inputs[FUNCTION_KEY].falling()) step_counter = false;
+  }
 
   if (clocked) {
     ++clk_count %= 24;
   }
 
+  midi_leader_transport(clocked, clk_run, midi_clk, inputs[RUN].rising(),
+                        inputs[RUN].falling());
+
   if (clocked && clk_run) {
-    engine.Clock();
+    if (engine.Clock())
+      midi_after_clock(engine, transpose);
   }
 
-  if (inputs[TAP_NEXT].rising()) {
-    if (write_mode) {
-      if (!clk_run) {
-        if (engine.get_mode() == PITCH_MODE) {
-          // Audition current pitch step, then advance to the next pitch slot
-          if (!engine.get_sequence().step_is_empty()) {
-            DAC::SetPitch(engine.get_pitch());
-            DAC::SetGate(true);
+  if (s_cfg_menu == CfgMenu::Off) {
+    if (inputs[TAP_NEXT].rising()) {
+      if (write_mode) {
+        if (!clk_run) {
+          if (engine.get_mode() == PITCH_MODE) {
+            // Audition current pitch step, then advance to the next pitch slot
+            if (!engine.get_sequence().step_is_empty()) {
+              DAC::SetPitch(engine.get_pitch());
+              DAC::SetGate(true);
+            }
+            engine.get_sequence().AdvancePitch();
+          } else if (engine.get_mode() == TIME_MODE) {
+            const bool send = engine.Advance();
+            engine.SyncAfterManualAdvance(send);
           }
-          engine.get_sequence().AdvancePitch();
-        } else if (engine.get_mode() == TIME_MODE) {
-          const bool send = engine.Advance();
-          engine.SyncAfterManualAdvance(send);
         }
+        // With clock running, TAP does nothing in write mode (Clock() drives advance)
+      } else {
+        DAC::SetGate(engine.Advance());
       }
-      // With clock running, TAP does nothing in write mode (Clock() drives advance)
-    } else {
-      DAC::SetGate(engine.Advance());
     }
-  }
-  if (inputs[TAP_NEXT].falling()) {
-    DAC::SetGate(false);
-    if (!wrap_edit && !clk_run && engine.get_mode() == TIME_MODE &&
-        engine.get_time_pos() >= engine.get_length() - 1)
-      engine.SetMode(NORMAL_MODE, true);
+    if (inputs[TAP_NEXT].falling()) {
+      DAC::SetGate(false);
+      if (!wrap_edit && !clk_run && engine.get_mode() == TIME_MODE &&
+          engine.get_time_pos() >= engine.get_length() - 1)
+        engine.SetMode(NORMAL_MODE, true);
+    }
   }
 
   // regular pattern write mode
-  if (!edit_mode && write_mode && !track_mode) {
+  if (s_cfg_menu == CfgMenu::Off && !edit_mode && write_mode && !track_mode) {
 
     // ok, dilemma... we want to advance first, then record the step.
 
