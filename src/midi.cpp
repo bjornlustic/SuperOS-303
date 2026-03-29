@@ -19,6 +19,7 @@
  *   12h  Host→303  Set pattern: same as 11h body; XOR over raw 128 bytes must match.
  *   13h  Host→303  Request all 16 patterns (303 sends sixteen 11h messages, queued).
  *   14h  303→Host  ACK/NAK: <status> 0=ok 1=bad_checksum 2=bad_pattern 3=blocked_clock
+ *        (3 is unused for 0x12 since 12h is allowed while transport runs: RAM update only, no EEPROM.)
  *
  * XOR checksum: XOR of 128 raw EEPROM blob bytes; xor_lo7 = c & 0x7F, xor_hi1 = (c>>7) & 1.
  *
@@ -198,11 +199,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     enqueue_pattern_reply(pat);
     break;
   }
-  case 0x12: { // set pattern
-    if (g_clk_run) {
-      send_ack(3);
-      return;
-    }
+  case 0x12: { // set pattern (while clock runs: RAM only, no EEPROM — live edit from host)
     if (n < 5 + kPacked128Len) {
       send_ack(1);
       return;
@@ -220,12 +217,14 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
       send_ack(1);
       return;
     }
-    if (!g_eng->import_pattern_blob(pat, raw)) {
+    const bool persist = !g_clk_run;
+    if (!g_eng->import_pattern_blob(pat, raw, persist)) {
       send_ack(2);
       return;
     }
     send_ack(0);
-    enqueue_pattern_reply(pat);
+    if (persist)
+      enqueue_pattern_reply(pat);
     break;
   }
   case 0x13: // request all (allowed while transport runs; host should avoid floods)
@@ -246,6 +245,12 @@ static void sysex_cb(byte *data, unsigned sz) {
                     static_cast<unsigned>(sz - 2));
 }
 
+static bool s_live_accent = false;
+static bool s_live_gate = false;
+
+bool midi_live_accent() { return s_live_accent; }
+bool midi_live_gate()   { return s_live_gate; }
+
 static void note_on_cb(byte ch, byte pitch, byte vel) {
   if (vel == 0)
     return;
@@ -254,6 +259,10 @@ static void note_on_cb(byte ch, byte pitch, byte vel) {
   MIDI.sendNoteOn(pitch, vel, ch);
   if (g_eng)
     g_eng->midi_apply_note_on(static_cast<uint8_t>(pitch), static_cast<uint8_t>(vel));
+  if (!g_clk_run) {
+    s_live_accent = (vel >= 100);
+    s_live_gate = true;
+  }
 }
 
 static void note_off_cb(byte ch, byte pitch, byte vel) {
@@ -261,6 +270,9 @@ static void note_off_cb(byte ch, byte pitch, byte vel) {
   if (s_in_channel != 0 && ch != s_in_channel)
     return;
   MIDI.sendNoteOff(pitch, 0, ch);
+  if (!g_clk_run) {
+    s_live_gate = false;
+  }
 }
 
 void midi_init(Engine *engine) {

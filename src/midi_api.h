@@ -19,3 +19,8 @@ void midi_after_clock(Engine &engine, uint8_t transpose);
 /// incoming MIDI Clock; optional Start/Stop with RUN edges (same conditions as engine reset).
 void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave,
                            bool run_rising, bool run_falling);
+/// True when the last live (non-sequencer) MIDI Note On had velocity >= 100 (accent).
+/// Valid only while clock is stopped; used by main.cpp to drive DAC accent CV.
+bool midi_live_accent();
+/// True while a live MIDI Note On is held (clock stopped); used by main.cpp to open gate.
+bool midi_live_gate();
