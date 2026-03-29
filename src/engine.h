@@ -6,7 +6,6 @@
 #pragma once
 #include <Arduino.h>
 #include <EEPROM.h>
-#include "drivers.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 #define CONSTRAIN(x, lb, ub) do { if (x < (lb)) x = lb; else if (x > (ub)) x = ub; } while (0)
@@ -269,19 +268,42 @@ extern EEPROMClass storage;
 
 struct PersistentSettings {
   char signature[16];
+  /// MIDI input channel: 0 = omni, 1–16 = listen on that channel only.
+  uint8_t midi_channel = 1;
+  /// When false, MIDI Clock / Start / Stop are ignored (internal + DIN CLOCK jack only).
+  bool midi_clock_receive = true;
 
-  void Load() { 
-    storage.get(0, signature); 
-  }
-  void Save() { 
-    storage.put(0, signature); 
-  }
+  static constexpr int kEepromMidiChannel = 16;
+  static constexpr int kEepromMidiFlags = 17;
+
+  void Load() { storage.get(0, signature); }
+
+  void Save() { storage.put(0, signature); }
+
   bool Validate() const {
     if (0 == strncmp(signature, sig_pew, 12))
       return true;
 
     strcpy((char *)signature, sig_pew);
     return false;
+  }
+
+  void load_midi_from_storage() {
+    const uint8_t ch = storage.read(kEepromMidiChannel);
+    const uint8_t fl = storage.read(kEepromMidiFlags);
+    if (ch <= 16)
+      midi_channel = ch;
+    else
+      midi_channel = 1;
+    if (fl <= 1)
+      midi_clock_receive = (fl != 0);
+    else
+      midi_clock_receive = true;
+  }
+
+  void save_midi_to_storage() {
+    storage.update(kEepromMidiChannel, midi_channel);
+    storage.update(kEepromMidiFlags, midi_clock_receive ? 1 : 0);
   }
 };
 
@@ -334,13 +356,17 @@ struct Engine {
         ReadPattern(pattern[i], i);
         if (0 == pattern[i].length) pattern[i].SetLength(8);
       }
+      GlobalSettings.load_midi_from_storage();
     } else {
 #if DEBUG
       Serial.println("EEPROM data invalid, initializing...");
 #endif
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i)
         pattern[i].Clear();
+      GlobalSettings.midi_channel = 1;
+      GlobalSettings.midi_clock_receive = true;
       GlobalSettings.Save();
+      GlobalSettings.save_midi_to_storage();
       stale = true;
       Save();
     }
@@ -542,6 +568,50 @@ struct Engine {
   void ToggleStepLockFromTimeMode() {
     if (mode_ != TIME_MODE) return;
     get_sequence().ToggleStepLock(uint8_t(get_sequence().time_pos));
+    stale = true;
+  }
+
+  /// EEPROM pattern image: 128 bytes from `pitch[0]` through `length` (see WritePattern).
+  void export_pattern_blob(uint8_t idx, uint8_t *blob128) const {
+    idx &= 0xf;
+    memcpy(blob128, pattern[idx].pitch, PATTERN_SIZE);
+  }
+
+  /// Replace pattern RAM + EEPROM from host SysEx. Returns false if `length` byte is invalid.
+  bool import_pattern_blob(uint8_t idx, const uint8_t *blob128) {
+    idx &= 0xf;
+    const uint8_t L = blob128[PATTERN_SIZE - 1];
+    if (L < 1 || uint8_t(L) > MAX_STEPS)
+      return false;
+    memcpy(pattern[idx].pitch, blob128, PATTERN_SIZE);
+    Sequence &s = pattern[idx];
+    if (s.pitch_pos >= s.length)
+      s.pitch_pos = 0;
+    if (s.time_pos >= s.length)
+      s.time_pos = 0;
+    WritePattern(pattern[idx], idx);
+    return true;
+  }
+
+  /// MIDI Note On → current playing pitch step (live). `note` 36..72 → linear pitch 0..36.
+  void midi_apply_note_on(uint8_t note, uint8_t velocity) {
+    if (note < 36 || note > 36 + 36)
+      return;
+    uint8_t lin = note - 36;
+    if (lin > 36)
+      lin = 36;
+    uint8_t oct = lin / 12;
+    if (oct > 2)
+      oct = 2;
+    uint8_t key = lin - oct * 12;
+    if (key > 12)
+      key = 12;
+    const uint8_t pk = pack_pitch(key, oct);
+    const uint8_t acc = (velocity >= 100) ? uint8_t(1u << 6) : 0;
+    Sequence &s = get_sequence();
+    const uint8_t st = uint8_t(s.pitch_pos) & (MAX_STEPS - 1);
+    const uint8_t slide = s.pitch_is_empty(st) ? 0 : (s.pitch[st] & (1u << 7));
+    s.pitch[st] = (pk & 0x3f) | slide | acc;
     stale = true;
   }
 };
