@@ -577,8 +577,9 @@ struct Engine {
     memcpy(blob128, pattern[idx].pitch, PATTERN_SIZE);
   }
 
-  /// Replace pattern RAM + EEPROM from host SysEx. Returns false if `length` byte is invalid.
-  bool import_pattern_blob(uint8_t idx, const uint8_t *blob128) {
+  /// Replace pattern RAM from host SysEx. If `persist_eeprom`, also write EEPROM (skip while
+  /// sequencer is running so host can live-edit without blocking on flash).
+  bool import_pattern_blob(uint8_t idx, const uint8_t *blob128, bool persist_eeprom = true) {
     idx &= 0xf;
     const uint8_t L = blob128[PATTERN_SIZE - 1];
     if (L < 1 || uint8_t(L) > MAX_STEPS)
@@ -589,7 +590,8 @@ struct Engine {
       s.pitch_pos = 0;
     if (s.time_pos >= s.length)
       s.time_pos = 0;
-    WritePattern(pattern[idx], idx);
+    if (persist_eeprom)
+      WritePattern(pattern[idx], idx);
     return true;
   }
 

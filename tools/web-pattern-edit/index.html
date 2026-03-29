@@ -212,6 +212,10 @@
       color: var(--white);
       z-index: 1;
     }
+    .pat-pill.is-dirty:not(.is-active) {
+      box-shadow: inset 0 -2px 0 0 var(--black);
+      color: var(--black);
+    }
 
     /* ── Sequencer panel ─────────────────────────────── */
     .seq-panel {
@@ -240,15 +244,24 @@
     }
     .seq-hint b { color: var(--black); font-weight: 700; }
 
-    .seq-grid-wrap { padding: 12px; }
+    .seq-grid-wrap {
+      padding: 12px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
 
-    /* ── Step grid — 8 columns ───────────────────────── */
+    /* Step grid: 8 columns; 16 columns for 33–64 steps (full 64 = 4×16, scroll on narrow screens) */
     .seq-grid {
       display: grid;
-      grid-template-columns: repeat(8, 1fr);
+      grid-template-columns: repeat(8, minmax(68px, 1fr));
       gap: 0;
       border-top: var(--rule-sm);
       border-left: var(--rule-sm);
+      min-width: min(100%, 544px);
+    }
+    .seq-grid.cols-16 {
+      grid-template-columns: repeat(16, minmax(56px, 1fr));
+      min-width: 896px;
     }
 
     /* ── Step card ───────────────────────────────────── */
@@ -355,32 +368,56 @@
     .is-tie   .step-name { color: var(--black); }
     .is-rest  .step-name { color: var(--black); }
 
-    /* Pitch input */
-    .step-pitch {
-      width: 100%;
-      height: 22px;
-      padding: 0 4px;
-      background: transparent;
+    /* Pitch: vertical drag knob (pull up = higher pitch) */
+    .pitch-knob-wrap {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      gap: 6px;
+      min-height: 72px;
+      user-select: none;
+      touch-action: none;
+    }
+    .pitch-knob-wrap.is-disabled {
+      opacity: 0.22;
+      pointer-events: none;
+    }
+    .pitch-knob-track {
+      flex: 1;
+      position: relative;
+      height: 72px;
       border: var(--rule-sm);
-      color: var(--black);
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 600;
-      text-align: center;
-      outline: none;
-      border-radius: 0;
-      transition: background 0.08s, color 0.08s;
+      background: var(--gray-1);
+      cursor: ns-resize;
     }
-    .step-pitch:focus { background: var(--black); color: var(--white); }
-    .step-pitch:disabled { opacity: 0.15; cursor: default; }
-
-    .is-note .step-pitch {
-      border-color: rgba(255,255,255,0.3);
-      color: var(--white);
+    .is-note .pitch-knob-track {
+      border-color: rgba(255,255,255,0.35);
+      background: rgba(255,255,255,0.08);
     }
-    .is-note .step-pitch:focus { background: var(--white); color: var(--black); }
-
-    .is-tie .step-pitch { border-color: var(--gray-3); }
+    .is-tie .pitch-knob-track { border-color: var(--gray-3); }
+    .pitch-knob-fill {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--gray-3);
+      pointer-events: none;
+    }
+    .is-note .pitch-knob-fill { background: rgba(255,255,255,0.35); }
+    .pitch-knob-thumb {
+      position: absolute;
+      left: -1px;
+      right: -1px;
+      height: 6px;
+      margin-bottom: -3px;
+      background: var(--black);
+      pointer-events: none;
+      border: var(--rule-sm);
+    }
+    .is-note .pitch-knob-thumb {
+      background: var(--white);
+      border-color: var(--white);
+    }
 
     /* A / S */
     .step-flags { display: flex; gap: 0; }
@@ -486,7 +523,7 @@
   <!-- HTTP warning -->
   <div class="banner" id="httpBanner">
     &#9632;&nbsp; Serve over HTTP for Web MIDI &mdash;
-    run: npx serve . &mdash; then open http://localhost:3000
+    VS Code task &ldquo;Serve web-pattern-edit&rdquo; (live-server) auto-reloads when you save this file.
   </div>
 
   <!-- MIDI Connection -->
@@ -535,8 +572,35 @@
     <div class="group">
       <div class="group-inner" style="gap:6px">
         <button class="btn" id="btnReq" disabled>&#8595; Request</button>
-        <button class="btn btn-primary" id="btnSend" disabled>&#8593; Send to 303</button>
         <button class="btn" id="btnReqAll" disabled>&#8595; All 16</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Banks</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnBank0" disabled>DL A 1–4</button>
+        <button class="btn" id="btnBank1" disabled>DL B 5–8</button>
+        <button class="btn" id="btnBank2" disabled>DL C 9–12</button>
+        <button class="btn" id="btnBank3" disabled>DL D 13–16</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Edits</span>
+      <div class="group-inner" style="gap:6px">
+        <button class="btn" id="btnUndo" disabled>Undo</button>
+        <button class="btn btn-primary" id="btnSave303" disabled>Save to 303</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Live</span>
+      <div class="group-inner">
+        <label style="display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="chkLive" />
+          Push while playing
+        </label>
       </div>
     </div>
   </div>
@@ -549,9 +613,10 @@
         <b>R</b> rest &nbsp;&middot;&nbsp;
         <b>N</b> note &nbsp;&middot;&nbsp;
         <b>T</b> tie &nbsp;&mdash;&nbsp;
-        pitch 0&ndash;38 &nbsp;&mdash;&nbsp;
+        vertical pitch knob (drag) &nbsp;&mdash;&nbsp;
         <b>A</b> accent &nbsp;&middot;&nbsp;
-        <b>S</b> slide
+        <b>S</b> slide &nbsp;&mdash;&nbsp;
+        up to <b>64</b> steps
       </span>
     </div>
     <div class="seq-grid-wrap">
@@ -615,6 +680,14 @@
     return (e % 13) + 12 * Math.floor(e / 13);
   }
 
+  function linearToPacked(lin) {
+    lin = Math.max(0, Math.min(36, lin | 0));
+    var e;
+    for (e = 0; e <= PITCH_MAX; e++)
+      if (unpackLinear(e) === lin) return e;
+    return 0;
+  }
+
   // ── 7-bit pack / unpack ─────────────────────────────────
   function pack7(src) {
     var out = [];
@@ -662,26 +735,185 @@
 
   // ── State ───────────────────────────────────────────────
   var midiAccess = null, midiOut = null, midiIn = null, midiKbd = null;
-  var blob       = new Uint8Array(PATTERN_SIZE);
   var rxBuf      = [];
   var expectDump = 0;
   var currentPat = 0;
+  var bankDl     = null;
+  var saveAckPending = false;
+  var liveTimer  = null;
+  var liveEnabled = false;
+
+  function cloneU8(u) {
+    var x = new Uint8Array(u.length);
+    x.set(u);
+    return x;
+  }
+  function blobsEqual(a, b) {
+    var i;
+    for (i = 0; i < PATTERN_SIZE; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  var bankRam = [];
+  var commitBaseline = [];
+  var dirty = new Array(16).fill(false);
+  var pi, pj;
+  for (pi = 0; pi < 16; pi++) {
+    bankRam[pi] = new Uint8Array(PATTERN_SIZE);
+    bankRam[pi].fill(0);
+    bankRam[pi][127] = 16;
+    for (pj = 0; pj < 64; pj++) bankRam[pi][pj] = 0xff;
+    commitBaseline[pi] = cloneU8(bankRam[pi]);
+  }
+  var blob = bankRam[0];
+
+  var pillsEl = document.getElementById('patPills');
+
+  function refreshPillDirty() {
+    var pills = pillsEl.querySelectorAll('.pat-pill');
+    for (var p = 0; p < 16; p++)
+      pills[p].classList.toggle('is-dirty', !!dirty[p]);
+  }
+
+  function recomputeDirty() {
+    dirty[currentPat] = !blobsEqual(bankRam[currentPat], commitBaseline[currentPat]);
+    document.getElementById('btnUndo').disabled = !dirty[currentPat];
+    document.getElementById('btnSave303').disabled = !dirty[currentPat] || !midiOut;
+    refreshPillDirty();
+  }
+
+  function switchToPat(idx) {
+    syncBlob();
+    idx &= 15;
+    currentPat = idx;
+    blob = bankRam[currentPat];
+    document.getElementById('patLen').value = String(blob[127]);
+    var pills = pillsEl.querySelectorAll('.pat-pill');
+    for (var j = 0; j < pills.length; j++)
+      pills[j].classList.toggle('is-active', j === currentPat);
+    recomputeDirty();
+    renderGrid();
+  }
 
   // ── Pattern pills ───────────────────────────────────────
-  var pillsEl = document.getElementById('patPills');
-  for (var i = 0; i < 16; i++) {
+  for (pi = 0; pi < 16; pi++) {
     (function(idx) {
       var btn = document.createElement('button');
       btn.className = 'pat-pill' + (idx === 0 ? ' is-active' : '');
       btn.textContent = idx + 1;
-      btn.addEventListener('click', function() {
-        currentPat = idx;
-        var pills = pillsEl.querySelectorAll('.pat-pill');
-        for (var j = 0; j < pills.length; j++)
-          pills[j].classList.toggle('is-active', j === idx);
-      });
+      btn.addEventListener('click', function() { switchToPat(idx); });
       pillsEl.appendChild(btn);
-    })(i);
+    })(pi);
+  }
+
+  function buildPackedSysex(pat, raw, cmd) {
+    var x = xorBlob(raw), packed = pack7(raw);
+    var inner = new Uint8Array(5 + packed.length);
+    inner[0] = 0x7d; inner[1] = cmd & 0xff; inner[2] = pat & 15;
+    inner[3] = x & 0x7f; inner[4] = (x >> 7) & 1;
+    inner.set(packed, 5);
+    var msg = new Uint8Array(2 + inner.length);
+    msg[0] = 0xf0; msg.set(inner, 1); msg[msg.length - 1] = 0xf7;
+    return msg;
+  }
+
+  function triggerDownload(u8, fname) {
+    var url = URL.createObjectURL(new Blob([u8], { type: 'application/octet-stream' }));
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function finishBankDownload(dl) {
+    var chunks = [];
+    var total = 0;
+    var p;
+    for (p = dl.start; p < dl.start + 4; p++) {
+      var m = buildPackedSysex(p, dl.raw[p], 0x11);
+      chunks.push(m);
+      total += m.length;
+    }
+    var out = new Uint8Array(total);
+    var off = 0;
+    for (var ci = 0; ci < chunks.length; ci++) {
+      out.set(chunks[ci], off);
+      off += chunks[ci].length;
+    }
+    var letter = String.fromCharCode(65 + (dl.start / 4 | 0));
+    triggerDownload(out, 'superos-bank-' + letter + '-pat-' + (dl.start + 1) + '-' + (dl.start + 4) + '.syx');
+    log('Downloaded bank ' + letter + ' (.syx)', 'log-syx');
+  }
+
+  function startBankDownload(bankIdx) {
+    if (!midiOut || !midiIn) { log('Connect MIDI first', 'log-err'); return; }
+    var start = bankIdx * 4;
+    bankDl = { start: start, got: {}, raw: {} };
+    for (var bp = start; bp < start + 4; bp++) {
+      bankDl.got[bp] = false;
+      requestPattern(bp & 15);
+    }
+    log('\u2192 Request bank ' + String.fromCharCode(65 + bankIdx) + ' for download', 'log-syx');
+  }
+
+  function scheduleLiveSend() {
+    if (!liveEnabled || !midiOut) return;
+    syncBlob();
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = setTimeout(function() {
+      liveTimer = null;
+      sendPattern(currentPat & 15, bankRam[currentPat]);
+    }, 100);
+  }
+
+  function layoutPitchKnob(wrap, lin, nameEl) {
+    var pct = (lin / 36) * 100;
+    var thumb = wrap.querySelector('.pitch-knob-thumb');
+    var fill = wrap.querySelector('.pitch-knob-fill');
+    thumb.style.bottom = pct + '%';
+    fill.style.height = pct + '%';
+    wrap.dataset.lin = String(lin);
+    nameEl.textContent = linToName(lin);
+  }
+
+  function applyLinToBlob(step, lin) {
+    var pk = linearToPacked(lin);
+    var flags = blob[step] & 0xc0;
+    if (blob[step] !== 0xff)
+      blob[step] = pk | flags;
+  }
+
+  function bindPitchKnob(wrap, track, step, nameEl) {
+    function linFromY(clientY) {
+      var r = track.getBoundingClientRect();
+      var t = (r.bottom - clientY) / r.height;
+      return Math.max(0, Math.min(36, Math.round(t * 36)));
+    }
+    function onPointerDown(ev) {
+      if (wrap.classList.contains('is-disabled')) return;
+      track.setPointerCapture(ev.pointerId);
+      var lin = linFromY(ev.clientY);
+      layoutPitchKnob(wrap, lin, nameEl);
+      applyLinToBlob(step, lin);
+      recomputeDirty();
+      scheduleLiveSend();
+    }
+    function onPointerMove(ev) {
+      if (!track.hasPointerCapture(ev.pointerId)) return;
+      var lin = linFromY(ev.clientY);
+      layoutPitchKnob(wrap, lin, nameEl);
+      applyLinToBlob(step, lin);
+      recomputeDirty();
+      scheduleLiveSend();
+    }
+    function onPointerUp(ev) {
+      try { track.releasePointerCapture(ev.pointerId); } catch (e) {}
+    }
+    track.addEventListener('pointerdown', onPointerDown);
+    track.addEventListener('pointermove', onPointerMove);
+    track.addEventListener('pointerup', onPointerUp);
+    track.addEventListener('pointercancel', onPointerUp);
   }
 
   // ── SysEx parser ────────────────────────────────────────
@@ -704,10 +936,28 @@
       } else {
         log('Pattern ' + (pat + 1) + ' received', 'log-syx');
       }
+      bankRam[pat].set(raw);
+      commitBaseline[pat] = cloneU8(raw);
+      dirty[pat] = false;
+      refreshPillDirty();
       if (pat === (currentPat & 15)) {
-        blob.set(raw);
-        document.getElementById('patLen').value = blob[127];
+        blob = bankRam[currentPat];
+        document.getElementById('patLen').value = String(raw[127]);
         renderGrid();
+      }
+      recomputeDirty();
+
+      if (bankDl && pat >= bankDl.start && pat < bankDl.start + 4) {
+        bankDl.got[pat] = true;
+        bankDl.raw[pat] = cloneU8(raw);
+        var allOk = true;
+        var q;
+        for (q = bankDl.start; q < bankDl.start + 4; q++)
+          if (!bankDl.got[q]) allOk = false;
+        if (allOk) {
+          finishBankDownload(bankDl);
+          bankDl = null;
+        }
       }
       return;
     }
@@ -715,6 +965,14 @@
       var names = ['ok','bad_checksum','bad_pattern','blocked_clock'];
       var st = bytes[2];
       log('ACK: ' + (names[st] || 'status=' + st), st === 0 ? 'log-ack' : 'log-err');
+      if (saveAckPending) {
+        saveAckPending = false;
+        if (st === 0) {
+          commitBaseline[currentPat] = cloneU8(bankRam[currentPat]);
+          dirty[currentPat] = false;
+          recomputeDirty();
+        }
+      }
     }
   }
 
@@ -840,6 +1098,7 @@
     var len = Math.min(MAX_STEPS, Math.max(1, Number(document.getElementById('patLen').value) | 0));
     blob[127] = len;
     var grid = document.getElementById('seqGrid');
+    grid.className = 'seq-grid' + (len > 32 ? ' cols-16' : '');
     grid.innerHTML = '';
 
     for (var s = 0; s < len; s++) {
@@ -849,10 +1108,9 @@
       var packed = isRest ? 0 : (raw & 0x3f);
       var acc    = !isRest && !!(raw & 0x40);
       var sl     = !isRest && !!(raw & 0x80);
-      var lin    = isRest ? null : unpackLinear(packed);
-      var name   = lin !== null ? linToName(lin) : '\u2014';
+      var lin    = isRest ? 0 : unpackLinear(packed);
+      var name   = isRest ? '\u2014' : linToName(lin);
 
-      // Card class based on time mode
       var cardCls = 'step-card';
       if      (t === 0) cardCls += ' is-rest';
       else if (t === 1) cardCls += ' is-note';
@@ -862,13 +1120,11 @@
       card.className = cardCls;
       card.dataset.s = s;
 
-      // Step number
       var numEl = document.createElement('div');
       numEl.className = 'step-num';
       numEl.textContent = String(s + 1).padStart(2, '0');
       card.appendChild(numEl);
 
-      // R / N / T
       var timeRow = document.createElement('div');
       timeRow.className = 'step-time';
       [['R',0],['N',1],['T',2]].forEach(function(pair) {
@@ -877,34 +1133,44 @@
         b.className = 't-btn' + (t === val ? ' is-on' : '');
         b.textContent = lbl;
         b.addEventListener('click', (function(si, tv) {
-          return function() { setTime(blob, si, tv); renderGrid(); };
+          return function() {
+            setTime(blob, si, tv);
+            if (tv === 0)
+              blob[si] = 0xff;
+            else if (blob[si] === 0xff)
+              blob[si] = 13;
+            renderGrid();
+            recomputeDirty();
+            scheduleLiveSend();
+          };
         })(s, val));
         timeRow.appendChild(b);
       });
       card.appendChild(timeRow);
 
-      // Note name
       var nameEl = document.createElement('div');
       nameEl.className = 'step-name';
       nameEl.textContent = name;
       card.appendChild(nameEl);
 
-      // Pitch input
-      var pitchIn = document.createElement('input');
-      pitchIn.type = 'number'; pitchIn.min = 0; pitchIn.max = 63;
-      pitchIn.value = packed;
-      pitchIn.className = 'step-pitch';
-      pitchIn.disabled = isRest;
-      pitchIn.addEventListener('change', (function(si, nEl) {
-        return function() {
-          var flags = blob[si] & 0xc0;
-          blob[si] = (Number(this.value) & 0x3f) | flags;
-          nEl.textContent = linToName(unpackLinear(blob[si] & 0x3f));
-        };
-      })(s, nameEl));
-      card.appendChild(pitchIn);
+      var pkWrap = document.createElement('div');
+      pkWrap.className = 'pitch-knob-wrap' + (isRest ? ' is-disabled' : '');
+      pkWrap.dataset.lin = String(lin);
+      var track = document.createElement('div');
+      track.className = 'pitch-knob-track';
+      var fill = document.createElement('div');
+      fill.className = 'pitch-knob-fill';
+      var thumb = document.createElement('div');
+      thumb.className = 'pitch-knob-thumb';
+      track.appendChild(fill);
+      track.appendChild(thumb);
+      pkWrap.appendChild(track);
+      if (!isRest) {
+        layoutPitchKnob(pkWrap, lin, nameEl);
+        bindPitchKnob(pkWrap, track, s, nameEl);
+      }
+      card.appendChild(pkWrap);
 
-      // A / S
       var flagRow = document.createElement('div');
       flagRow.className = 'step-flags';
 
@@ -917,6 +1183,8 @@
           if (blob[si] === 0xff) return;
           blob[si] ^= 0x40;
           btn.classList.toggle('f-on', !!(blob[si] & 0x40));
+          recomputeDirty();
+          scheduleLiveSend();
         };
       })(s, aBtn));
 
@@ -929,6 +1197,8 @@
           if (blob[si] === 0xff) return;
           blob[si] ^= 0x80;
           btn.classList.toggle('f-on', !!(blob[si] & 0x80));
+          recomputeDirty();
+          scheduleLiveSend();
         };
       })(s, sBtn));
 
@@ -945,14 +1215,25 @@
     blob[127] = len;
     var cards = document.querySelectorAll('.step-card');
     for (var i = 0; i < cards.length; i++) {
-      var s   = Number(cards[i].dataset.s);
-      var pin = cards[i].querySelector('.step-pitch');
-      if (pin && !pin.disabled)
-        blob[s] = (Number(pin.value) & 0x3f) | (blob[s] & 0xc0);
+      var si = Number(cards[i].dataset.s);
+      var wrap = cards[i].querySelector('.pitch-knob-wrap');
+      if (wrap && !wrap.classList.contains('is-disabled')) {
+        var lin = Number(wrap.dataset.lin);
+        if (!isNaN(lin)) {
+          var pk = linearToPacked(lin);
+          var flags = blob[si] & 0xc0;
+          if (blob[si] !== 0xff)
+            blob[si] = pk | flags;
+        }
+      }
     }
   }
 
-  document.getElementById('patLen').addEventListener('change', renderGrid);
+  document.getElementById('patLen').addEventListener('change', function() {
+    renderGrid();
+    recomputeDirty();
+    scheduleLiveSend();
+  });
 
   // ── Port binding ────────────────────────────────────────
   function fillSel(sel, ports) {
@@ -1029,8 +1310,10 @@
     }
 
     document.getElementById('btnReq').disabled    = !ok;
-    document.getElementById('btnSend').disabled   = !midiOut;
     document.getElementById('btnReqAll').disabled = !ok;
+    for (var bi = 0; bi < 4; bi++)
+      document.getElementById('btnBank' + bi).disabled = !ok;
+    recomputeDirty();
   }
 
   document.getElementById('btnMidi').onclick = async function() {
@@ -1059,22 +1342,46 @@
     requestPattern(currentPat & 15);
     log('\u2192 Request pattern ' + (currentPat + 1), 'log-syx');
   };
-  document.getElementById('btnSend').onclick = function() {
+  document.getElementById('btnSave303').onclick = function() {
+    if (!midiOut) return;
     syncBlob();
-    sendPattern(currentPat & 15, blob);
-    log('\u2190 Sent pattern ' + (currentPat + 1), 'log-syx');
+    saveAckPending = true;
+    sendPattern(currentPat & 15, bankRam[currentPat]);
+    log('\u2190 Save pattern ' + (currentPat + 1) + ' (SysEx)', 'log-syx');
+  };
+  document.getElementById('btnUndo').onclick = function() {
+    if (liveTimer) {
+      clearTimeout(liveTimer);
+      liveTimer = null;
+    }
+    saveAckPending = false;
+    bankRam[currentPat].set(commitBaseline[currentPat]);
+    blob = bankRam[currentPat];
+    document.getElementById('patLen').value = String(blob[127]);
+    renderGrid();
+    recomputeDirty();
+    if (midiOut) {
+      syncBlob();
+      sendPattern(currentPat & 15, bankRam[currentPat]);
+    }
   };
   document.getElementById('btnReqAll').onclick = function() {
     expectDump = 16;
     sendSysex(new Uint8Array([0x7d, 0x13]));
     log('\u2192 Request all 16 patterns', 'log-syx');
   };
+  document.getElementById('chkLive').onchange = function() {
+    liveEnabled = this.checked;
+  };
+  for (var bj = 0; bj < 4; bj++) {
+    (function(bk) {
+      document.getElementById('btnBank' + bk).onclick = function() { startBankDownload(bk); };
+    })(bj);
+  }
 
   // ── Init ────────────────────────────────────────────────
-  blob.fill(0);
-  blob[127] = 16;
-  for (var s = 0; s < 64; s++) blob[s] = 0xff;
   renderGrid();
+  recomputeDirty();
 })();
 </script>
 </body>

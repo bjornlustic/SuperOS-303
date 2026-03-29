@@ -617,10 +617,11 @@ void loop() {
     DAC::SetAccent(engine.get_accent());
     DAC::SetGate(engine.get_gate());
   } else {
-    // not run mode - send notes from keys
+    // not run mode - send notes from keys or live MIDI
     DAC::SetPitch(engine.get_pitch() + 4 + transpose);
     DAC::SetSlide(inputs[SLIDE_KEY].held());
-    DAC::SetAccent(inputs[ACCENT_KEY].held());
+    DAC::SetAccent(inputs[ACCENT_KEY].held() || midi_live_accent());
+    DAC::SetGate(midi_live_gate());
   }
 
   // catch falling edge of RUN
