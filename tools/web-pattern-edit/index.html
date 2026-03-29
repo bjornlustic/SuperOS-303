@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SuperOS-303 Pattern Editor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --black:   #000000;
+      --white:   #ffffff;
+      --gray-1:  #f2f2f2;
+      --gray-2:  #e0e0e0;
+      --gray-3:  #b0b0b0;
+      --gray-4:  #606060;
+      --rule:    2px solid #000;
+      --rule-sm: 1px solid #000;
+      --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      --mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+
+    html {
+      background: var(--white);
+      color: var(--black);
+      font-family: var(--font);
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+    body { min-height: 100vh; }
+    .app { padding: 36px 36px 48px; }
+
+    /* ── Header ─────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      border-bottom: var(--rule);
+      margin-bottom: 24px;
+    }
+    .logo {
+      font-size: 30px;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+      text-transform: uppercase;
+      line-height: 1;
+    }
+    .logo-sub {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--gray-4);
+      align-self: flex-end;
+      padding-bottom: 4px;
+    }
+
+    /* ── HTTP warning ────────────────────────────────── */
+    .banner {
+      display: none;
+      padding: 10px 14px;
+      border: var(--rule);
+      margin-bottom: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: var(--black);
+      color: var(--white);
+    }
+    .banner.visible { display: block; }
+
+    /* ── Control strips ──────────────────────────────── */
+    .strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      border: var(--rule);
+      margin-bottom: 6px;
+    }
+    .group {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      padding: 0 14px;
+      border-right: var(--rule);
+    }
+    .group:last-child { border-right: none; }
+    .group-inner { display: flex; align-items: center; gap: 6px; padding: 10px 0; }
+
+    .lbl {
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--gray-4);
+      white-space: nowrap;
+      padding-right: 10px;
+      border-right: var(--rule-sm);
+      margin-right: 10px;
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+    }
+
+    /* ── Inputs ──────────────────────────────────────── */
+    input[type="number"], select {
+      height: 30px;
+      padding: 0 8px;
+      background: var(--white);
+      border: var(--rule-sm);
+      color: var(--black);
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 600;
+      outline: none;
+      border-radius: 0;
+      appearance: none;
+      transition: background 0.08s;
+    }
+    input[type="number"]:focus, select:focus {
+      background: var(--black);
+      color: var(--white);
+    }
+    input[type="number"] { width: 54px; text-align: center; }
+    select { min-width: 150px; cursor: pointer; padding-right: 8px; }
+
+    /* ── Buttons ─────────────────────────────────────── */
+    .btn {
+      height: 30px;
+      padding: 0 14px;
+      background: var(--white);
+      border: var(--rule-sm);
+      color: var(--black);
+      font-family: var(--font);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      white-space: nowrap;
+      border-radius: 0;
+      transition: background 0.08s, color 0.08s;
+    }
+    .btn:hover:not(:disabled) { background: var(--black); color: var(--white); }
+    .btn:disabled { opacity: 0.25; cursor: default; }
+
+    .btn-primary {
+      background: var(--black);
+      color: var(--white);
+      border-color: var(--black);
+      font-weight: 900;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--gray-4); border-color: var(--gray-4); }
+
+    .btn-ghost {
+      height: 30px;
+      padding: 0 14px;
+      background: var(--white);
+      border: var(--rule-sm);
+      color: var(--black);
+      font-family: var(--font);
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-radius: 0;
+      transition: background 0.08s, color 0.08s;
+    }
+    .btn-ghost:hover { background: var(--black); color: var(--white); }
+    .btn-ghost.is-connected {
+      background: var(--black);
+      color: var(--white);
+    }
+
+    /* ── MIDI status ─────────────────────────────────── */
+    #midiStatus {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--gray-3);
+      letter-spacing: 0.02em;
+      padding-left: 10px;
+    }
+    #midiStatus.is-ok   { color: var(--black); }
+    #midiStatus.is-warn { color: var(--gray-4); }
+
+    /* ── Pattern pills ───────────────────────────────── */
+    .pat-pills { display: flex; gap: 0; }
+    .pat-pill {
+      width: 28px;
+      height: 28px;
+      border: var(--rule-sm);
+      margin-right: -1px;
+      background: var(--white);
+      color: var(--gray-3);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.08s;
+      border-radius: 0;
+    }
+    .pat-pill:hover:not(.is-active) { background: var(--gray-1); color: var(--black); }
+    .pat-pill.is-active {
+      background: var(--black);
+      border-color: var(--black);
+      color: var(--white);
+      z-index: 1;
+    }
+
+    /* ── Sequencer panel ─────────────────────────────── */
+    .seq-panel {
+      border: var(--rule);
+      margin-bottom: 6px;
+    }
+    .seq-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: var(--rule);
+    }
+    .seq-toolbar-lbl {
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--gray-4);
+    }
+    .seq-hint {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--gray-3);
+      letter-spacing: 0.02em;
+    }
+    .seq-hint b { color: var(--black); font-weight: 700; }
+
+    .seq-grid-wrap { padding: 12px; }
+
+    /* ── Step grid — 8 columns ───────────────────────── */
+    .seq-grid {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 0;
+      border-top: var(--rule-sm);
+      border-left: var(--rule-sm);
+    }
+
+    /* ── Step card ───────────────────────────────────── */
+    .step-card {
+      background: var(--white);
+      border-right: var(--rule-sm);
+      border-bottom: var(--rule-sm);
+      padding: 8px 8px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: background 0.08s;
+      min-width: 0;
+      position: relative;
+    }
+    .step-card:hover { background: var(--gray-1); }
+
+    /* Active (note) state — inverted */
+    .step-card.is-note {
+      background: var(--black);
+      color: var(--white);
+    }
+    .step-card.is-note:hover { background: #222; }
+
+    /* Tie state — gray bg */
+    .step-card.is-tie { background: var(--gray-2); }
+    .step-card.is-tie:hover { background: #d0d0d0; }
+
+    /* Rest state — dimmed but still readable */
+    .step-card.is-rest { opacity: 0.52; }
+    .step-card.is-rest:hover { opacity: 0.8; }
+
+    /* Group-of-4 thick border */
+    .seq-grid > .step-card:nth-child(4n) {
+      border-right: var(--rule);
+    }
+    .seq-grid > .step-card:nth-child(n+9):nth-child(-n+16),
+    .seq-grid > .step-card:nth-child(n+25):nth-child(-n+32),
+    .seq-grid > .step-card:nth-child(n+41):nth-child(-n+48),
+    .seq-grid > .step-card:nth-child(n+57):nth-child(-n+64) {
+      /* rows 2/4/6/8 — no extra styling needed, grid handles it */
+    }
+
+    .step-num {
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: var(--gray-3);
+      line-height: 1;
+    }
+    .is-note .step-num { color: rgba(255,255,255,0.4); }
+    .is-tie  .step-num { color: var(--gray-4); }
+
+    /* R / N / T */
+    .step-time { display: flex; gap: 0; }
+    .t-btn {
+      flex: 1;
+      height: 18px;
+      border: var(--rule-sm);
+      margin-right: -1px;
+      font-size: 8px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      background: var(--white);
+      color: var(--gray-3);
+      font-family: var(--font);
+      text-transform: uppercase;
+      border-radius: 0;
+      transition: all 0.08s;
+    }
+    .t-btn:last-child { margin-right: 0; }
+    .t-btn:hover { background: var(--gray-2); color: var(--black); }
+
+    /* Active time button = inverted */
+    .t-btn.is-on {
+      background: var(--black);
+      border-color: var(--black);
+      color: var(--white);
+      z-index: 1;
+    }
+
+    /* On a black card, invert the active btn */
+    .is-note .t-btn { background: transparent; border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.4); }
+    .is-note .t-btn:hover { background: rgba(255,255,255,0.15); color: var(--white); }
+    .is-note .t-btn.is-on { background: var(--white); border-color: var(--white); color: var(--black); }
+
+    .is-tie .t-btn { background: transparent; border-color: var(--gray-3); color: var(--gray-4); }
+    .is-tie .t-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); }
+
+    /* Note name */
+    .step-name {
+      text-align: center;
+      font-size: 20px;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      height: 22px;
+      overflow: hidden;
+      color: var(--black);
+    }
+    .is-note  .step-name { color: var(--white); }
+    .is-tie   .step-name { color: var(--black); }
+    .is-rest  .step-name { color: var(--black); }
+
+    /* Pitch input */
+    .step-pitch {
+      width: 100%;
+      height: 22px;
+      padding: 0 4px;
+      background: transparent;
+      border: var(--rule-sm);
+      color: var(--black);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      text-align: center;
+      outline: none;
+      border-radius: 0;
+      transition: background 0.08s, color 0.08s;
+    }
+    .step-pitch:focus { background: var(--black); color: var(--white); }
+    .step-pitch:disabled { opacity: 0.15; cursor: default; }
+
+    .is-note .step-pitch {
+      border-color: rgba(255,255,255,0.3);
+      color: var(--white);
+    }
+    .is-note .step-pitch:focus { background: var(--white); color: var(--black); }
+
+    .is-tie .step-pitch { border-color: var(--gray-3); }
+
+    /* A / S */
+    .step-flags { display: flex; gap: 0; }
+    .f-btn {
+      flex: 1;
+      height: 18px;
+      border: var(--rule-sm);
+      margin-right: -1px;
+      background: transparent;
+      color: var(--gray-3);
+      font-size: 8px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      font-family: var(--font);
+      border-radius: 0;
+      transition: all 0.08s;
+    }
+    .f-btn:last-child { margin-right: 0; }
+    .f-btn:disabled { opacity: 0.15; cursor: default; }
+    .f-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
+
+    .f-btn.f-on {
+      background: var(--black);
+      border-color: var(--black);
+      color: var(--white);
+    }
+
+    /* On black card */
+    .is-note .f-btn { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.4); }
+    .is-note .f-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
+    .is-note .f-btn.f-on { background: var(--white); border-color: var(--white); color: var(--black); }
+
+    .is-tie .f-btn { border-color: var(--gray-3); color: var(--gray-4); }
+    .is-tie .f-btn.f-on { background: var(--black); border-color: var(--black); color: var(--white); }
+
+    /* ── Log ─────────────────────────────────────────── */
+    .log-panel { border: var(--rule); }
+    .log-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      user-select: none;
+      border-bottom: 1px solid transparent;
+      transition: background 0.08s;
+    }
+    .log-bar:hover { background: var(--gray-1); }
+    .log-bar.is-open { border-bottom: var(--rule-sm); }
+    .log-bar-label {
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--gray-4);
+    }
+    .log-bar-arrow {
+      font-size: 8px;
+      color: var(--gray-3);
+      display: inline-block;
+      transition: transform 0.12s;
+    }
+    .log-bar.is-open .log-bar-arrow { transform: rotate(90deg); }
+    .log-bar-count {
+      margin-left: auto;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--gray-3);
+      letter-spacing: 0.04em;
+    }
+    .log-body { display: none; }
+    .log-body.is-open { display: block; }
+    #log {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 500;
+      background: var(--gray-1);
+      padding: 12px 14px;
+      height: 132px;
+      overflow: auto;
+      white-space: pre-wrap;
+      color: var(--gray-4);
+      line-height: 1.9;
+      letter-spacing: 0.02em;
+    }
+    .log-note { color: var(--black); font-weight: 700; }
+    .log-syx  { color: var(--black); }
+    .log-err  { color: var(--black); font-weight: 700; text-decoration: underline; }
+    .log-ack  { color: var(--gray-4); }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="logo">SuperOS&#x2011;303</div>
+    <div class="logo-sub">Pattern Editor</div>
+  </header>
+
+  <!-- HTTP warning -->
+  <div class="banner" id="httpBanner">
+    &#9632;&nbsp; Serve over HTTP for Web MIDI &mdash;
+    run: npx serve . &mdash; then open http://localhost:3000
+  </div>
+
+  <!-- MIDI Connection -->
+  <div class="strip">
+    <div class="group">
+      <div class="group-inner">
+        <button class="btn-ghost" id="btnMidi">Connect MIDI</button>
+        <span id="midiStatus">Not connected</span>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Out &#8594; 303</span>
+      <div class="group-inner">
+        <select id="selOut" disabled></select>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">303 &#8594; In</span>
+      <div class="group-inner">
+        <select id="selIn" disabled></select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pattern + transport -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Pattern</span>
+      <div class="group-inner">
+        <div class="pat-pills" id="patPills"></div>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Steps</span>
+      <div class="group-inner">
+        <input type="number" id="patLen" min="1" max="64" value="16" />
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-inner" style="gap:6px">
+        <button class="btn" id="btnReq" disabled>&#8595; Request</button>
+        <button class="btn btn-primary" id="btnSend" disabled>&#8593; Send to 303</button>
+        <button class="btn" id="btnReqAll" disabled>&#8595; All 16</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sequencer grid -->
+  <div class="seq-panel">
+    <div class="seq-toolbar">
+      <span class="seq-toolbar-lbl">Steps</span>
+      <span class="seq-hint">
+        <b>R</b> rest &nbsp;&middot;&nbsp;
+        <b>N</b> note &nbsp;&middot;&nbsp;
+        <b>T</b> tie &nbsp;&mdash;&nbsp;
+        pitch 0&ndash;38 &nbsp;&mdash;&nbsp;
+        <b>A</b> accent &nbsp;&middot;&nbsp;
+        <b>S</b> slide
+      </span>
+    </div>
+    <div class="seq-grid-wrap">
+      <div class="seq-grid" id="seqGrid"></div>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="log-panel">
+    <div class="log-bar" id="logBar">
+      <span class="log-bar-arrow">&#9658;</span>
+      <span class="log-bar-label">MIDI Log</span>
+      <span class="log-bar-count" id="logCount"></span>
+    </div>
+    <div class="log-body" id="logBody">
+      <div id="log"></div>
+    </div>
+  </div>
+
+</div>
+<script>
+(function () {
+  'use strict';
+
+  var PATTERN_SIZE = 128;
+  var MAX_STEPS    = 64;
+  var PITCH_MAX    = 12 + 13 * 2; // 38
+
+  if (location.protocol === 'file:') {
+    document.getElementById('httpBanner').classList.add('visible');
+  }
+
+  var NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  function linToName(lin) {
+    return NOTE_NAMES[lin % 12] + (2 + Math.floor(lin / 12));
+  }
+
+  // ── Logging ─────────────────────────────────────────────
+  var logEntries = 0;
+  function log(msg, cls) {
+    var logEl = document.getElementById('log');
+    var span  = document.createElement('span');
+    span.className = cls || '';
+    span.textContent = msg + '\n';
+    logEl.appendChild(span);
+    logEl.scrollTop = logEl.scrollHeight;
+    logEntries++;
+    document.getElementById('logCount').textContent = logEntries;
+  }
+
+  document.getElementById('logBar').addEventListener('click', function() {
+    var bar  = document.getElementById('logBar');
+    var body = document.getElementById('logBody');
+    var open = body.classList.toggle('is-open');
+    bar.classList.toggle('is-open', open);
+  });
+
+  // ── TB-303 pitch ────────────────────────────────────────
+  function unpackLinear(e) {
+    if (e > PITCH_MAX) return e & 0x3f;
+    return (e % 13) + 12 * Math.floor(e / 13);
+  }
+
+  // ── 7-bit pack / unpack ─────────────────────────────────
+  function pack7(src) {
+    var out = [];
+    for (var i = 0; i < src.length; i += 7) {
+      var msb = 0;
+      var n = Math.min(7, src.length - i);
+      for (var b = 0; b < n; b++) if (src[i + b] & 0x80) msb |= 1 << b;
+      out.push(msb);
+      for (var b2 = 0; b2 < n; b2++) out.push(src[i + b2] & 0x7f);
+    }
+    return new Uint8Array(out);
+  }
+
+  function unpack7(inp, outLen) {
+    var out = new Uint8Array(outLen);
+    var oi = 0, ii = 0;
+    while (oi < outLen) {
+      if (ii >= inp.length) return null;
+      var msb = inp[ii++];
+      for (var b = 0; b < 7 && oi < outLen; b++) {
+        if (ii >= inp.length) return null;
+        out[oi++] = inp[ii++] | (((msb >> b) & 1) ? 0x80 : 0);
+      }
+    }
+    return out;
+  }
+
+  function xorBlob(u8) {
+    var x = 0;
+    for (var i = 0; i < 128; i++) x ^= u8[i];
+    return x & 0xff;
+  }
+
+  // ── Time nibble ─────────────────────────────────────────
+  function getTime(blob, s) {
+    var idx = s & (MAX_STEPS - 1);
+    return (blob[64 + (idx >> 1)] >> (4 * (idx & 1))) & 0xf;
+  }
+  function setTime(blob, s, v) {
+    var idx = s & (MAX_STEPS - 1);
+    var p   = 64 + (idx >> 1);
+    var sh  = 4 * (idx & 1);
+    blob[p] = (blob[p] & ~(0xf << sh)) | ((v & 0xf) << sh);
+  }
+
+  // ── State ───────────────────────────────────────────────
+  var midiAccess = null, midiOut = null, midiIn = null;
+  var blob       = new Uint8Array(PATTERN_SIZE);
+  var rxBuf      = [];
+  var expectDump = 0;
+  var currentPat = 0;
+
+  // ── Pattern pills ───────────────────────────────────────
+  var pillsEl = document.getElementById('patPills');
+  for (var i = 0; i < 16; i++) {
+    (function(idx) {
+      var btn = document.createElement('button');
+      btn.className = 'pat-pill' + (idx === 0 ? ' is-active' : '');
+      btn.textContent = idx + 1;
+      btn.addEventListener('click', function() {
+        currentPat = idx;
+        var pills = pillsEl.querySelectorAll('.pat-pill');
+        for (var j = 0; j < pills.length; j++)
+          pills[j].classList.toggle('is-active', j === idx);
+      });
+      pillsEl.appendChild(btn);
+    })(i);
+  }
+
+  // ── SysEx parser ────────────────────────────────────────
+  function syxInner(bytes) {
+    if (bytes.length < 2 || bytes[0] !== 0x7d) return;
+    var cmd = bytes[1];
+    if (cmd === 0x11) {
+      if (bytes.length < 5 + 147) {
+        log('0x11 too short: ' + bytes.length + ' bytes', 'log-err'); return;
+      }
+      var pat = bytes[2];
+      var cx  = bytes[3] | (bytes[4] << 7);
+      var raw = unpack7(bytes.subarray(5), PATTERN_SIZE);
+      if (!raw) { log('0x11 unpack failed', 'log-err'); return; }
+      var check = xorBlob(raw);
+      if (check !== cx) { log('0x11 checksum mismatch', 'log-err'); return; }
+      if (expectDump > 0) {
+        log('Pattern ' + (pat + 1) + ' received (' + (17 - expectDump) + '/16)', 'log-syx');
+        expectDump--;
+      } else {
+        log('Pattern ' + (pat + 1) + ' received', 'log-syx');
+      }
+      if (pat === (currentPat & 15)) {
+        blob.set(raw);
+        document.getElementById('patLen').value = blob[127];
+        renderGrid();
+      }
+      return;
+    }
+    if (cmd === 0x14 && bytes.length >= 3) {
+      var names = ['ok','bad_checksum','bad_pattern','blocked_clock'];
+      var st = bytes[2];
+      log('ACK: ' + (names[st] || 'status=' + st), st === 0 ? 'log-ack' : 'log-err');
+    }
+  }
+
+  // ── MIDI channel message handler ──────────────────────────
+  // Some USB-MIDI adapters send running status: consecutive messages on the
+  // same channel omit the status byte. Web MIDI *should* restore it, but
+  // several cheap adapters don't. We track lastStatus and re-apply it when
+  // d[0] is a data byte (< 0x80).
+  var lastStatus = 0;
+  var chanBuf    = [];   // accumulates a partial channel message
+
+  function dispatchChannel(status, b1, b2) {
+    var type = status & 0xF0;
+    var ch   = (status & 0x0F) + 1;
+    if (!document.getElementById('logBody').classList.contains('is-open'))
+      document.getElementById('logBar').click();
+    if (type === 0x90 && b2 > 0) {
+      var name = NOTE_NAMES[b1 % 12] + (Math.floor(b1 / 12) - 1);
+      log('Note On   ch' + ch + '  ' + name + '  (MIDI ' + b1 + ')  vel ' + b2, 'log-note');
+    } else if (type === 0x80 || (type === 0x90 && b2 === 0)) {
+      var name = NOTE_NAMES[b1 % 12] + (Math.floor(b1 / 12) - 1);
+      log('Note Off  ch' + ch + '  ' + name, 'log-ack');
+    }
+    // Other channel messages (CC, PC, etc.) arrive silently — add cases here if needed
+  }
+
+  function feedChannelByte(b) {
+    // Status byte — start new message
+    if (b & 0x80) {
+      lastStatus = b;
+      chanBuf = [b];
+      return;
+    }
+    // Data byte — apply running status if buffer is empty
+    if (chanBuf.length === 0 && lastStatus) chanBuf = [lastStatus];
+    chanBuf.push(b);
+    var type = chanBuf[0] & 0xF0;
+    var need = (type === 0xC0 || type === 0xD0) ? 2 : 3;  // 2-byte vs 3-byte message
+    if (chanBuf.length >= need) {
+      dispatchChannel(chanBuf[0], chanBuf[1], chanBuf[2]);
+      chanBuf = [chanBuf[0]];  // keep status for running status continuation
+    }
+  }
+
+  // ── MIDI handler (SysEx bugs fixed) ─────────────────────
+  function onMidi(ev) {
+    var d = ev.data;
+    if (!d || !d.length) return;
+
+    // Channel messages (0x80–0xEF) — feed byte-by-byte into the running-status assembler
+    if (d[0] >= 0x80 && d[0] < 0xf0) {
+      for (var k = 0; k < d.length; k++) feedChannelByte(d[k]);
+      return;
+    }
+
+    // Realtime single-byte messages (0xF8–0xFF) — ignore silently
+    if (d[0] >= 0xf8) return;
+
+    // SysEx
+    if (d[0] === 0xf0) {
+      rxBuf = [];
+      for (var i = 0; i < d.length; i++) rxBuf.push(d[i]);
+      if (rxBuf[rxBuf.length - 1] === 0xf7) {
+        syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length - 1));
+        rxBuf = [];
+      }
+      return;
+    }
+    if (rxBuf.length > 0) {
+      if (d[0] < 0x80 || d[0] === 0xf7) {
+        for (var j = 0; j < d.length; j++) rxBuf.push(d[j]);
+        if (rxBuf[rxBuf.length - 1] === 0xf7) {
+          syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length - 1));
+          rxBuf = [];
+        }
+      } else if (d[0] < 0xf8) {
+        rxBuf = [];
+      }
+    }
+  }
+
+  // ── MIDI send ───────────────────────────────────────────
+  function sendSysex(inner) {
+    if (!midiOut) return;
+    var msg = new Uint8Array(2 + inner.length);
+    msg[0] = 0xf0; msg.set(inner, 1); msg[msg.length - 1] = 0xf7;
+    midiOut.send(msg);
+  }
+  function requestPattern(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15])); }
+  function sendPattern(pat, raw) {
+    var x = xorBlob(raw), packed = pack7(raw);
+    var inner = new Uint8Array(5 + packed.length);
+    inner[0] = 0x7d; inner[1] = 0x12; inner[2] = pat & 15;
+    inner[3] = x & 0x7f; inner[4] = (x >> 7) & 1;
+    inner.set(packed, 5);
+    sendSysex(inner);
+  }
+
+  // ── Render grid ─────────────────────────────────────────
+  function renderGrid() {
+    var len = Math.min(MAX_STEPS, Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    blob[127] = len;
+    var grid = document.getElementById('seqGrid');
+    grid.innerHTML = '';
+
+    for (var s = 0; s < len; s++) {
+      var t      = getTime(blob, s);
+      var raw    = blob[s];
+      var isRest = raw === 0xff;
+      var packed = isRest ? 0 : (raw & 0x3f);
+      var acc    = !isRest && !!(raw & 0x40);
+      var sl     = !isRest && !!(raw & 0x80);
+      var lin    = isRest ? null : unpackLinear(packed);
+      var name   = lin !== null ? linToName(lin) : '\u2014';
+
+      // Card class based on time mode
+      var cardCls = 'step-card';
+      if      (t === 0) cardCls += ' is-rest';
+      else if (t === 1) cardCls += ' is-note';
+      else if (t === 2) cardCls += ' is-tie';
+
+      var card = document.createElement('div');
+      card.className = cardCls;
+      card.dataset.s = s;
+
+      // Step number
+      var numEl = document.createElement('div');
+      numEl.className = 'step-num';
+      numEl.textContent = String(s + 1).padStart(2, '0');
+      card.appendChild(numEl);
+
+      // R / N / T
+      var timeRow = document.createElement('div');
+      timeRow.className = 'step-time';
+      [['R',0],['N',1],['T',2]].forEach(function(pair) {
+        var lbl = pair[0], val = pair[1];
+        var b = document.createElement('button');
+        b.className = 't-btn' + (t === val ? ' is-on' : '');
+        b.textContent = lbl;
+        b.addEventListener('click', (function(si, tv) {
+          return function() { setTime(blob, si, tv); renderGrid(); };
+        })(s, val));
+        timeRow.appendChild(b);
+      });
+      card.appendChild(timeRow);
+
+      // Note name
+      var nameEl = document.createElement('div');
+      nameEl.className = 'step-name';
+      nameEl.textContent = name;
+      card.appendChild(nameEl);
+
+      // Pitch input
+      var pitchIn = document.createElement('input');
+      pitchIn.type = 'number'; pitchIn.min = 0; pitchIn.max = 63;
+      pitchIn.value = packed;
+      pitchIn.className = 'step-pitch';
+      pitchIn.disabled = isRest;
+      pitchIn.addEventListener('change', (function(si, nEl) {
+        return function() {
+          var flags = blob[si] & 0xc0;
+          blob[si] = (Number(this.value) & 0x3f) | flags;
+          nEl.textContent = linToName(unpackLinear(blob[si] & 0x3f));
+        };
+      })(s, nameEl));
+      card.appendChild(pitchIn);
+
+      // A / S
+      var flagRow = document.createElement('div');
+      flagRow.className = 'step-flags';
+
+      var aBtn = document.createElement('button');
+      aBtn.className = 'f-btn' + (acc ? ' f-on' : '');
+      aBtn.textContent = 'A';
+      aBtn.disabled = isRest;
+      aBtn.addEventListener('click', (function(si, btn) {
+        return function() {
+          if (blob[si] === 0xff) return;
+          blob[si] ^= 0x40;
+          btn.classList.toggle('f-on', !!(blob[si] & 0x40));
+        };
+      })(s, aBtn));
+
+      var sBtn = document.createElement('button');
+      sBtn.className = 'f-btn' + (sl ? ' f-on' : '');
+      sBtn.textContent = 'S';
+      sBtn.disabled = isRest;
+      sBtn.addEventListener('click', (function(si, btn) {
+        return function() {
+          if (blob[si] === 0xff) return;
+          blob[si] ^= 0x80;
+          btn.classList.toggle('f-on', !!(blob[si] & 0x80));
+        };
+      })(s, sBtn));
+
+      flagRow.appendChild(aBtn);
+      flagRow.appendChild(sBtn);
+      card.appendChild(flagRow);
+
+      grid.appendChild(card);
+    }
+  }
+
+  function syncBlob() {
+    var len = Math.min(MAX_STEPS, Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    blob[127] = len;
+    var cards = document.querySelectorAll('.step-card');
+    for (var i = 0; i < cards.length; i++) {
+      var s   = Number(cards[i].dataset.s);
+      var pin = cards[i].querySelector('.step-pitch');
+      if (pin && !pin.disabled)
+        blob[s] = (Number(pin.value) & 0x3f) | (blob[s] & 0xc0);
+    }
+  }
+
+  document.getElementById('patLen').addEventListener('change', renderGrid);
+
+  // ── Port binding ────────────────────────────────────────
+  function fillSel(sel, ports) {
+    sel.innerHTML = '';
+    for (var i = 0; i < ports.length; i++) {
+      var o = document.createElement('option');
+      o.value = ports[i].id; o.textContent = ports[i].name || ports[i].id;
+      sel.appendChild(o);
+    }
+    sel.disabled = !ports.length;
+  }
+
+  function bindPorts(access) {
+    var outs = Array.from(access.outputs.values());
+    var ins  = Array.from(access.inputs.values());
+    var selOut = document.getElementById('selOut');
+    var selIn  = document.getElementById('selIn');
+    fillSel(selOut, outs);
+    fillSel(selIn,  ins);
+    if (midiIn) midiIn.onmidimessage = null;
+    midiOut = outs.find(function(p) { return p.id === selOut.value; }) || outs[0] || null;
+    midiIn  = ins.find(function(p)  { return p.id === selIn.value;  }) || ins[0]  || null;
+    if (midiIn) midiIn.onmidimessage = onMidi;
+
+    var statusEl = document.getElementById('midiStatus');
+    var btn      = document.getElementById('btnMidi');
+    var ok       = !!midiOut && !!midiIn;
+
+    if (ok) {
+      statusEl.textContent = midiOut.name + ' / ' + midiIn.name;
+      statusEl.className   = 'is-ok';
+      btn.classList.add('is-connected');
+      btn.textContent = 'Connected';
+    } else if (midiOut && !midiIn) {
+      statusEl.textContent = midiOut.name + ' \u2014 select input';
+      statusEl.className   = 'is-warn';
+    } else {
+      statusEl.textContent = 'No ports found';
+      statusEl.className   = '';
+    }
+
+    document.getElementById('btnReq').disabled    = !ok;
+    document.getElementById('btnSend').disabled   = !midiOut;
+    document.getElementById('btnReqAll').disabled = !ok;
+  }
+
+  document.getElementById('btnMidi').onclick = async function() {
+    if (!navigator.requestMIDIAccess) {
+      log('Web MIDI unavailable (use Chrome / Edge)', 'log-err'); return;
+    }
+    try {
+      midiAccess = await navigator.requestMIDIAccess({ sysex: true });
+      bindPorts(midiAccess);
+      midiAccess.onstatechange = function() { bindPorts(midiAccess); };
+      log('MIDI ready  \u2014  Computer Out \u2192 303 MIDI In  |  303 MIDI Out \u2192 Computer In', 'log-ack');
+      if (!document.getElementById('logBody').classList.contains('is-open'))
+        document.getElementById('logBar').click();
+    } catch(e) {
+      log('MIDI denied: ' + e, 'log-err');
+      document.getElementById('logBar').click();
+    }
+  };
+
+  document.getElementById('selOut').onchange =
+  document.getElementById('selIn').onchange  = function() { if (midiAccess) bindPorts(midiAccess); };
+
+  document.getElementById('btnReq').onclick = function() {
+    if (!midiIn) { log('Select MIDI input first', 'log-err'); return; }
+    requestPattern(currentPat & 15);
+    log('\u2192 Request pattern ' + (currentPat + 1), 'log-syx');
+  };
+  document.getElementById('btnSend').onclick = function() {
+    syncBlob();
+    sendPattern(currentPat & 15, blob);
+    log('\u2190 Sent pattern ' + (currentPat + 1), 'log-syx');
+  };
+  document.getElementById('btnReqAll').onclick = function() {
+    expectDump = 16;
+    sendSysex(new Uint8Array([0x7d, 0x13]));
+    log('\u2192 Request all 16 patterns', 'log-syx');
+  };
+
+  // ── Init ────────────────────────────────────────────────
+  blob.fill(0);
+  blob[127] = 16;
+  for (var s = 0; s < 64; s++) blob[s] = 0xff;
+  renderGrid();
+})();
+</script>
+</body>
+</html>
