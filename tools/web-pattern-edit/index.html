@@ -509,6 +509,13 @@
         <select id="selIn" disabled></select>
       </div>
     </div>
+    <div class="group">
+      <span class="lbl">Keyboard &#8594; 303</span>
+      <div class="group-inner">
+        <select id="selKbd" disabled></select>
+        <span id="kbdStatus" style="font-size:11px;font-weight:600;color:#aaa;padding-left:8px;">Off</span>
+      </div>
+    </div>
   </div>
 
   <!-- Pattern + transport -->
@@ -654,7 +661,7 @@
   }
 
   // ── State ───────────────────────────────────────────────
-  var midiAccess = null, midiOut = null, midiIn = null;
+  var midiAccess = null, midiOut = null, midiIn = null, midiKbd = null;
   var blob       = new Uint8Array(PATTERN_SIZE);
   var rxBuf      = [];
   var expectDump = 0;
@@ -786,6 +793,28 @@
       } else if (d[0] < 0xf8) {
         rxBuf = [];
       }
+    }
+  }
+
+  // ── Keyboard → 303 bridge ───────────────────────────────
+  // Forwards all channel messages from the keyboard port directly to midiOut
+  // (the 303's MIDI IN). Note On/Off are also echoed to the log.
+  function onKeyboard(ev) {
+    var d = ev.data;
+    if (!d || !d.length) return;
+    // Only channel messages (0x80–0xEF) — skip SysEx and realtime
+    if (d[0] < 0x80 || d[0] >= 0xf0) return;
+    // Forward raw bytes to 303
+    if (midiOut) midiOut.send(d);
+    // Log Note On / Off for visibility
+    var type = d[0] & 0xF0;
+    var ch   = (d[0] & 0x0F) + 1;
+    if (d.length >= 3 && (type === 0x90 || type === 0x80)) {
+      var name = NOTE_NAMES[d[1] % 12] + (Math.floor(d[1] / 12) - 1);
+      if (type === 0x90 && d[2] > 0)
+        log('\u2192 303  Note On  ch' + ch + '  ' + name + '  vel ' + d[2], 'log-note');
+      else
+        log('\u2192 303  Note Off ch' + ch + '  ' + name, 'log-ack');
     }
   }
 
@@ -941,12 +970,46 @@
     var ins  = Array.from(access.inputs.values());
     var selOut = document.getElementById('selOut');
     var selIn  = document.getElementById('selIn');
+    var selKbd = document.getElementById('selKbd');
+
     fillSel(selOut, outs);
     fillSel(selIn,  ins);
-    if (midiIn) midiIn.onmidimessage = null;
+
+    // Keyboard selector: all inputs + a "— None —" option at the top
+    selKbd.innerHTML = '<option value="">— None —</option>';
+    for (var i = 0; i < ins.length; i++) {
+      var o = document.createElement('option');
+      o.value = ins[i].id; o.textContent = ins[i].name || ins[i].id;
+      selKbd.appendChild(o);
+    }
+    selKbd.disabled = !ins.length;
+
+    // Detach old handlers
+    if (midiIn)  midiIn.onmidimessage  = null;
+    if (midiKbd) midiKbd.onmidimessage = null;
+
     midiOut = outs.find(function(p) { return p.id === selOut.value; }) || outs[0] || null;
     midiIn  = ins.find(function(p)  { return p.id === selIn.value;  }) || ins[0]  || null;
-    if (midiIn) midiIn.onmidimessage = onMidi;
+    var kbdId = selKbd.value;
+    midiKbd = kbdId ? (ins.find(function(p) { return p.id === kbdId; }) || null) : null;
+
+    if (midiIn)  midiIn.onmidimessage  = onMidi;
+    if (midiKbd) midiKbd.onmidimessage = onKeyboard;
+
+    // Warn if keyboard port is the same as the 303 return port
+    var kbdStatusEl = document.getElementById('kbdStatus');
+    if (midiKbd && midiIn && midiKbd.id === midiIn.id) {
+      kbdStatusEl.textContent = 'Loop!';
+      kbdStatusEl.style.color = '#c00';
+      log('WARNING: Keyboard port same as 303 In — this will loop. Pick a different port.', 'log-err');
+    } else if (midiKbd) {
+      kbdStatusEl.textContent = 'Active';
+      kbdStatusEl.style.color = '#000';
+      log('Keyboard bridge active: ' + midiKbd.name + ' \u2192 303', 'log-ack');
+    } else {
+      kbdStatusEl.textContent = 'Off';
+      kbdStatusEl.style.color = '#aaa';
+    }
 
     var statusEl = document.getElementById('midiStatus');
     var btn      = document.getElementById('btnMidi');
@@ -988,7 +1051,8 @@
   };
 
   document.getElementById('selOut').onchange =
-  document.getElementById('selIn').onchange  = function() { if (midiAccess) bindPorts(midiAccess); };
+  document.getElementById('selIn').onchange  =
+  document.getElementById('selKbd').onchange = function() { if (midiAccess) bindPorts(midiAccess); };
 
   document.getElementById('btnReq').onclick = function() {
     if (!midiIn) { log('Select MIDI input first', 'log-err'); return; }
