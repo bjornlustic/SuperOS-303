@@ -28,7 +28,24 @@ enum OctaveState {
 };
 
 static constexpr uint8_t PITCH_EMPTY = 0xFF;
-static constexpr uint8_t PITCH_DEFAULT = (OCTAVE_ZERO * 12);
+// Packed step pitch: key_idx (0..12, chromatic incl. high C) + 13 * octave_btn (0..2).
+// Decodes to linear CV semitone via unpack_pitch_linear(); avoids C vs C2 + UP collisions.
+static constexpr uint8_t PITCH_PACK_MAX = 12 + 13 * 2;
+static constexpr uint8_t PITCH_DEFAULT = 0 + 13 * 1; // packed: low C, middle octave button
+/// Index of C_KEY2 in pitched_keys / pitch_leds (chromatic row incl. upper C).
+static constexpr uint8_t PITCH_KEY_HIGH_C = 12;
+
+static inline uint8_t pack_pitch(uint8_t key_idx, uint8_t oct_btn) {
+  return uint8_t(key_idx + 13 * oct_btn);
+}
+/// Convert packed EEPROM/CV encoding to linear semitone (0..36) for DAC / MIDI.
+static inline uint8_t unpack_pitch_linear(uint8_t e) {
+  if (e > PITCH_PACK_MAX)
+    return e; // corrupt or pre-migration stray: treat as legacy linear
+  const uint8_t key_idx = e % 13;
+  const uint8_t oct_btn = e / 13;
+  return key_idx + 12 * oct_btn;
+}
 
 // =============================================================================
 // Sequence — one pattern (matches reference OS-303 layout)
@@ -57,9 +74,10 @@ struct Sequence {
   }
 
   const uint8_t get_pitch() const {
-    if (step_is_empty()) return PITCH_DEFAULT;
-    return pitch[pitch_pos] & 0x3f;
+    if (step_is_empty()) return unpack_pitch_linear(PITCH_DEFAULT);
+    return unpack_pitch_linear(pitch[pitch_pos] & 0x3f);
   }
+  /// Linear pitch / 12 — pattern-select octave LEDs (DOWN/UP) vs stored keypad octave.
   const uint8_t get_octave() const {
     if (step_is_empty()) return OCTAVE_ZERO;
     return get_pitch() / 12;
@@ -67,6 +85,16 @@ struct Sequence {
   const uint8_t get_semitone() const {
     if (step_is_empty()) return PITCH_EMPTY;
     return get_pitch() % 12;
+  }
+  /// Index into pitched_keys / pitch_leds (0..12), distinct for low C vs high C.
+  uint8_t get_note_key_index() const {
+    if (step_is_empty()) return 0;
+    return (pitch[pitch_pos] & 0x3f) % 13;
+  }
+  /// UP/DOWN octave buttons at record time: 0 down, 1 center, 2 up (packed e / 13).
+  uint8_t get_octave_button() const {
+    if (step_is_empty()) return 1;
+    return (pitch[pitch_pos] & 0x3f) / 13;
   }
   const uint8_t get_accent() const {
     if (step_is_empty()) return 0;
@@ -136,15 +164,20 @@ struct Sequence {
   }
   void SetPitchSemitone(uint8_t p) {
     init_if_empty();
+    const uint8_t e = pitch[pitch_pos] & 0x3f;
+    const uint8_t oct_btn = e / 13;
     pitch[pitch_pos] =
-        ((get_octave() * 12 + p) & 0x3f) | (pitch[pitch_pos] & 0xc0);
+        (pack_pitch(p, oct_btn) & 0x3f) | (pitch[pitch_pos] & 0xc0);
   }
   void SetLength(uint8_t len) { length = constrain(len, 1, MAX_STEPS); }
-  void SetOctave(int oct) {
+  void nudge_octave_buttons(int dir) {
     init_if_empty();
-    CONSTRAIN(oct, 0, 3);
+    const uint8_t e = pitch[pitch_pos] & 0x3f;
+    const uint8_t k = e % 13;
+    int o = int(e / 13) + dir;
+    CONSTRAIN(o, 0, 2);
     pitch[pitch_pos] =
-        ((uint8_t)oct * 12 + get_semitone()) | (pitch[pitch_pos] & 0xc0);
+        (pack_pitch(k, uint8_t(o)) & 0x3f) | (pitch[pitch_pos] & 0xc0);
   }
 
   void ToggleSlide() {
@@ -170,7 +203,10 @@ struct Sequence {
   }
 
   void RegenTime() { time_data[time_pos] = random(); }
-  void RegenPitch() { pitch[pitch_pos] = random(); }
+  void RegenPitch() {
+    pitch[pitch_pos] =
+        uint8_t(random(PITCH_PACK_MAX + 1)) | (pitch[pitch_pos] & 0xc0);
+  }
 
   void Reset() {
     pitch_pos = 0;
@@ -226,7 +262,8 @@ struct Sequence {
 static constexpr int SETTINGS_SIZE = 128;
 static constexpr int PATTERN_SIZE = MAX_STEPS * 2;
 
-const char *const sig_pew = "PewPewPew!!!";
+// Bump when pattern EEPROM layout/meaning changes (packed pitch encoding).
+const char *const sig_pew = "PewPewPew!!2";
 
 extern EEPROMClass storage;
 
@@ -426,9 +463,7 @@ struct Engine {
   // MIDI note number: OCTAVE_DOWN C = 36 (C2), OCTAVE_ZERO C = 48 (C3)
   uint8_t get_midi_note() const {
     if (get_sequence().step_is_empty()) return 48;
-    const uint8_t semitone = get_sequence().get_semitone();
-    const uint8_t oct = get_sequence().get_octave();
-    return 36 + semitone + (oct * 12);
+    return 36 + get_sequence().get_pitch();
   }
   bool get_slide() const {
     return get_sequence().get_slide();
@@ -467,7 +502,8 @@ struct Engine {
     mode_ = m;
   }
   void NudgeOctave(int dir) {
-    get_sequence().SetOctave(int(get_sequence().get_octave()) + dir);
+    get_sequence().nudge_octave_buttons(dir);
+    stale = true;
   }
   // change pitch, preserving flags
   void SetPitchSemitone(uint8_t p) {

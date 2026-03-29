@@ -64,7 +64,10 @@ void input_pitch(bool mod = false, bool clk_run = false) {
     if (inputs[UP_KEY].rising()) engine.NudgeOctave(1);
     if (inputs[DOWN_KEY].rising()) engine.NudgeOctave(-1);
   }
-  for (uint8_t i = 0; i < ARRAY_SIZE(pitched_keys); ++i) {
+  // Higher matrix indices first: [8] high C before [1] low C so crosstalk ghosts
+  // on the same read column do not record low C + UP instead of high C.
+  for (int pi = int(ARRAY_SIZE(pitched_keys)) - 1; pi >= 0; --pi) {
+    const uint8_t i = uint8_t(pi);
     if (inputs[pitched_keys[i]].rising()) {
       if (mod) {
         engine.SetPitchSemitone(i);
@@ -75,7 +78,7 @@ void input_pitch(bool mod = false, bool clk_run = false) {
         const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
                               (inputs[SLIDE_KEY].held() << 7);
         engine.get_sequence().AdvancePitch();
-        engine.SetPitch(i + 12*oct, flags);
+        engine.SetPitch(i + 13 * oct, flags);
         // Stop after the first rising key — matrix crosstalk can cause ghost
         // rising() signals on other keys in the same scan cycle. Processing only
         // the first key found prevents a phantom note from overwriting the real one.
@@ -163,14 +166,19 @@ void PrintPitch() {
   const uint8_t semitone = engine.get_semitone();
   if (semitone != PITCH_EMPTY) {
 
-    Leds::Set(pitch_leds[semitone % 13], true);
-    
-    Leds::Set(ACCENT_KEY_LED, engine.get_sequence().get_accent() != 0);
-    Leds::Set(SLIDE_KEY_LED, engine.get_sequence().get_slide());
+    const Sequence &s = engine.get_sequence();
+    const uint8_t note_k = s.get_note_key_index();
+    Leds::Set(pitch_leds[note_k], true);
+
+    Leds::Set(ACCENT_KEY_LED, s.get_accent() != 0);
+    Leds::Set(SLIDE_KEY_LED, s.get_slide());
+    const uint8_t ladder = s.get_octave();
     Leds::Set(DOWN_KEY_LED,
-              engine.get_sequence().get_octave() == OCTAVE_DOWN ||
-                  engine.get_sequence().get_octave() == OCTAVE_DOUBLE_UP);
-    Leds::Set(UP_KEY_LED, engine.get_sequence().get_octave() > OCTAVE_ZERO);
+              ladder == OCTAVE_DOWN || ladder == OCTAVE_DOUBLE_UP);
+    // Linear ladder lights UP for high C + center octave; UP key was not pressed — redundant.
+    const bool redundant_up =
+        note_k == PITCH_KEY_HIGH_C && s.get_octave_button() == 1;
+    Leds::Set(UP_KEY_LED, ladder > OCTAVE_ZERO && !redundant_up);
   }
   // empty step: no LEDs lit — pattern is blank here
 }
@@ -400,8 +408,13 @@ void loop() {
 
   // show all pressed buttons
   for (uint8_t i = 0; i < 16; ++i) {
-    if (inputs[switched_leds[i].button].held())
-      Leds::Set(OutputIndex(i), true);
+    const InputIndex b = switched_leds[i].button;
+    if (!inputs[b].held())
+      continue;
+    // High C already implies upper register; skip UP LED (often ghosts with C_KEY2 on same mux).
+    if (b == UP_KEY && inputs[C_KEY2].held())
+      continue;
+    Leds::Set(OutputIndex(i), true);
   }
 
   Leds::Send(ticks); // hardware output, framebuffer reset
