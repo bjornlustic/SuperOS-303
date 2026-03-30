@@ -12,7 +12,7 @@ def get_git_rev():
 
 def after_build(source, target, env):
     git_rev = get_git_rev()
-    env.Replace(PROGNAME=f"OS-303_v%s_{git_rev}" % env.GetProjectOption("custom_project_version"))
+    env.Replace(PROGNAME=f"SuperOS-303_v%s_{git_rev}" % env.GetProjectOption("custom_project_version"))
 
     app = env.subst(".pio/build/app/firmware.hex")
     boot = env.subst(".pio/build/bootloader/firmware.hex")
