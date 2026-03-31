@@ -1,8 +1,7 @@
 // Public MIDI API (implementation in midi.cpp)
-// Arduino MIDI library header resolves correctly on case-insensitive filesystems.
 #pragma once
 
-#include <Arduino.h>  
+#include <Arduino.h>
 
 struct Engine;
 
@@ -16,11 +15,20 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pu
 /// Call once per 16th when `engine.Clock()` returned true while transport running.
 void midi_after_clock(Engine &engine, uint8_t transpose);
 /// DIN MIDI leader: clock pulses on `clocked` when transport runs and we are not synced to
-/// incoming MIDI Clock; optional Start/Stop with RUN edges (same conditions as engine reset).
+/// incoming MIDI Clock; optional Start/Stop with RUN edges.
 void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave,
                            bool run_rising, bool run_falling);
 /// True when the last live (non-sequencer) MIDI Note On had velocity >= 100 (accent).
-/// Valid only while clock is stopped; used by main.cpp to drive DAC accent CV.
 bool midi_live_accent();
-/// True while a live MIDI Note On is held (clock stopped); used by main.cpp to open gate.
+/// True while a live MIDI Note On is held (clock stopped); driven by most-recent note only.
 bool midi_live_gate();
+
+/// Audition a single note during pitch write/edit (not sequencer output).
+/// Tracks the last-sent audition note; sends Note Off for previous if pitch changes.
+void midi_audition_note_on(uint8_t note, uint8_t vel);
+/// Send Note Off for the currently-open audition note (TAP_NEXT / BACK_KEY falling).
+void midi_audition_note_off();
+
+/// Broadcast current sequencer position to host (SysEx 0x15).
+/// Called once per 16th-note advance while transport is running.
+void midi_send_step_position(uint8_t pat, uint8_t step);
