@@ -8,9 +8,7 @@
 
 # Local reference material — not for publication
 docs/
-release/*
-!release/*.hex
-!release/*.syx
+release/
 
 # macOS
 .DS_Store
