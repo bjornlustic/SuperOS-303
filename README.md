@@ -1,4 +1,4 @@
-# superOS-303 Firmware ([SuperOS303.com)]([https://www.superos303.com](https://www.google))
+# superOS-303 Firmware
 
 This is the firmware for a TB-303 CPU replacement, targeting Teensy++2.0 using PlatformIO. It uses the Arduino-compatible Teensy framework, so using Arduino IDE to build it also works - just open the `src/src.ino` file. Make sure you have the Teensy libraries installed in Boards Manager and select "Teensy++ 2.0".
 

@@ -41,7 +41,7 @@ jobs:
     - name: Copy artifact
       uses: actions/upload-artifact@v7
       with:
-        name: OS-303_${{env.ARTIFACT_TAG}}
+        name: superOS-303_${{env.ARTIFACT_TAG}}
         path: |
           *.hex
           *.syx
