@@ -226,37 +226,55 @@ static void sysex_cb(byte *data, unsigned sz) {
                     static_cast<unsigned>(sz - 2));
 }
 
-// --- Live gate / accent ---------------------------------------------------------
-static bool s_live_accent = false;
-static bool s_live_gate   = false;
-static uint8_t s_live_note = 0; // most-recent live Note On pitch
+// --- Live gate / accent / slide -------------------------------------------------
+static bool    s_live_accent = false;
+static bool    s_live_gate   = false;
+static bool    s_live_slide  = false; // true while destination note of a live legato slide
+static uint8_t s_live_note   = 0;     // most-recent live Note On pitch
 
 bool midi_live_accent() { return s_live_accent; }
 bool midi_live_gate()   { return s_live_gate; }
+bool midi_live_slide()  { return s_live_slide; }
 
 static void note_on_cb(byte ch, byte pitch, byte vel) {
   if (vel == 0) return;
   if (s_in_channel != 0 && ch != s_in_channel) return;
-  MIDI.sendNoteOn(pitch, vel, ch);
+
+  if (!g_clk_run && s_live_gate && s_live_note != static_cast<uint8_t>(pitch)) {
+    // Legato: new note while previous still held — slide ordering.
+    // Send Note On new BEFORE Note Off old so receiving synths trigger portamento.
+    MIDI.sendNoteOn(pitch, vel, ch);
+    MIDI.sendNoteOff(s_live_note, 0, ch);
+    s_live_slide = true;
+  } else {
+    MIDI.sendNoteOn(pitch, vel, ch);
+    if (!g_clk_run) s_live_slide = false;
+  }
+
   if (g_eng)
     g_eng->midi_apply_note_on(static_cast<uint8_t>(pitch), static_cast<uint8_t>(vel));
+
   if (!g_clk_run) {
     s_live_accent = (vel >= 100);
     s_live_gate   = true;
-    s_live_note   = static_cast<uint8_t>(pitch); // track most-recent note
+    s_live_note   = static_cast<uint8_t>(pitch);
   }
 }
 
 static void note_off_cb(byte ch, byte pitch, byte vel) {
   (void)vel;
   if (s_in_channel != 0 && ch != s_in_channel) return;
-  MIDI.sendNoteOff(pitch, 0, ch);
+
   if (!g_clk_run) {
-    // Only clear the gate if this Note Off matches the currently-active live note.
-    // This prevents releasing note 1 (slide source) from silencing note 2 (slide dest).
+    // Only send Note Off if this is the currently-active note.
+    // If the player slid away from this note, its Note Off was already sent in note_on_cb.
     if (static_cast<uint8_t>(pitch) == s_live_note) {
-      s_live_gate = false;
+      MIDI.sendNoteOff(pitch, 0, ch);
+      s_live_gate  = false;
+      s_live_slide = false;
     }
+  } else {
+    MIDI.sendNoteOff(pitch, 0, ch);
   }
 }
 
