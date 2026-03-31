@@ -290,23 +290,19 @@ struct Sequence {
     return from;
   }
 
-  /// Clear PITCH_MODE entry reset and land on first NOTE step (skips leading rests/ties).
+  /// Handle reset flag on PITCH_MODE entry: snap to step 0.
   void ensure_pitch_edit_entry() {
     if (reset) {
       reset = false;
-      pitch_pos = int(first_note_idx());
-      time_pos = pitch_pos;
-    }
-    if (time(uint8_t(pitch_pos & (MAX_STEPS - 1))) != 1) {
-      pitch_pos = int(next_note_step_idx(uint8_t(pitch_pos & (MAX_STEPS - 1))));
-      time_pos = pitch_pos;
+      pitch_pos = 0;
+      time_pos = 0;
     }
   }
 
-  /// After recording/audition: move to next NOTE step only (rest/tie slots invisible in pitch edit).
+  /// After recording/audition: advance one step linearly (same as original AdvancePitch).
   void advance_pitch_to_next_note() {
     first_step = false;
-    pitch_pos = int(next_note_step_idx(uint8_t(pitch_pos & (MAX_STEPS - 1))));
+    pitch_pos = (pitch_pos + 1) % length;
     time_pos = pitch_pos;
   }
 
@@ -344,16 +340,9 @@ struct Sequence {
     return true;
   }
 
-  /// PITCH_MODE: previous NOTE step (not raw index).
+  /// PITCH_MODE: step back one position linearly (same as TIME_MODE).
   bool StepBackPitchByNote() {
-    ensure_pitch_edit_entry();
-    const uint8_t first = first_note_idx();
-    const uint8_t cur = uint8_t(pitch_pos & (MAX_STEPS - 1));
-    if (cur == first)
-      return false;
-    pitch_pos = int(prev_note_step_idx(cur));
-    time_pos = pitch_pos;
-    return true;
+    return StepBack();
   }
 };
 

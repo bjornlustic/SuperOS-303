@@ -330,17 +330,13 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                const bool &clk_run) {
   switch (engine.get_mode()) {
   case PITCH_MODE:
-    if (!write_mode) {
-      PrintPitch();
-      engine.SetMode(NORMAL_MODE);
-    }
+    PrintPitch();
+    if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
   case TIME_MODE:
-    if (!write_mode) {
-      PrintTime();
-      engine.SetMode(NORMAL_MODE);
-    }
+    PrintTime();
+    if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
   case NORMAL_MODE:
@@ -497,6 +493,9 @@ void loop() {
       if (b == UP_KEY && inputs[C_KEY2].held()) continue;
       Leds::Set(OutputIndex(i), true);
     }
+    // A# is a direct LED (switched_leds[17]) not covered by the 0-15 loop above
+    if (inputs[ASHARP_KEY].held())
+      Leds::Set(ASHARP_KEY_LED, true);
   }
 
   Leds::Send(ticks);
