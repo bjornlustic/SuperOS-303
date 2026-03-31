@@ -672,7 +672,7 @@ void loop() {
       gate = true;
     }
 
-    bool slide_cv = inputs[SLIDE_KEY].held();
+    bool slide_cv = inputs[SLIDE_KEY].held() || midi_live_slide();
     if (gate && (s_tap_pitch_preview_gate || s_back_pitch_preview_gate ||
                  (write_mode && engine.get_mode() == PITCH_MODE && check_pitch_inputs())))
       slide_cv = slide_cv || engine.get_sequence().get_slide();

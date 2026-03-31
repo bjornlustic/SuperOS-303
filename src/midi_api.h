@@ -22,6 +22,8 @@ void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave
 bool midi_live_accent();
 /// True while a live MIDI Note On is held (clock stopped); driven by most-recent note only.
 bool midi_live_gate();
+/// True while the destination note of a live legato slide is active (clock stopped).
+bool midi_live_slide();
 
 /// Audition a single note during pitch write/edit (not sequencer output).
 /// Tracks the last-sent audition note; sends Note Off for previous if pitch changes.
