@@ -156,6 +156,7 @@ static uint8_t resolve_octave() {
 
 void input_pitch(bool mod = false, bool clk_run = false) {
   if (clk_run && engine.is_step_locked()) return;
+  engine.get_sequence().ensure_pitch_edit_entry();
   if (mod) {
     if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
     if (inputs[SLIDE_KEY].rising())  engine.ToggleSlide();
@@ -172,8 +173,9 @@ void input_pitch(bool mod = false, bool clk_run = false) {
         const uint8_t oct   = resolve_octave();
         const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
                               (inputs[SLIDE_KEY].held()   << 7);
-        engine.get_sequence().AdvancePitch();
+        // Write current NOTE step, then advance to next NOTE (matches TAP write; no skip with TAP).
         engine.SetPitch(i + 13 * oct, flags);
+        engine.get_sequence().advance_pitch_to_next_note();
         break;
       }
     }
@@ -306,7 +308,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
     engine.StepBack();
     // Audition the note we are now on if write mode + PITCH_MODE + not running
     if (write_mode && !clk_run && engine.get_mode() == PITCH_MODE &&
-        !engine.get_sequence().step_is_empty()) {
+        engine.get_sequence().get_time() != 0) {
       uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
       if (mn > 127) mn = 127;
       const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
@@ -328,13 +330,17 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                const bool &clk_run) {
   switch (engine.get_mode()) {
   case PITCH_MODE:
-    PrintPitch();
-    if (!write_mode) engine.SetMode(NORMAL_MODE);
+    if (!write_mode) {
+      PrintPitch();
+      engine.SetMode(NORMAL_MODE);
+    }
     break;
 
   case TIME_MODE:
-    PrintTime();
-    if (!write_mode) engine.SetMode(NORMAL_MODE);
+    if (!write_mode) {
+      PrintTime();
+      engine.SetMode(NORMAL_MODE);
+    }
     break;
 
   case NORMAL_MODE:
@@ -545,8 +551,9 @@ void loop() {
       if (write_mode) {
         if (!clk_run) {
           if (engine.get_mode() == PITCH_MODE) {
-            // Audition current pitch step via DAC + MIDI, then advance
-            if (!engine.get_sequence().step_is_empty()) {
+            engine.get_sequence().ensure_pitch_edit_entry();
+            // Audition current NOTE step; advance to next note happens on TAP falling.
+            if (engine.get_sequence().get_time() == 1) {
               uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
               if (mn > 127) mn = 127;
               const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
@@ -554,7 +561,6 @@ void loop() {
               s_tap_pitch_preview_gate = true;
               midi_audition_note_on(uint8_t(mn), vel);
             }
-            engine.get_sequence().AdvancePitch();
           } else if (engine.get_mode() == TIME_MODE) {
             const bool send = engine.Advance();
             engine.SyncAfterManualAdvance(send);
@@ -563,7 +569,7 @@ void loop() {
       } else {
         if (!clk_run) {
           const bool g = engine.Advance();
-          if (g && !engine.get_sequence().step_is_empty()) {
+          if (g) {
             uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
             if (mn > 127) mn = 127;
             const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
@@ -579,6 +585,14 @@ void loop() {
     if (inputs[TAP_NEXT].falling()) {
       s_tap_pitch_preview_gate = false;
       midi_audition_note_off(); // close any open audition note
+      // PITCH_MODE write: advance on release (so user sees current note while held),
+      // and exit to NORMAL_MODE when we've looped back to the first note.
+      if (!clk_run && write_mode && engine.get_mode() == PITCH_MODE) {
+        const uint8_t first_note = engine.get_sequence().first_note_idx();
+        engine.get_sequence().advance_pitch_to_next_note();
+        if (!wrap_edit && uint8_t(engine.get_sequence().pitch_pos) == first_note)
+          engine.SetMode(NORMAL_MODE, true);
+      }
       if (!wrap_edit && !clk_run && engine.get_mode() == TIME_MODE &&
           engine.get_time_pos() >= engine.get_length() - 1)
         engine.SetMode(NORMAL_MODE, true);
@@ -621,7 +635,7 @@ void loop() {
     if (!clk_run && (engine.get_mode() == PITCH_MODE || engine.get_mode() == TIME_MODE) &&
         inputs[BACK_KEY].rising()) {
       engine.StepBack();
-      if (engine.get_mode() == PITCH_MODE && !engine.get_sequence().step_is_empty()) {
+      if (engine.get_mode() == PITCH_MODE && engine.get_sequence().get_time() != 0) {
         uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
         if (mn > 127) mn = 127;
         const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
