@@ -14,516 +14,248 @@
       --gray-2:  #e0e0e0;
       --gray-3:  #b0b0b0;
       --gray-4:  #606060;
+      --red:     #cc0000;
       --rule:    2px solid #000;
       --rule-sm: 1px solid #000;
       --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
       --mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
     }
 
-    html {
-      background: var(--white);
-      color: var(--black);
-      font-family: var(--font);
-      font-size: 14px;
-      -webkit-font-smoothing: antialiased;
-    }
+    html { background: var(--white); color: var(--black); font-family: var(--font); font-size: 14px; -webkit-font-smoothing: antialiased; }
     body { min-height: 100vh; }
     .app { padding: 36px 36px 48px; }
 
-    /* ── Header ─────────────────────────────────────── */
-    .header {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      padding-bottom: 12px;
-      border-bottom: var(--rule);
-      margin-bottom: 24px;
-    }
-    .logo {
-      font-size: 30px;
-      font-weight: 900;
-      letter-spacing: -0.04em;
-      text-transform: uppercase;
-      line-height: 1;
-    }
-    .logo-sub {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.2em;
-      text-transform: uppercase;
-      color: var(--gray-4);
-      align-self: flex-end;
-      padding-bottom: 4px;
-    }
+    /* ── Header ── */
+    .header { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 12px; border-bottom: var(--rule); margin-bottom: 24px; }
+    .logo { font-size: 30px; font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase; line-height: 1; }
+    .logo-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gray-4); align-self: flex-end; padding-bottom: 4px; }
 
-    /* ── HTTP warning ────────────────────────────────── */
-    .banner {
-      display: none;
-      padding: 10px 14px;
-      border: var(--rule);
-      margin-bottom: 6px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      background: var(--black);
-      color: var(--white);
-    }
+    /* ── Banner ── */
+    .banner { display: none; padding: 10px 14px; border: var(--rule); margin-bottom: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: var(--black); color: var(--white); }
     .banner.visible { display: block; }
 
-    /* ── Control strips ──────────────────────────────── */
-    .strip {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: stretch;
-      border: var(--rule);
-      margin-bottom: 6px;
-    }
-    .group {
-      display: flex;
-      align-items: center;
-      gap: 0;
-      padding: 0 14px;
-      border-right: var(--rule);
-    }
+    /* ── Control strips ── */
+    .strip { display: flex; flex-wrap: wrap; align-items: stretch; border: var(--rule); margin-bottom: 6px; }
+    .group { display: flex; align-items: center; gap: 0; padding: 0 14px; border-right: var(--rule); }
     .group:last-child { border-right: none; }
     .group-inner { display: flex; align-items: center; gap: 6px; padding: 10px 0; }
+    .lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); white-space: nowrap; padding-right: 10px; border-right: var(--rule-sm); margin-right: 10px; align-self: stretch; display: flex; align-items: center; }
 
-    .lbl {
-      font-size: 9px;
-      font-weight: 900;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--gray-4);
-      white-space: nowrap;
-      padding-right: 10px;
-      border-right: var(--rule-sm);
-      margin-right: 10px;
-      align-self: stretch;
-      display: flex;
-      align-items: center;
-    }
-
-    /* ── Inputs ──────────────────────────────────────── */
-    input[type="number"], select {
-      height: 30px;
-      padding: 0 8px;
-      background: var(--white);
-      border: var(--rule-sm);
-      color: var(--black);
-      font-family: var(--font);
-      font-size: 13px;
-      font-weight: 600;
-      outline: none;
-      border-radius: 0;
-      appearance: none;
-      transition: background 0.08s;
-    }
-    input[type="number"]:focus, select:focus {
-      background: var(--black);
-      color: var(--white);
-    }
+    /* ── Inputs ── */
+    input[type="number"], select { height: 30px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 13px; font-weight: 600; outline: none; border-radius: 0; appearance: none; transition: background 0.08s; }
+    input[type="number"]:focus, select:focus { background: var(--black); color: var(--white); }
     input[type="number"] { width: 54px; text-align: center; }
     select { min-width: 150px; cursor: pointer; padding-right: 8px; }
+    input[type="file"] { display: none; }
 
-    /* ── Buttons ─────────────────────────────────────── */
-    .btn {
-      height: 30px;
-      padding: 0 14px;
-      background: var(--white);
-      border: var(--rule-sm);
-      color: var(--black);
-      font-family: var(--font);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      cursor: pointer;
-      white-space: nowrap;
-      border-radius: 0;
-      transition: background 0.08s, color 0.08s;
-    }
+    /* ── Buttons ── */
+    .btn { height: 30px; padding: 0 14px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; white-space: nowrap; border-radius: 0; transition: background 0.08s, color 0.08s; }
     .btn:hover:not(:disabled) { background: var(--black); color: var(--white); }
     .btn:disabled { opacity: 0.25; cursor: default; }
-
-    .btn-primary {
-      background: var(--black);
-      color: var(--white);
-      border-color: var(--black);
-      font-weight: 900;
-    }
+    .btn-primary { background: var(--black); color: var(--white); border-color: var(--black); font-weight: 900; }
     .btn-primary:hover:not(:disabled) { background: var(--gray-4); border-color: var(--gray-4); }
-
-    .btn-ghost {
-      height: 30px;
-      padding: 0 14px;
-      background: var(--white);
-      border: var(--rule-sm);
-      color: var(--black);
-      font-family: var(--font);
-      font-size: 9px;
-      font-weight: 900;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      cursor: pointer;
-      border-radius: 0;
-      transition: background 0.08s, color 0.08s;
-    }
+    .btn-ghost { height: 30px; padding: 0 14px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; }
     .btn-ghost:hover { background: var(--black); color: var(--white); }
-    .btn-ghost.is-connected {
-      background: var(--black);
-      color: var(--white);
-    }
+    .btn-ghost.is-connected { background: var(--black); color: var(--white); }
 
-    /* ── MIDI status ─────────────────────────────────── */
-    #midiStatus {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--gray-3);
-      letter-spacing: 0.02em;
-      padding-left: 10px;
-    }
-    #midiStatus.is-ok   { color: var(--black); }
+    /* ── MIDI status ── */
+    #midiStatus { font-size: 11px; font-weight: 600; color: var(--gray-3); letter-spacing: 0.02em; padding-left: 10px; }
+    #midiStatus.is-ok { color: var(--black); }
     #midiStatus.is-warn { color: var(--gray-4); }
 
-    /* ── Pattern pills ───────────────────────────────── */
-    .pat-pills { display: flex; gap: 0; }
+    /* ── Group tabs + Bank A/B (one bar) ── */
+    .bank-group-bar { display: flex; align-items: stretch; flex-wrap: wrap; border: var(--rule); margin-bottom: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .bank-group-bar .group-tabs { display: flex; flex-direction: row; flex-shrink: 0; border-right: var(--rule); margin: 0; }
+    .bank-group-bar .group-tab {
+      flex: 0 0 auto; min-width: 44px; min-height: 36px; padding: 0 8px; box-sizing: border-box;
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+      font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase;
+      border-right: var(--rule-sm); background: var(--white); color: var(--gray-4); transition: all 0.08s; user-select: none;
+    }
+    .bank-group-bar .group-tab:last-child { border-right: none; }
+    .bank-group-bar .group-tab:hover:not(.is-active) { background: var(--gray-1); color: var(--black); }
+    .bank-group-bar .group-tab.is-active { background: var(--black); color: var(--white); }
+
+    /* ── Bank + Pattern pills (inside .bank-group-bar) ── */
+    .bank-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); padding: 0 12px; display: flex; align-items: center; border-right: var(--rule-sm); white-space: nowrap; flex-shrink: 0; }
+    .bank-label-sep { border-left: var(--rule); margin-left: -1px; }
+    .pat-pills { display: flex; gap: 0; flex-shrink: 0; }
     .pat-pill {
-      width: 28px;
-      height: 28px;
-      border: var(--rule-sm);
-      margin-right: -1px;
-      background: var(--white);
-      color: var(--gray-3);
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.08s;
-      border-radius: 0;
+      width: 36px; height: 36px; border: var(--rule-sm); margin-right: -1px;
+      background: var(--white); color: var(--gray-3); font-family: var(--mono);
+      font-size: 10px; font-weight: 700; cursor: pointer; display: flex;
+      align-items: center; justify-content: center; transition: all 0.08s;
+      border-radius: 0; position: relative; user-select: none;
     }
     .pat-pill:hover:not(.is-active) { background: var(--gray-1); color: var(--black); }
-    .pat-pill.is-active {
-      background: var(--black);
-      border-color: var(--black);
-      color: var(--white);
-      z-index: 1;
-    }
-    .pat-pill.is-dirty:not(.is-active) {
-      box-shadow: inset 0 -2px 0 0 var(--black);
-      color: var(--black);
-    }
+    .pat-pill.is-active { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
+    .pat-pill.is-dirty:not(.is-active) { box-shadow: inset 0 -2px 0 0 var(--black); color: var(--black); }
+    .pat-pill.is-queued:not(.is-active) { outline: 2px dashed var(--black); outline-offset: -2px; }
+    /* Blinking playing indicator */
+    .pat-pill.is-playing { animation: pill-blink 0.5s steps(1) infinite; }
+    .pat-pill.is-playing.is-active { animation: pill-blink-inv 0.5s steps(1) infinite; }
+    .pat-pill.is-copied { box-shadow: inset 0 0 0 2px var(--red); color: var(--black); font-weight: 900; }
+    .pat-pill.is-copied.is-active { box-shadow: inset 0 0 0 2px var(--red); }
+    @keyframes pill-blink     { 0%,100%{background:var(--white)} 50%{background:var(--gray-2)} }
+    @keyframes pill-blink-inv { 0%,100%{background:var(--black)} 50%{background:var(--gray-4)} }
 
-    /* ── Sequencer panel ─────────────────────────────── */
-    .seq-panel {
-      border: var(--rule);
-      margin-bottom: 6px;
+    /* ── Sequencer panel ── */
+    .seq-panel { border: var(--rule); margin-bottom: 6px; }
+    .seq-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: var(--rule); flex-wrap: wrap; gap: 8px; }
+    .live-group-inner { padding: 0 !important; align-self: stretch; flex: 1; min-width: 0; }
+    .live-toggle {
+      display: flex; align-items: center; justify-content: flex-start;
+      width: 100%; min-height: 36px; padding: 10px 14px; box-sizing: border-box;
+      border: none;
+      background: var(--white); color: var(--black);
+      font-family: var(--font); font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      cursor: pointer; user-select: none; text-align: left;
+      transition: background 0.12s, color 0.12s;
     }
-    .seq-toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 14px;
-      border-bottom: var(--rule);
-    }
-    .seq-toolbar-lbl {
-      font-size: 9px;
-      font-weight: 900;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--gray-4);
-    }
-    .seq-hint {
-      font-size: 11px;
-      font-weight: 500;
-      color: var(--gray-3);
-      letter-spacing: 0.02em;
-    }
+    .live-toggle:hover:not(.is-on) { background: var(--gray-1); }
+    .live-toggle.is-on { background: var(--red); color: var(--white); }
+    .live-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+    .live-toggle:focus-within { outline: 2px solid var(--black); outline-offset: -2px; }
+    .live-toggle.is-on:focus-within { outline-color: var(--white); }
+    .live-push-lbl { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+    .seq-toolbar-lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .seq-toolbar-steps { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .seq-pat-len { width: 54px; text-align: center; }
+    .seq-hint { font-size: 11px; font-weight: 500; color: var(--gray-3); letter-spacing: 0.02em; }
     .seq-hint b { color: var(--black); font-weight: 700; }
+    .seq-grid-wrap { padding: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .seq-grid { display: grid; grid-template-columns: repeat(8, minmax(68px, 1fr)); gap: 0; border-top: var(--rule-sm); border-left: var(--rule-sm); min-width: min(100%, 544px); }
+    .seq-grid.cols-16 { grid-template-columns: repeat(16, minmax(56px, 1fr)); min-width: 896px; }
 
-    .seq-grid-wrap {
-      padding: 12px;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-    }
-
-    /* Step grid: 8 columns; 16 columns for 33–64 steps (full 64 = 4×16, scroll on narrow screens) */
-    .seq-grid {
-      display: grid;
-      grid-template-columns: repeat(8, minmax(68px, 1fr));
-      gap: 0;
-      border-top: var(--rule-sm);
-      border-left: var(--rule-sm);
-      min-width: min(100%, 544px);
-    }
-    .seq-grid.cols-16 {
-      grid-template-columns: repeat(16, minmax(56px, 1fr));
-      min-width: 896px;
-    }
-
-    /* ── Step card ───────────────────────────────────── */
-    .step-card {
-      background: var(--white);
-      border-right: var(--rule-sm);
-      border-bottom: var(--rule-sm);
-      padding: 8px 8px 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      transition: background 0.08s;
-      min-width: 0;
-      position: relative;
-    }
+    /* ── Step card ── */
+    .step-card { background: var(--white); border-right: var(--rule-sm); border-bottom: var(--rule-sm); padding: 8px 8px 8px; display: flex; flex-direction: column; gap: 6px; transition: background 0.08s; min-width: 0; position: relative; }
     .step-card:hover { background: var(--gray-1); }
-
-    /* Active (note) state — inverted */
-    .step-card.is-note {
-      background: var(--black);
-      color: var(--white);
-    }
+    .step-card.is-note { background: var(--black); color: var(--white); }
     .step-card.is-note:hover { background: #222; }
-
-    /* Tie state — gray bg */
     .step-card.is-tie { background: var(--gray-2); }
     .step-card.is-tie:hover { background: #d0d0d0; }
-
-    /* Rest state — dimmed but still readable */
     .step-card.is-rest { opacity: 0.52; }
     .step-card.is-rest:hover { opacity: 0.8; }
+    .seq-grid > .step-card:nth-child(4n) { border-right: var(--rule); }
 
-    /* Group-of-4 thick border */
-    .seq-grid > .step-card:nth-child(4n) {
-      border-right: var(--rule);
+    /* Playing step indicator — small red dot top-right */
+    .step-play-dot {
+      position: absolute; top: 3px; right: 3px;
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--red); display: none;
     }
-    .seq-grid > .step-card:nth-child(n+9):nth-child(-n+16),
-    .seq-grid > .step-card:nth-child(n+25):nth-child(-n+32),
-    .seq-grid > .step-card:nth-child(n+41):nth-child(-n+48),
-    .seq-grid > .step-card:nth-child(n+57):nth-child(-n+64) {
-      /* rows 2/4/6/8 — no extra styling needed, grid handles it */
-    }
+    .step-card.is-playing-step .step-play-dot { display: block; animation: dot-blink 0.25s steps(1) 2; }
+    @keyframes dot-blink { 0%,100%{opacity:1} 50%{opacity:0} }
 
-    .step-num {
-      font-family: var(--mono);
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      color: var(--gray-3);
-      line-height: 1;
-    }
+    .step-num { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: var(--gray-3); line-height: 1; }
     .is-note .step-num { color: rgba(255,255,255,0.4); }
     .is-tie  .step-num { color: var(--gray-4); }
 
-    /* R / N / T */
     .step-time { display: flex; gap: 0; }
-    .t-btn {
-      flex: 1;
-      height: 18px;
-      border: var(--rule-sm);
-      margin-right: -1px;
-      font-size: 8px;
-      font-weight: 900;
-      letter-spacing: 0.08em;
-      cursor: pointer;
-      background: var(--white);
-      color: var(--gray-3);
-      font-family: var(--font);
-      text-transform: uppercase;
-      border-radius: 0;
-      transition: all 0.08s;
-    }
+    .t-btn { flex: 1; height: 18px; border: var(--rule-sm); margin-right: -1px; font-size: 8px; font-weight: 900; letter-spacing: 0.08em; cursor: pointer; background: var(--white); color: var(--gray-3); font-family: var(--font); text-transform: uppercase; border-radius: 0; transition: all 0.08s; }
     .t-btn:last-child { margin-right: 0; }
     .t-btn:hover { background: var(--gray-2); color: var(--black); }
-
-    /* Active time button = inverted */
-    .t-btn.is-on {
-      background: var(--black);
-      border-color: var(--black);
-      color: var(--white);
-      z-index: 1;
-    }
-
-    /* On a black card, invert the active btn */
+    .t-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
     .is-note .t-btn { background: transparent; border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.4); }
     .is-note .t-btn:hover { background: rgba(255,255,255,0.15); color: var(--white); }
     .is-note .t-btn.is-on { background: var(--white); border-color: var(--white); color: var(--black); }
-
     .is-tie .t-btn { background: transparent; border-color: var(--gray-3); color: var(--gray-4); }
     .is-tie .t-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); }
+    .t-btn:disabled { opacity: 0.28; cursor: default; }
+    .is-note .t-btn:disabled, .is-tie .t-btn:disabled { opacity: 0.22; }
+    .step-card.is-locked.is-note .pitch-knob-track { pointer-events: none; cursor: default; opacity: 0.42; }
 
-    /* Note name */
-    .step-name {
-      text-align: center;
-      font-size: 20px;
-      font-weight: 900;
-      letter-spacing: -0.04em;
-      line-height: 1;
-      height: 22px;
-      overflow: hidden;
-      color: var(--black);
-    }
-    .is-note  .step-name { color: var(--white); }
-    .is-tie   .step-name { color: var(--black); }
-    .is-rest  .step-name { color: var(--black); }
+    .step-name { text-align: center; font-size: 20px; font-weight: 900; letter-spacing: -0.04em; line-height: 1; height: 22px; overflow: hidden; color: var(--black); }
+    .is-note .step-name { color: var(--white); }
+    .is-tie  .step-name { color: var(--black); }
+    .is-rest .step-name { color: var(--black); }
 
-    /* Pitch: vertical drag knob (pull up = higher pitch) */
-    .pitch-knob-wrap {
-      display: flex;
-      flex-direction: row;
-      align-items: stretch;
-      gap: 6px;
-      min-height: 72px;
-      user-select: none;
-      touch-action: none;
-    }
-    .pitch-knob-wrap.is-disabled {
-      opacity: 0.22;
-      pointer-events: none;
-    }
-    .pitch-knob-track {
-      flex: 1;
-      position: relative;
-      height: 72px;
-      border: var(--rule-sm);
-      background: var(--gray-1);
-      cursor: ns-resize;
-    }
-    .is-note .pitch-knob-track {
-      border-color: rgba(255,255,255,0.35);
-      background: rgba(255,255,255,0.08);
-    }
-    .is-tie .pitch-knob-track { border-color: var(--gray-3); }
-    .pitch-knob-fill {
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: var(--gray-3);
-      pointer-events: none;
-    }
+    .pitch-knob-wrap { display: flex; flex-direction: row; align-items: stretch; gap: 6px; min-height: 72px; user-select: none; touch-action: none; }
+    .pitch-knob-track { flex: 1; position: relative; height: 72px; border: var(--rule-sm); background: var(--gray-1); cursor: ns-resize; }
+    .is-note .pitch-knob-track { border-color: rgba(255,255,255,0.35); background: rgba(255,255,255,0.08); }
+    .is-tie  .pitch-knob-track { border-color: var(--gray-3); }
+    .pitch-knob-fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--gray-3); pointer-events: none; }
     .is-note .pitch-knob-fill { background: rgba(255,255,255,0.35); }
-    .pitch-knob-thumb {
-      position: absolute;
-      left: -1px;
-      right: -1px;
-      height: 6px;
-      margin-bottom: -3px;
-      background: var(--black);
-      pointer-events: none;
-      border: var(--rule-sm);
-    }
-    .is-note .pitch-knob-thumb {
-      background: var(--white);
-      border-color: var(--white);
-    }
+    .pitch-knob-thumb { position: absolute; left: -1px; right: -1px; height: 6px; margin-bottom: -3px; background: var(--black); pointer-events: none; border: var(--rule-sm); }
+    .is-note .pitch-knob-thumb { background: var(--white); border-color: var(--white); }
 
-    /* A / S */
     .step-flags { display: flex; gap: 0; }
-    .f-btn {
-      flex: 1;
-      height: 18px;
-      border: var(--rule-sm);
-      margin-right: -1px;
-      background: transparent;
-      color: var(--gray-3);
-      font-size: 8px;
-      font-weight: 900;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      cursor: pointer;
-      font-family: var(--font);
-      border-radius: 0;
-      transition: all 0.08s;
-    }
+    .f-btn { flex: 1; height: 18px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 8px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; }
     .f-btn:last-child { margin-right: 0; }
     .f-btn:disabled { opacity: 0.15; cursor: default; }
     .f-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
-
-    .f-btn.f-on {
-      background: var(--black);
-      border-color: var(--black);
-      color: var(--white);
-    }
-
-    /* On black card */
+    .f-btn.f-on { background: var(--black); border-color: var(--black); color: var(--white); }
     .is-note .f-btn { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.4); }
     .is-note .f-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
     .is-note .f-btn.f-on { background: var(--white); border-color: var(--white); color: var(--black); }
-
     .is-tie .f-btn { border-color: var(--gray-3); color: var(--gray-4); }
     .is-tie .f-btn.f-on { background: var(--black); border-color: var(--black); color: var(--white); }
 
-    /* ── Log ─────────────────────────────────────────── */
+    .step-card.is-locked { outline: 2px dashed var(--black); outline-offset: -2px; }
+    .step-oct-row { display: flex; gap: 0; margin-top: 2px; }
+    .f-btn-o { flex: 1; min-width: 0; height: 22px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 6px; font-weight: 900; letter-spacing: 0; line-height: 1.05; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; padding: 1px 2px; }
+    .f-btn-o:last-child { margin-right: 0; }
+    .f-btn-o:disabled { opacity: 0.2; cursor: default; }
+    .f-btn-o:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
+    .f-btn-o.is-on { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
+    .is-note .f-btn-o { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.45); }
+    .is-note .f-btn-o:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
+    .is-note .f-btn-o.is-on { background: var(--white); border-color: var(--white); color: var(--black); }
+    .is-tie .f-btn-o { border-color: var(--gray-3); color: var(--gray-4); }
+    .is-tie .f-btn-o.is-on { background: var(--black); border-color: var(--black); color: var(--white); }
+    .f-btn.f-lock.f-lock-active { background: var(--red); border-color: var(--red); color: var(--white); }
+    .is-note .f-btn.f-lock.f-lock-active { background: var(--red); border-color: var(--red); color: var(--white); }
+    .step-name.is-muted { font-size: 16px; font-weight: 700; color: var(--gray-3); }
+    .is-note .step-name.is-muted { color: rgba(255,255,255,0.35); }
+    .is-rest .pitch-knob-wrap,
+    .is-rest .step-oct-row { display: none !important; }
+    .is-rest .step-flags .f-btn:not(.f-lock) { display: none !important; }
+    #copyStatus { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; color: var(--red); padding-left: 8px; white-space: nowrap; }
+
+    /* ── Config panel ── */
+    .config-panel { border: var(--rule); margin-bottom: 6px; }
+    .config-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .config-bar:hover { background: var(--gray-1); }
+    .config-bar.is-open { border-bottom: var(--rule-sm); }
+    .config-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .config-bar-arrow { font-size: 8px; color: var(--gray-3); display: inline-block; transition: transform 0.12s; }
+    .config-bar.is-open .config-bar-arrow { transform: rotate(90deg); }
+    .config-body { display: none; }
+    .config-body.is-open { display: block; }
+    .config-inner { padding: 14px; display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+    .config-field { display: flex; flex-direction: column; gap: 4px; }
+    .config-field label { font-size: 9px; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray-4); }
+    .config-status { font-size: 11px; color: var(--gray-4); font-weight: 600; align-self: center; }
+
+    /* ── Log ── */
     .log-panel { border: var(--rule); }
-    .log-bar {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 14px;
-      cursor: pointer;
-      user-select: none;
-      border-bottom: 1px solid transparent;
-      transition: background 0.08s;
-    }
+    .log-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
     .log-bar:hover { background: var(--gray-1); }
     .log-bar.is-open { border-bottom: var(--rule-sm); }
-    .log-bar-label {
-      font-size: 9px;
-      font-weight: 900;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--gray-4);
-    }
-    .log-bar-arrow {
-      font-size: 8px;
-      color: var(--gray-3);
-      display: inline-block;
-      transition: transform 0.12s;
-    }
+    .log-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .log-bar-arrow { font-size: 8px; color: var(--gray-3); display: inline-block; transition: transform 0.12s; }
     .log-bar.is-open .log-bar-arrow { transform: rotate(90deg); }
-    .log-bar-count {
-      margin-left: auto;
-      font-size: 10px;
-      font-weight: 700;
-      color: var(--gray-3);
-      letter-spacing: 0.04em;
-    }
+    .log-bar-count { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; }
     .log-body { display: none; }
     .log-body.is-open { display: block; }
-    #log {
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 500;
-      background: var(--gray-1);
-      padding: 12px 14px;
-      height: 132px;
-      overflow: auto;
-      white-space: pre-wrap;
-      color: var(--gray-4);
-      line-height: 1.9;
-      letter-spacing: 0.02em;
-    }
+    #log { font-family: var(--mono); font-size: 11px; font-weight: 500; background: var(--gray-1); padding: 12px 14px; height: 132px; overflow: auto; white-space: pre-wrap; color: var(--gray-4); line-height: 1.9; letter-spacing: 0.02em; }
     .log-note { color: var(--black); font-weight: 700; }
     .log-syx  { color: var(--black); }
-    .log-err  { color: var(--black); font-weight: 700; text-decoration: underline; }
+    .log-err  { color: var(--red); font-weight: 700; }
     .log-ack  { color: var(--gray-4); }
   </style>
 </head>
 <body>
 <div class="app">
 
-  <!-- Header -->
   <header class="header">
     <div class="logo">SuperOS&#x2011;303</div>
     <div class="logo-sub">Pattern Editor</div>
   </header>
 
-  <!-- HTTP warning -->
   <div class="banner" id="httpBanner">
-    &#9632;&nbsp; Serve over HTTP for Web MIDI &mdash;
-    VS Code task &ldquo;Serve web-pattern-edit&rdquo; (live-server) auto-reloads when you save this file.
+    &#9632;&nbsp; Serve over HTTP for Web MIDI — run: python3 -m http.server 8080 --directory tools/web-pattern-edit
   </div>
 
   <!-- MIDI Connection -->
@@ -536,15 +268,11 @@
     </div>
     <div class="group">
       <span class="lbl">Out &#8594; 303</span>
-      <div class="group-inner">
-        <select id="selOut" disabled></select>
-      </div>
+      <div class="group-inner"><select id="selOut" disabled></select></div>
     </div>
     <div class="group">
       <span class="lbl">303 &#8594; In</span>
-      <div class="group-inner">
-        <select id="selIn" disabled></select>
-      </div>
+      <div class="group-inner"><select id="selIn" disabled></select></div>
     </div>
     <div class="group">
       <span class="lbl">Keyboard &#8594; 303</span>
@@ -555,52 +283,69 @@
     </div>
   </div>
 
-  <!-- Pattern + transport -->
+  <!-- From 303 (request) / Save+Load JSON -->
   <div class="strip">
     <div class="group">
-      <span class="lbl">Pattern</span>
-      <div class="group-inner">
-        <div class="pat-pills" id="patPills"></div>
-      </div>
-    </div>
-    <div class="group">
-      <span class="lbl">Steps</span>
-      <div class="group-inner">
-        <input type="number" id="patLen" min="1" max="64" value="16" />
-      </div>
-    </div>
-    <div class="group">
-      <div class="group-inner" style="gap:6px">
+      <span class="lbl">From 303</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
         <button class="btn" id="btnReq" disabled>&#8595; Request</button>
         <button class="btn" id="btnReqAll" disabled>&#8595; All 16</button>
       </div>
     </div>
+    <div class="group">
+      <span class="lbl">Save JSON</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnSavePattern">Pattern</button>
+        <button class="btn" id="btnSaveBank">Bank</button>
+        <button class="btn" id="btnSaveGroup">Group</button>
+        <button class="btn" id="btnSaveAll">All Groups</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Load JSON</span>
+      <div class="group-inner" style="gap:6px">
+        <button class="btn" id="btnLoadJson">&#8593; Upload JSON</button>
+        <input type="file" id="fileInput" accept=".json" />
+      </div>
+    </div>
   </div>
 
+  <div class="bank-group-bar">
+    <div class="group-tabs" id="groupTabs"></div>
+    <div class="bank-label">Bank A</div>
+    <div class="pat-pills" id="pillsA"></div>
+    <div class="bank-label bank-label-sep">Bank B</div>
+    <div class="pat-pills" id="pillsB"></div>
+  </div>
+
+  <!-- Live + Edits + clipboard (above step grid) -->
   <div class="strip">
-    <div class="group">
-      <span class="lbl">Banks</span>
-      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
-        <button class="btn" id="btnBank0" disabled>DL A 1–4</button>
-        <button class="btn" id="btnBank1" disabled>DL B 5–8</button>
-        <button class="btn" id="btnBank2" disabled>DL C 9–12</button>
-        <button class="btn" id="btnBank3" disabled>DL D 13–16</button>
+    <div class="group" style="flex:1;min-width:min(100%,220px)">
+      <span class="lbl">Live</span>
+      <div class="group-inner live-group-inner">
+        <label class="live-toggle" id="liveToggleLabel" title="Live off — tap to push edits while the sequencer runs">
+          <input type="checkbox" id="chkLive" />
+          <span>Push pattern to 303 while playing</span>
+        </label>
       </div>
     </div>
     <div class="group">
       <span class="lbl">Edits</span>
-      <div class="group-inner" style="gap:6px">
-        <button class="btn" id="btnUndo" disabled>Undo</button>
-        <button class="btn btn-primary" id="btnSave303" disabled>Save to 303</button>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap;align-items:center">
+        <button class="btn" id="btnUndo" disabled>&#8592; Undo</button>
+        <button class="btn" id="btnRedo" disabled>Redo &#8594;</button>
+        <button class="btn" id="btnResetBefore" disabled>Reset to Saved</button>
+        <button class="btn" id="btnResetAfter" disabled>Reset to Latest</button>
+        <button class="btn" id="btnClearPat">Clear pattern</button>
+        <button class="btn btn-primary" id="btnSave303" disabled>Commit &amp; Save to 303</button>
       </div>
     </div>
     <div class="group">
-      <span class="lbl">Live</span>
-      <div class="group-inner">
-        <label style="display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">
-          <input type="checkbox" id="chkLive" />
-          Push while playing
-        </label>
+      <span class="lbl">Clipboard</span>
+      <div class="group-inner" style="gap:6px">
+        <button class="btn" id="btnCopy">Copy Pattern</button>
+        <button class="btn" id="btnPaste" disabled>Paste Pattern</button>
+        <span id="copyStatus"></span>
       </div>
     </div>
   </div>
@@ -608,19 +353,56 @@
   <!-- Sequencer grid -->
   <div class="seq-panel">
     <div class="seq-toolbar">
-      <span class="seq-toolbar-lbl">Steps</span>
+      <div class="seq-toolbar-steps">
+        <span class="seq-toolbar-lbl">Steps</span>
+        <input type="number" id="patLen" class="seq-pat-len" min="1" max="64" value="16" />
+      </div>
+      <div class="seq-toolbar-steps" style="align-items:center">
+        <label class="live-push-lbl" title="Unchecked: 303 octave row + buttons. Checked: one slider C0–C4.">
+          <input type="checkbox" id="pitchModeFull" />
+          Full range pitch
+        </label>
+      </div>
       <span class="seq-hint">
-        <b>R</b> rest &nbsp;&middot;&nbsp;
-        <b>N</b> note &nbsp;&middot;&nbsp;
-        <b>T</b> tie &nbsp;&mdash;&nbsp;
-        vertical pitch knob (drag) &nbsp;&mdash;&nbsp;
-        <b>A</b> accent &nbsp;&middot;&nbsp;
-        <b>S</b> slide &nbsp;&mdash;&nbsp;
-        up to <b>64</b> steps
+        <b>R</b> rest &nbsp;&middot;&nbsp; <b>N</b> note &nbsp;&middot;&nbsp; <b>T</b> tie &nbsp;&mdash;&nbsp;
+        vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide &nbsp;&mdash;&nbsp;
+        up to <b>64</b> steps &nbsp;&middot;&nbsp; red dot = currently playing step
       </span>
     </div>
     <div class="seq-grid-wrap">
       <div class="seq-grid" id="seqGrid"></div>
+    </div>
+  </div>
+
+  <!-- Config panel -->
+  <div class="config-panel">
+    <div class="config-bar" id="configBar">
+      <span class="config-bar-arrow">&#9658;</span>
+      <span class="config-bar-label">Device Config</span>
+      <span style="margin-left:auto;font-size:10px;font-weight:600;color:var(--gray-3);" id="configStatus">Not synced</span>
+    </div>
+    <div class="config-body" id="configBody">
+      <div class="config-inner">
+        <div class="config-field">
+          <label>MIDI Channel</label>
+          <select id="cfgMidiCh">
+            <option value="0">Omni (all)</option>
+            <script>for(var _c=1;_c<=16;_c++) document.write('<option value="'+_c+'">Ch '+_c+'</option>');</script>
+          </select>
+        </div>
+        <div class="config-field">
+          <label>MIDI Clock</label>
+          <select id="cfgMidiClk">
+            <option value="1">Receive MIDI Clock</option>
+            <option value="0">Internal only (DIN jack)</option>
+          </select>
+        </div>
+        <div class="group-inner" style="gap:6px">
+          <button class="btn" id="btnCfgRead" disabled>Read from 303</button>
+          <button class="btn btn-primary" id="btnCfgWrite" disabled>Write to 303</button>
+        </div>
+        <span class="config-status" id="cfgFeedback"></span>
+      </div>
     </div>
   </div>
 
@@ -641,69 +423,101 @@
 (function () {
   'use strict';
 
+  // ── Constants ──────────────────────────────────────────────────────
   var PATTERN_SIZE = 128;
   var MAX_STEPS    = 64;
-  var PITCH_MAX    = 12 + 13 * 2; // 38
-
-  if (location.protocol === 'file:') {
-    document.getElementById('httpBanner').classList.add('visible');
-  }
+  /** Extra note pitches when there are fewer NOTE steps than stored stream (303-style). */
+  var STASH_COUNT_IDX = 125;
+  var PITCH_MAX    = 12 + 13 * 3; // 51 (supports DOUBLE_UP octave)
+  /** Full-range slider: linear semitones 0..48 (= unpack_pitch_linear), C0..C4 for natural notes at C boundaries. */
+  var PITCH_FULL_LIN_MIN = 0;
+  var PITCH_FULL_LIN_MAX = 48;
+  var NUM_GROUPS   = 4;
+  var LS_PITCH_MODE = 'superos303_pitch_mode';
+  var PATS_PER_GROUP = 16; // 2 banks of 8
 
   var NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-  function linToName(lin) {
-    return NOTE_NAMES[lin % 12] + (2 + Math.floor(lin / 12));
-  }
 
-  // ── Logging ─────────────────────────────────────────────
+  /** false = OG (13 key positions per octave button); true = linear slider 0..48 semitones. */
+  var pitchEditorFullRange = false;
+  try {
+    pitchEditorFullRange = localStorage.getItem(LS_PITCH_MODE) === 'full';
+  } catch (e) { /* ignore */ }
+
+  if (location.protocol === 'file:')
+    document.getElementById('httpBanner').classList.add('visible');
+
+  // ── Logging ────────────────────────────────────────────────────────
   var logEntries = 0;
   function log(msg, cls) {
-    var logEl = document.getElementById('log');
-    var span  = document.createElement('span');
-    span.className = cls || '';
-    span.textContent = msg + '\n';
-    logEl.appendChild(span);
-    logEl.scrollTop = logEl.scrollHeight;
+    var el = document.getElementById('log');
+    var sp = document.createElement('span');
+    sp.className = cls || '';
+    sp.textContent = msg + '\n';
+    el.appendChild(sp);
+    el.scrollTop = el.scrollHeight;
     logEntries++;
     document.getElementById('logCount').textContent = logEntries;
   }
-
   document.getElementById('logBar').addEventListener('click', function() {
-    var bar  = document.getElementById('logBar');
-    var body = document.getElementById('logBody');
+    var bar = document.getElementById('logBar'), body = document.getElementById('logBody');
     var open = body.classList.toggle('is-open');
     bar.classList.toggle('is-open', open);
   });
 
-  // ── TB-303 pitch ────────────────────────────────────────
+  // ── Config bar toggle ──────────────────────────────────────────────
+  document.getElementById('configBar').addEventListener('click', function() {
+    var bar = document.getElementById('configBar'), body = document.getElementById('configBody');
+    var open = body.classList.toggle('is-open');
+    bar.classList.toggle('is-open', open);
+  });
+
+  // ── TB-303 pitch encoding ──────────────────────────────────────────
   function unpackLinear(e) {
     if (e > PITCH_MAX) return e & 0x3f;
     return (e % 13) + 12 * Math.floor(e / 13);
   }
-
+  function clampFullLinear(lin) {
+    return Math.max(PITCH_FULL_LIN_MIN, Math.min(PITCH_FULL_LIN_MAX, lin | 0));
+  }
+  /**
+   * Packed byte for a linear pitch 0..48: oct_btn = floor(lin/12) (cap 3), key = lin - 12*oct_btn.
+   * Keeps octave buttons (down / norm / up / 2×) aligned with the note in full-range mode.
+   * Aliases (e.g. same lin from different e) are normalized to this form.
+   */
   function linearToPacked(lin) {
-    lin = Math.max(0, Math.min(36, lin | 0));
-    var e;
-    for (e = 0; e <= PITCH_MAX; e++)
-      if (unpackLinear(e) === lin) return e;
-    return 0;
+    lin = clampFullLinear(lin);
+    var oct_btn = Math.min(3, Math.floor(lin / 12));
+    var key = lin - 12 * oct_btn;
+    return Math.min(key + 13 * oct_btn, PITCH_MAX);
+  }
+  function clampPackedByte(b) {
+    var fl = b & 0xc0;
+    var e = b & 0x3f;
+    if (e > PITCH_MAX) e = PITCH_MAX;
+    return (e | fl);
+  }
+  /** Note label from firmware linear pitch (same as unpack_pitch_linear). */
+  function noteNameFromLinear(lin) {
+    lin = clampFullLinear(lin | 0);
+    var chroma = lin % 12;
+    var oct = Math.floor(lin / 12);
+    return NOTE_NAMES[chroma] + oct;
   }
 
-  // ── 7-bit pack / unpack ─────────────────────────────────
+  // ── 7-bit pack / unpack ────────────────────────────────────────────
   function pack7(src) {
     var out = [];
     for (var i = 0; i < src.length; i += 7) {
-      var msb = 0;
-      var n = Math.min(7, src.length - i);
-      for (var b = 0; b < n; b++) if (src[i + b] & 0x80) msb |= 1 << b;
+      var msb = 0, n = Math.min(7, src.length - i);
+      for (var b = 0; b < n; b++) if (src[i+b] & 0x80) msb |= 1 << b;
       out.push(msb);
-      for (var b2 = 0; b2 < n; b2++) out.push(src[i + b2] & 0x7f);
+      for (var b2 = 0; b2 < n; b2++) out.push(src[i+b2] & 0x7f);
     }
     return new Uint8Array(out);
   }
-
   function unpack7(inp, outLen) {
-    var out = new Uint8Array(outLen);
-    var oi = 0, ii = 0;
+    var out = new Uint8Array(outLen), oi = 0, ii = 0;
     while (oi < outLen) {
       if (ii >= inp.length) return null;
       var msb = inp[ii++];
@@ -714,369 +528,810 @@
     }
     return out;
   }
-
   function xorBlob(u8) {
     var x = 0;
     for (var i = 0; i < 128; i++) x ^= u8[i];
     return x & 0xff;
   }
 
-  // ── Time nibble ─────────────────────────────────────────
+  // ── Time nibble helpers ────────────────────────────────────────────
   function getTime(blob, s) {
     var idx = s & (MAX_STEPS - 1);
     return (blob[64 + (idx >> 1)] >> (4 * (idx & 1))) & 0xf;
   }
   function setTime(blob, s, v) {
-    var idx = s & (MAX_STEPS - 1);
-    var p   = 64 + (idx >> 1);
-    var sh  = 4 * (idx & 1);
+    var idx = s & (MAX_STEPS - 1), p = 64 + (idx >> 1), sh = 4 * (idx & 1);
     blob[p] = (blob[p] & ~(0xf << sh)) | ((v & 0xf) << sh);
   }
+  /**
+   * Match firmware normalize_pattern_times: all-tie → first note; step 0 tie → note;
+   * rest followed by tie (including wrap last→first) → note on rest step. Empty pitch → default 13.
+   */
+  function normalizePatternTimes(blob, len) {
+    len = Math.min(MAX_STEPS, Math.max(1, len | 0));
+    var allTie = true;
+    for (var i = 0; i < len; i++) {
+      if (getTime(blob, i) !== 2) { allTie = false; break; }
+    }
+    if (allTie) {
+      setTime(blob, 0, 1);
+      if (blob[0] === 0xff) blob[0] = clampPackedByte(13);
+    }
+    if (getTime(blob, 0) === 2) {
+      setTime(blob, 0, 1);
+      if (blob[0] === 0xff) blob[0] = clampPackedByte(13);
+    }
+    for (var j = 0; j < len; j++) {
+      var nxt = (j + 1) % len;
+      if (getTime(blob, j) === 0 && getTime(blob, nxt) === 2) {
+        setTime(blob, j, 1);
+        if (blob[j] === 0xff) blob[j] = clampPackedByte(13);
+      }
+    }
+  }
 
-  // ── State ───────────────────────────────────────────────
+  // step_lock bytes in firmware blob: index 96..103 (8 bytes, 64 bits)
+  function getStepLock(blob, s) {
+    var b = 96 + ((s & (MAX_STEPS - 1)) >> 3);
+    if (b >= 104) return false;
+    return !!(blob[b] & (1 << (s & 7)));
+  }
+  function toggleStepLock(blob, s) {
+    var b = 96 + ((s & (MAX_STEPS - 1)) >> 3);
+    if (b >= 104) return;
+    blob[b] ^= (1 << (s & 7));
+  }
+
+  function snapshotTimes(blob, len) {
+    var t = [];
+    for (var i = 0; i < len; i++) t.push(getTime(blob, i));
+    return t;
+  }
+  function getStashCount(blob) {
+    return Math.min(MAX_STEPS, Math.max(0, blob[STASH_COUNT_IDX] | 0));
+  }
+  function setStashCount(blob, n) {
+    blob[STASH_COUNT_IDX] = Math.min(MAX_STEPS, Math.max(0, n | 0));
+  }
+  /** Per-step pitch bytes + tail stash (blob[len..]) before a time edit. */
+  function snapshotPitchState(blob, len) {
+    var step = new Uint8Array(len);
+    for (var i = 0; i < len; i++) step[i] = blob[i];
+    var sc = getStashCount(blob);
+    var stash = [];
+    for (var k = 0; k < sc; k++) stash.push(blob[len + k]);
+    return { step: step, stash: stash };
+  }
+  function pitchByteOr13(r) {
+    return (r === 0xff || r === undefined) ? 13 : (r & 0xff);
+  }
+  function buildPitchStreamFromState(state, timesBefore, len) {
+    var stream = [];
+    for (var i = 0; i < len; i++) {
+      if (timesBefore[i] !== 1) continue;
+      stream.push(pitchByteOr13(state.step[i]));
+    }
+    for (var k = 0; k < state.stash.length; k++)
+      stream.push(pitchByteOr13(state.stash[k]));
+    return stream;
+  }
+  function clampStashToBlob(blob, len, stashCount) {
+    var maxS = Math.max(0, MAX_STEPS - len);
+    if (stashCount > maxS) stashCount = maxS;
+    return stashCount;
+  }
+  /// After R/N/T change: NOTE steps get sequential pitches from stream; extras go to stash; R/T cleared (0xff).
+  function reflowPitchesAfterTimeChange(blob, len, timesBefore, state) {
+    var stream = buildPitchStreamFromState(state, timesBefore, len);
+    var newNoteCount = 0;
+    for (var i = 0; i < len; i++) if (getTime(blob, i) === 1) newNoteCount++;
+
+    if (newNoteCount === 0) {
+      var sc0 = clampStashToBlob(blob, len, stream.length);
+      setStashCount(blob, sc0);
+      for (var ks = 0; ks < sc0; ks++)
+        blob[len + ks] = clampPackedByte(stream[ks] & 0xff);
+      for (var z = 0; z < len; z++) blob[z] = 0xff;
+      return;
+    }
+
+    while (stream.length < newNoteCount) stream.push(13);
+
+    var excess = stream.length - newNoteCount;
+    var stashCount = clampStashToBlob(blob, len, excess);
+    if (newNoteCount + stashCount < stream.length)
+      stream = stream.slice(0, newNoteCount + stashCount);
+
+    var notePos = [];
+    for (var j = 0; j < len; j++) if (getTime(blob, j) === 1) notePos.push(j);
+
+    for (var n = 0; n < notePos.length; n++)
+      blob[notePos[n]] = clampPackedByte(stream[n] & 0xff);
+
+    setStashCount(blob, stashCount);
+    for (var t = 0; t < stashCount; t++)
+      blob[len + t] = clampPackedByte(stream[newNoteCount + t] & 0xff);
+
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) !== 1) blob[s] = 0xff;
+    }
+  }
+  function migratePitchStashOnResize(blob, oldLen, newLen) {
+    var sc = getStashCount(blob);
+    if (sc === 0 || oldLen === newLen) return;
+    var tmp = [];
+    for (var k = 0; k < sc; k++) tmp.push(blob[oldLen + k]);
+    sc = clampStashToBlob(blob, newLen, sc);
+    setStashCount(blob, sc);
+    for (k = 0; k < sc; k++) blob[newLen + k] = tmp[k];
+  }
+  function sanitizeStashAfterLoad(blob) {
+    var L = blob[127] | 0;
+    if (L < 1 || L > MAX_STEPS) return;
+    setStashCount(blob, clampStashToBlob(blob, L, getStashCount(blob)));
+  }
+
+  /// Packed pitch nibble (0..51) for the pitch you *hear* on this step (tie inherits previous note).
+  function effectivePacked6(blob, s, len) {
+    s &= (MAX_STEPS - 1);
+    len = Math.min(MAX_STEPS, Math.max(1, len | 0));
+    var t = getTime(blob, s);
+    if (t === 0) return null;
+    if (t === 2) {
+      var g, tp, tt;
+      for (g = 1; g < len; g++) {
+        tp = (s + len - g) % len;
+        tt = getTime(blob, tp);
+        if (tt === 0) break;
+        if (tt === 1) {
+          var br = blob[tp];
+          return (br === 0xff) ? 13 : (br & 0x3f);
+        }
+      }
+      return 13;
+    }
+    var r = blob[s];
+    return (r === 0xff) ? null : (r & 0x3f);
+  }
+
+  /**
+   * Which octave button is highlighted: OG uses packed band (key row 0..3). Full range uses
+   * heard linear pitch / 12 (same idea as firmware get_octave), so aliases still show correctly.
+   */
+  function octButtonFromPacked(packed6, editorFullRange) {
+    if (packed6 == null) return 1;
+    var e = packed6 & 0x3f;
+    if (e > PITCH_MAX) e = PITCH_MAX;
+    if (editorFullRange) {
+      var lin = unpackLinear(e);
+      return Math.min(3, Math.max(0, Math.floor(lin / 12) | 0));
+    }
+    return Math.min(3, Math.max(0, Math.floor(e / 13) | 0));
+  }
+  function setOctaveOnStep(blob, si, octBtn) {
+    octBtn = Math.max(0, Math.min(3, octBtn | 0));
+    var r = blob[si];
+    if (r === 0xff) r = 13;
+    var k = (r & 0x3f) % 13;
+    var flags = r & 0xc0;
+    var e = k + 13 * octBtn;
+    if (e > PITCH_MAX) e = PITCH_MAX;
+    blob[si] = clampPackedByte((e & 0x3f) | (r & 0xc0));
+  }
+
+  // ── Storage ────────────────────────────────────────────────────────
+  // groups[g][p] = Uint8Array(128) for group g (0-3), pattern p (0-15)
+  // Hardware holds 16 patterns; groups 2-4 are stored locally in localStorage.
+  var groups = []; // [4][16]
+  var LS_KEY = 'superos303_groups';
+
+  function makeBlankPat() {
+    var b = new Uint8Array(PATTERN_SIZE);
+    b[127] = 16;
+    b[STASH_COUNT_IDX] = 0;
+    for (var i = 0; i < 64; i++) b[i] = 13; // PITCH_DEFAULT (C, center oct)
+    return b;
+  }
+  /** One step, rest, no pitch stash or step locks. */
+  function clearPatternMinimalRest(blob) {
+    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    setTime(blob, 0, 0);
+    for (var p = 0; p < 64; p++) blob[p] = 0xff;
+    blob[127] = 1;
+    setStashCount(blob, 0);
+    for (var L = 0; L < 8; L++) blob[96 + L] = 0;
+  }
+  function cloneU8(u) { var x = new Uint8Array(u.length); x.set(u); return x; }
+  function blobsEqual(a, b) { for (var i = 0; i < PATTERN_SIZE; i++) if (a[i] !== b[i]) return false; return true; }
+
+  function initGroups() {
+    groups = [];
+    for (var g = 0; g < NUM_GROUPS; g++) {
+      groups[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++)
+        groups[g][p] = makeBlankPat();
+    }
+  }
+  function saveGroupsToLS() {
+    try {
+      var ser = groups.map(function(grp) {
+        return grp.map(function(b) { return Array.from(b); });
+      });
+      localStorage.setItem(LS_KEY, JSON.stringify(ser));
+    } catch(e) { /* quota */ }
+  }
+  function loadGroupsFromLS() {
+    try {
+      var raw = localStorage.getItem(LS_KEY);
+      if (!raw) return false;
+      var ser = JSON.parse(raw);
+      if (!Array.isArray(ser) || ser.length !== NUM_GROUPS) return false;
+      for (var g = 0; g < NUM_GROUPS; g++) {
+        if (!Array.isArray(ser[g]) || ser[g].length !== PATS_PER_GROUP) return false;
+        for (var p = 0; p < PATS_PER_GROUP; p++) {
+          var arr = ser[g][p];
+          if (!Array.isArray(arr) || arr.length !== PATTERN_SIZE) return false;
+          groups[g][p] = new Uint8Array(arr);
+        }
+      }
+      return true;
+    } catch(e) { return false; }
+  }
+
+  initGroups();
+  loadGroupsFromLS();
+
+  // ── Undo / redo per pattern per group ─────────────────────────────
+  // history[g][p] = array of Uint8Array snapshots
+  // histIdx[g][p] = index of current state in history
+  var history = [], histIdx = [];
+  function initHistory() {
+    history = []; histIdx = [];
+    for (var g = 0; g < NUM_GROUPS; g++) {
+      history[g] = []; histIdx[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++) {
+        history[g][p] = [cloneU8(groups[g][p])];
+        histIdx[g][p] = 0;
+      }
+    }
+  }
+  initHistory();
+
+  function pushHistory(g, p) {
+    var h = history[g][p], idx = histIdx[g][p];
+    // Truncate any future states
+    h.splice(idx + 1);
+    h.push(cloneU8(groups[g][p]));
+    if (h.length > 50) { h.shift(); } else { histIdx[g][p] = h.length - 1; }
+  }
+  function canUndo(g, p) { return histIdx[g][p] > 0; }
+  function canRedo(g, p) { return histIdx[g][p] < history[g][p].length - 1; }
+  function doUndo(g, p) {
+    if (!canUndo(g, p)) return;
+    histIdx[g][p]--;
+    groups[g][p].set(history[g][p][histIdx[g][p]]);
+  }
+  function doRedo(g, p) {
+    if (!canRedo(g, p)) return;
+    histIdx[g][p]++;
+    groups[g][p].set(history[g][p][histIdx[g][p]]);
+  }
+  // Jump to the baseline (first snapshot = last committed state)
+  function getBaselineIdx(g, p) {
+    // The baseline is the snapshot at index 0 of history (or after last commit)
+    // We store commitIdx to track where last save happened
+    return commitIdx[g][p];
+  }
+
+  // commitIdx[g][p] = histIdx at last successful save to 303
+  var commitIdx = [];
+  function initCommitIdx() {
+    commitIdx = [];
+    for (var g = 0; g < NUM_GROUPS; g++) {
+      commitIdx[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++) commitIdx[g][p] = 0;
+    }
+  }
+  initCommitIdx();
+
+  // ── Active state ───────────────────────────────────────────────────
+  var activeGroup = 0;   // 0-3
+  var activePat   = 0;   // 0-15 within the group
+  var playingPat  = -1;  // hardware-reported playing pattern (0-15), -1 = unknown
+  var playingStep = -1;  // hardware-reported playing step
+  var queuedPat   = -1;  // pattern queued for next play (sent via PC)
+  var clipboard   = null;
+  /** Last pattern copied (for pill highlight). */
+  var copiedFrom  = null; // { g, p } or null
+
+  function activeBlob() { return groups[activeGroup][activePat]; }
+
+  // ── MIDI state ─────────────────────────────────────────────────────
   var midiAccess = null, midiOut = null, midiIn = null, midiKbd = null;
-  var rxBuf      = [];
+  var rxBuf = [];
   var expectDump = 0;
-  var currentPat = 0;
-  var bankDl     = null;
   var saveAckPending = false;
-  var liveTimer  = null;
+  var liveTimer = null;
   var liveEnabled = false;
 
-  function cloneU8(u) {
-    var x = new Uint8Array(u.length);
-    x.set(u);
-    return x;
-  }
-  function blobsEqual(a, b) {
-    var i;
-    for (i = 0; i < PATTERN_SIZE; i++) if (a[i] !== b[i]) return false;
-    return true;
-  }
-
-  var bankRam = [];
-  var commitBaseline = [];
-  var dirty = new Array(16).fill(false);
-  var pi, pj;
-  for (pi = 0; pi < 16; pi++) {
-    bankRam[pi] = new Uint8Array(PATTERN_SIZE);
-    bankRam[pi].fill(0);
-    bankRam[pi][127] = 16;
-    for (pj = 0; pj < 64; pj++) bankRam[pi][pj] = 0xff;
-    commitBaseline[pi] = cloneU8(bankRam[pi]);
-  }
-  var blob = bankRam[0];
-
-  var pillsEl = document.getElementById('patPills');
-
-  function refreshPillDirty() {
-    var pills = pillsEl.querySelectorAll('.pat-pill');
-    for (var p = 0; p < 16; p++)
-      pills[p].classList.toggle('is-dirty', !!dirty[p]);
+  // ── Build UI ───────────────────────────────────────────────────────
+  // Group tabs
+  var tabsEl = document.getElementById('groupTabs');
+  for (var gi = 0; gi < NUM_GROUPS; gi++) {
+    (function(g) {
+      var t = document.createElement('div');
+      t.className = 'group-tab' + (g === 0 ? ' is-active' : '');
+      t.textContent = 'Group ' + (g + 1);
+      t.addEventListener('click', function() { switchGroup(g); });
+      tabsEl.appendChild(t);
+    })(gi);
   }
 
-  function recomputeDirty() {
-    dirty[currentPat] = !blobsEqual(bankRam[currentPat], commitBaseline[currentPat]);
-    document.getElementById('btnUndo').disabled = !dirty[currentPat];
-    document.getElementById('btnSave303').disabled = !dirty[currentPat] || !midiOut;
-    refreshPillDirty();
+  // Bank A pills (patterns 0-7)
+  var pillsAEl = document.getElementById('pillsA');
+  var pillsBEl = document.getElementById('pillsB');
+  for (var pi = 0; pi < 8; pi++) {
+    (function(p) {
+      var btn = document.createElement('button');
+      btn.className = 'pat-pill';
+      btn.dataset.pat = p;
+      btn.addEventListener('click', function() { pillClick(p); });
+      pillsAEl.appendChild(btn);
+    })(pi);
+  }
+  for (var pi = 8; pi < 16; pi++) {
+    (function(p) {
+      var btn = document.createElement('button');
+      btn.className = 'pat-pill';
+      btn.dataset.pat = p;
+      btn.addEventListener('click', function() { pillClick(p); });
+      pillsBEl.appendChild(btn);
+    })(pi);
   }
 
-  function switchToPat(idx) {
+  function pillClick(p) {
+    var wasActive = (p === activePat && /* same group */ true);
+    switchToPat(p);
+    // If clock is running, queue this pattern (Program Change to hardware)
+    // Hardware will switch at end of current pattern
+    if (midiOut && p !== playingPat) {
+      sendProgramChange(p);
+      queuedPat = p;
+    }
+  }
+
+  function sendProgramChange(pat) {
+    if (!midiOut) return;
+    var ch = 0; // will be sent on ch1
+    midiOut.send([0xC0, pat & 0x0F]);
+  }
+
+  function switchGroup(g) {
     syncBlob();
-    idx &= 15;
-    currentPat = idx;
-    blob = bankRam[currentPat];
-    document.getElementById('patLen').value = String(blob[127]);
-    var pills = pillsEl.querySelectorAll('.pat-pill');
-    for (var j = 0; j < pills.length; j++)
-      pills[j].classList.toggle('is-active', j === currentPat);
+    activeGroup = g;
+    var tabs = tabsEl.querySelectorAll('.group-tab');
+    for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('is-active', i === g);
+    refreshAllPills();
+    renderGrid();
+    updateButtons();
+  }
+
+  function switchToPat(p) {
+    syncBlob();
+    activePat = p & 15;
+    document.getElementById('patLen').value = String(activeBlob()[127]);
+    refreshAllPills();
     recomputeDirty();
     renderGrid();
   }
 
-  // ── Pattern pills ───────────────────────────────────────
-  for (pi = 0; pi < 16; pi++) {
-    (function(idx) {
-      var btn = document.createElement('button');
-      btn.className = 'pat-pill' + (idx === 0 ? ' is-active' : '');
-      btn.textContent = idx + 1;
-      btn.addEventListener('click', function() { switchToPat(idx); });
-      pillsEl.appendChild(btn);
-    })(pi);
+  function refreshAllPills() {
+    var allPills = document.querySelectorAll('.pat-pill');
+    allPills.forEach(function(pill) {
+      var p = parseInt(pill.dataset.pat, 10);
+      pill.classList.toggle('is-active',   p === activePat);
+      pill.classList.toggle('is-dirty',    isDirty(activeGroup, p));
+      pill.classList.toggle('is-playing',  p === playingPat);
+      pill.classList.toggle('is-queued',   p === queuedPat && p !== activePat && p !== playingPat);
+      pill.classList.toggle('is-copied',   copiedFrom && copiedFrom.g === activeGroup && copiedFrom.p === p);
+      pill.textContent = String(p + 1);
+    });
   }
 
-  function buildPackedSysex(pat, raw, cmd) {
-    var x = xorBlob(raw), packed = pack7(raw);
-    var inner = new Uint8Array(5 + packed.length);
-    inner[0] = 0x7d; inner[1] = cmd & 0xff; inner[2] = pat & 15;
-    inner[3] = x & 0x7f; inner[4] = (x >> 7) & 1;
-    inner.set(packed, 5);
-    var msg = new Uint8Array(2 + inner.length);
-    msg[0] = 0xf0; msg.set(inner, 1); msg[msg.length - 1] = 0xf7;
-    return msg;
+  function isDirty(g, p) {
+    var h = history[g][p];
+    var ci = commitIdx[g][p];
+    return !blobsEqual(groups[g][p], h[ci] || h[0]);
   }
 
-  function triggerDownload(u8, fname) {
-    var url = URL.createObjectURL(new Blob([u8], { type: 'application/octet-stream' }));
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = fname;
-    a.click();
-    URL.revokeObjectURL(url);
+  function recomputeDirty() {
+    var dirty = isDirty(activeGroup, activePat);
+    document.getElementById('btnUndo').disabled        = !canUndo(activeGroup, activePat);
+    document.getElementById('btnRedo').disabled        = !canRedo(activeGroup, activePat);
+    document.getElementById('btnResetBefore').disabled = !canUndo(activeGroup, activePat);
+    document.getElementById('btnResetAfter').disabled  = !canRedo(activeGroup, activePat);
+    document.getElementById('btnSave303').disabled     = !dirty || !midiOut;
+    refreshAllPills();
   }
 
-  function finishBankDownload(dl) {
-    var chunks = [];
-    var total = 0;
-    var p;
-    for (p = dl.start; p < dl.start + 4; p++) {
-      var m = buildPackedSysex(p, dl.raw[p], 0x11);
-      chunks.push(m);
-      total += m.length;
+  function updateButtons() {
+    var ok = !!midiOut && !!midiIn;
+    document.getElementById('btnReq').disabled     = !ok;
+    document.getElementById('btnReqAll').disabled  = !ok;
+    document.getElementById('btnCfgRead').disabled  = !ok;
+    document.getElementById('btnCfgWrite').disabled = !ok;
+    recomputeDirty();
+  }
+
+  function currentPatLen() {
+    return Math.min(MAX_STEPS, Math.max(1, Number(document.getElementById('patLen').value) | 0));
+  }
+
+  function updateDisplayLabels(blob, s, len, nameEl) {
+    var t = getTime(blob, s);
+    var eff = effectivePacked6(blob, s, len);
+    if (t === 0) {
+      nameEl.textContent = '\u2014';
+      nameEl.classList.add('is-muted');
+    } else {
+      nameEl.classList.remove('is-muted');
+      var u = eff != null ? eff : 13;
+      var pk = (u & 0x3f);
+      if (pk > PITCH_MAX) pk = PITCH_MAX;
+      nameEl.textContent = noteNameFromLinear(unpackLinear(pk));
     }
-    var out = new Uint8Array(total);
-    var off = 0;
-    for (var ci = 0; ci < chunks.length; ci++) {
-      out.set(chunks[ci], off);
-      off += chunks[ci].length;
+  }
+
+  // ── Sequencer rendering ────────────────────────────────────────────
+  function renderGrid() {
+    var blob = activeBlob();
+    var len = currentPatLen();
+    blob[127] = len;
+    normalizePatternTimes(blob, len);
+    var grid = document.getElementById('seqGrid');
+    grid.className = 'seq-grid' + (len > 32 ? ' cols-16' : '');
+    grid.innerHTML = '';
+
+    for (var s = 0; s < len; s++) {
+      var t      = getTime(blob, s);
+      var raw    = blob[s];
+      var isEmpty = (raw === 0xff);
+      var eff    = effectivePacked6(blob, s, len);
+      var packedRaw = isEmpty ? 13 : (raw & 0x3f);
+      var dispPacked = t === 1 ? packedRaw : (eff != null ? eff : 13);
+      var acc     = t === 1 && !isEmpty && !!(raw & 0x40);
+      var sl      = t === 1 && !isEmpty && !!(raw & 0x80);
+      var locked  = getStepLock(blob, s);
+      var tieStep = (t === 2);
+      var noteStep = (t === 1);
+
+      var isPlayingStep = (s === playingStep && activeGroup === 0); // only group 1 is hw
+
+      var cardCls = 'step-card';
+      if      (t === 0) cardCls += ' is-rest';
+      else if (t === 1) cardCls += ' is-note';
+      else if (t === 2) cardCls += ' is-tie';
+      if (isPlayingStep) cardCls += ' is-playing-step';
+      if (locked) cardCls += ' is-locked';
+
+      var card = document.createElement('div');
+      card.className = cardCls;
+      card.dataset.s = s;
+
+      var dot = document.createElement('div');
+      dot.className = 'step-play-dot';
+      card.appendChild(dot);
+
+      var numEl = document.createElement('div');
+      numEl.className = 'step-num';
+      numEl.textContent = String(s + 1).padStart(2, '0');
+      card.appendChild(numEl);
+
+      var timeRow = document.createElement('div');
+      timeRow.className = 'step-time';
+      [['R',0],['N',1],['T',2]].forEach(function(pair) {
+        var lbl = pair[0], val = pair[1];
+        var b = document.createElement('button');
+        b.className = 't-btn' + (t === val ? ' is-on' : '');
+        b.textContent = lbl;
+        b.disabled = locked;
+        b.addEventListener('click', (function(si, tv) {
+          return function() {
+            var blob2 = activeBlob();
+            if (getStepLock(blob2, si)) return;
+            var L = currentPatLen();
+            var tb = snapshotTimes(blob2, L);
+            var st = snapshotPitchState(blob2, L);
+            setTime(blob2, si, tv);
+            normalizePatternTimes(blob2, L);
+            reflowPitchesAfterTimeChange(blob2, L, tb, st);
+            pushHistory(activeGroup, activePat);
+            saveGroupsToLS();
+            renderGrid();
+            recomputeDirty();
+            scheduleLiveSend();
+          };
+        })(s, val));
+        timeRow.appendChild(b);
+      });
+      card.appendChild(timeRow);
+
+      var nameEl = document.createElement('div');
+      nameEl.className = 'step-name';
+      card.appendChild(nameEl);
+
+      updateDisplayLabels(blob, s, len, nameEl);
+
+      var pkWrap = document.createElement('div');
+      pkWrap.className = 'pitch-knob-wrap';
+      var uiPacked = noteStep ? packedRaw : dispPacked;
+      if (pitchEditorFullRange)
+        pkWrap.dataset.lin = String(clampFullLinear(unpackLinear(uiPacked)));
+      else
+        pkWrap.dataset.key = String(uiPacked % 13);
+      var track = document.createElement('div');
+      track.className = 'pitch-knob-track';
+      var fill  = document.createElement('div'); fill.className  = 'pitch-knob-fill';
+      var thumb = document.createElement('div'); thumb.className = 'pitch-knob-thumb';
+      track.appendChild(fill); track.appendChild(thumb);
+      pkWrap.appendChild(track);
+      if (tieStep) {
+        pkWrap.style.opacity = '0.35';
+        track.style.pointerEvents = 'none';
+      }
+      layoutPitchKnob(pkWrap, nameEl, blob, s, len);
+      if (noteStep && !locked) bindPitchKnob(pkWrap, track, s, nameEl);
+      card.appendChild(pkWrap);
+
+      var octSel = octButtonFromPacked(uiPacked, pitchEditorFullRange);
+      var octRow = document.createElement('div');
+      octRow.className = 'step-oct-row';
+      [[0, 'down'], [1, 'norm'], [2, 'up'], [3, '2x UP']].forEach(function(op) {
+        var ob = op[0], ol = op[1];
+        var obtn = document.createElement('button');
+        obtn.type = 'button';
+        obtn.className = 'f-btn-o' + (octSel === ob ? ' is-on' : '');
+        obtn.textContent = ol;
+        obtn.disabled = tieStep || locked;
+        obtn.addEventListener('click', (function(si, oi, btn) {
+          return function() {
+            var blob2 = activeBlob();
+            if (getStepLock(blob2, si) || getTime(blob2, si) === 2) return;
+            setOctaveOnStep(blob2, si, oi);
+            pushHistory(activeGroup, activePat);
+            saveGroupsToLS();
+            renderGrid();
+            recomputeDirty();
+            scheduleLiveSend();
+          };
+        })(s, ob, obtn));
+        octRow.appendChild(obtn);
+      });
+      card.appendChild(octRow);
+
+      var flagRow = document.createElement('div');
+      flagRow.className = 'step-flags';
+
+      var aBtn = document.createElement('button');
+      aBtn.className = 'f-btn' + (acc ? ' f-on' : '');
+      aBtn.disabled = tieStep || locked;
+      aBtn.textContent = 'A';
+      aBtn.addEventListener('click', (function(si, btn) {
+        return function() {
+          var blob2 = activeBlob();
+          if (getStepLock(blob2, si)) return;
+          if (blob2[si] === 0xff) blob2[si] = 13;
+          blob2[si] ^= 0x40;
+          btn.classList.toggle('f-on', !!(blob2[si] & 0x40));
+          pushHistory(activeGroup, activePat);
+          saveGroupsToLS();
+          recomputeDirty();
+          scheduleLiveSend();
+        };
+      })(s, aBtn));
+
+      var sBtn = document.createElement('button');
+      sBtn.className = 'f-btn' + (sl ? ' f-on' : '');
+      sBtn.disabled = tieStep || locked;
+      sBtn.textContent = 'S';
+      sBtn.addEventListener('click', (function(si, btn) {
+        return function() {
+          var blob2 = activeBlob();
+          if (getStepLock(blob2, si)) return;
+          if (blob2[si] === 0xff) blob2[si] = 13;
+          blob2[si] ^= 0x80;
+          btn.classList.toggle('f-on', !!(blob2[si] & 0x80));
+          pushHistory(activeGroup, activePat);
+          saveGroupsToLS();
+          recomputeDirty();
+          scheduleLiveSend();
+        };
+      })(s, sBtn));
+
+      var lBtn = document.createElement('button');
+      lBtn.className = 'f-btn f-lock' + (locked ? ' f-on f-lock-active' : '');
+      lBtn.textContent = 'L';
+      lBtn.title = 'Step lock — unlock (L) to edit time, pitch, octave, accent, slide';
+      lBtn.addEventListener('click', (function(si, btn, cardEl) {
+        return function() {
+          var blob2 = activeBlob();
+          toggleStepLock(blob2, si);
+          var now = getStepLock(blob2, si);
+          btn.classList.toggle('f-on', now);
+          btn.classList.toggle('f-lock-active', now);
+          cardEl.classList.toggle('is-locked', now);
+          pushHistory(activeGroup, activePat);
+          saveGroupsToLS();
+          recomputeDirty();
+          scheduleLiveSend();
+        };
+      })(s, lBtn, card));
+
+      flagRow.appendChild(aBtn);
+      flagRow.appendChild(sBtn);
+      flagRow.appendChild(lBtn);
+      card.appendChild(flagRow);
+      grid.appendChild(card);
     }
-    var letter = String.fromCharCode(65 + (dl.start / 4 | 0));
-    triggerDownload(out, 'superos-bank-' + letter + '-pat-' + (dl.start + 1) + '-' + (dl.start + 4) + '.syx');
-    log('Downloaded bank ' + letter + ' (.syx)', 'log-syx');
   }
 
-  function startBankDownload(bankIdx) {
-    if (!midiOut || !midiIn) { log('Connect MIDI first', 'log-err'); return; }
-    var start = bankIdx * 4;
-    bankDl = { start: start, got: {}, raw: {} };
-    for (var bp = start; bp < start + 4; bp++) {
-      bankDl.got[bp] = false;
-      requestPattern(bp & 15);
+  function syncBlob() {
+    var blob = activeBlob();
+    var len = Math.min(MAX_STEPS, Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    blob[127] = len;
+    var cards = document.querySelectorAll('.step-card');
+    for (var i = 0; i < cards.length; i++) {
+      var si   = Number(cards[i].dataset.s);
+      if (getTime(blob, si) !== 1) continue;
+      if (getStepLock(blob, si)) continue;
+      var wrap = cards[i].querySelector('.pitch-knob-wrap');
+      if (wrap) {
+        var flags = blob[si] & 0xc0;
+        var pk;
+        if (pitchEditorFullRange) {
+          var lin = Number(wrap.dataset.lin);
+          if (!isNaN(lin)) pk = linearToPacked(lin);
+        } else {
+          var key = Number(wrap.dataset.key);
+          if (!isNaN(key)) {
+            key = Math.max(0, Math.min(12, key | 0));
+            var e0 = blob[si] & 0x3f;
+            if (e0 > PITCH_MAX) e0 = PITCH_MAX;
+            var oct = Math.floor(e0 / 13);
+            pk = Math.min(key + 13 * oct, PITCH_MAX);
+          }
+        }
+        if (pk !== undefined) {
+          if (blob[si] !== 0xff) blob[si] = pk | flags;
+          else blob[si] = pk;
+        }
+      }
     }
-    log('\u2192 Request bank ' + String.fromCharCode(65 + bankIdx) + ' for download', 'log-syx');
   }
 
-  function scheduleLiveSend() {
-    if (!liveEnabled || !midiOut) return;
-    syncBlob();
-    if (liveTimer) clearTimeout(liveTimer);
-    liveTimer = setTimeout(function() {
-      liveTimer = null;
-      sendPattern(currentPat & 15, bankRam[currentPat]);
-    }, 100);
-  }
-
-  function layoutPitchKnob(wrap, lin, nameEl) {
-    var pct = (lin / 36) * 100;
+  function layoutPitchKnob(wrap, nameEl, blob, s, len) {
     var thumb = wrap.querySelector('.pitch-knob-thumb');
-    var fill = wrap.querySelector('.pitch-knob-fill');
+    var fill  = wrap.querySelector('.pitch-knob-fill');
+    var pct;
+    if (pitchEditorFullRange) {
+      var lin = Number(wrap.dataset.lin);
+      if (isNaN(lin)) lin = clampFullLinear(unpackLinear(blob[s] & 0x3f));
+      else lin = clampFullLinear(lin);
+      wrap.dataset.lin = String(lin);
+      var spanF = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
+      pct = spanF > 0 ? ((lin - PITCH_FULL_LIN_MIN) / spanF) * 100 : 0;
+    } else {
+      var keyIdx = Number(wrap.dataset.key);
+      if (isNaN(keyIdx)) keyIdx = (blob[s] & 0x3f) % 13;
+      keyIdx = Math.max(0, Math.min(12, keyIdx | 0));
+      wrap.dataset.key = String(keyIdx);
+      pct = (keyIdx / 12) * 100;
+    }
     thumb.style.bottom = pct + '%';
-    fill.style.height = pct + '%';
-    wrap.dataset.lin = String(lin);
-    nameEl.textContent = linToName(lin);
+    fill.style.height  = pct + '%';
+    if (blob && nameEl) updateDisplayLabels(blob, s, len, nameEl);
+    if (pitchEditorFullRange && blob && wrap && getTime(blob, s) === 1 && !getStepLock(blob, s))
+      syncOctRowFromBlob(wrap, blob, s);
   }
 
-  function applyLinToBlob(step, lin) {
-    var pk = linearToPacked(lin);
-    var flags = blob[step] & 0xc0;
-    if (blob[step] !== 0xff)
-      blob[step] = pk | flags;
+  /** Live-update down/norm/up/2× highlights while dragging full-range slider (renderGrid only sets them once). */
+  function syncOctRowFromBlob(wrap, blob, s) {
+    if (!wrap || !blob) return;
+    var card = wrap.closest('.step-card');
+    if (!card) return;
+    var row = card.querySelector('.step-oct-row');
+    if (!row) return;
+    var raw = blob[s];
+    if (raw === 0xff) return;
+    var sel = octButtonFromPacked(raw & 0x3f, true);
+    var btns = row.querySelectorAll('.f-btn-o');
+    for (var i = 0; i < btns.length; i++)
+      btns[i].classList.toggle('is-on', i === sel);
   }
 
   function bindPitchKnob(wrap, track, step, nameEl) {
-    function linFromY(clientY) {
+    function valueFromY(clientY) {
       var r = track.getBoundingClientRect();
-      var t = (r.bottom - clientY) / r.height;
-      return Math.max(0, Math.min(36, Math.round(t * 36)));
+      var t = r.height > 0 ? (r.bottom - clientY) / r.height : 0;
+      if (pitchEditorFullRange) {
+        var spanF = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
+        return clampFullLinear(Math.round(PITCH_FULL_LIN_MIN + t * spanF));
+      }
+      return Math.max(0, Math.min(12, Math.round(t * 12)));
     }
-    function onPointerDown(ev) {
-      if (wrap.classList.contains('is-disabled')) return;
+    var dragging = false;
+    function onDown(ev) {
+      if (getStepLock(activeBlob(), step)) return;
       track.setPointerCapture(ev.pointerId);
-      var lin = linFromY(ev.clientY);
-      layoutPitchKnob(wrap, lin, nameEl);
-      applyLinToBlob(step, lin);
-      recomputeDirty();
-      scheduleLiveSend();
+      dragging = true;
+      applyDrag(ev.clientY);
     }
-    function onPointerMove(ev) {
+    function onMove(ev) {
       if (!track.hasPointerCapture(ev.pointerId)) return;
-      var lin = linFromY(ev.clientY);
-      layoutPitchKnob(wrap, lin, nameEl);
-      applyLinToBlob(step, lin);
-      recomputeDirty();
-      scheduleLiveSend();
+      applyDrag(ev.clientY);
     }
-    function onPointerUp(ev) {
-      try { track.releasePointerCapture(ev.pointerId); } catch (e) {}
-    }
-    track.addEventListener('pointerdown', onPointerDown);
-    track.addEventListener('pointermove', onPointerMove);
-    track.addEventListener('pointerup', onPointerUp);
-    track.addEventListener('pointercancel', onPointerUp);
-  }
-
-  // ── SysEx parser ────────────────────────────────────────
-  function syxInner(bytes) {
-    if (bytes.length < 2 || bytes[0] !== 0x7d) return;
-    var cmd = bytes[1];
-    if (cmd === 0x11) {
-      if (bytes.length < 5 + 147) {
-        log('0x11 too short: ' + bytes.length + ' bytes', 'log-err'); return;
+    function onUp(ev) {
+      try { track.releasePointerCapture(ev.pointerId); } catch(e) {}
+      if (dragging) {
+        pushHistory(activeGroup, activePat);
+        saveGroupsToLS();
+        recomputeDirty();
+        scheduleLiveSend();
+        dragging = false;
       }
-      var pat = bytes[2];
-      var cx  = bytes[3] | (bytes[4] << 7);
-      var raw = unpack7(bytes.subarray(5), PATTERN_SIZE);
-      if (!raw) { log('0x11 unpack failed', 'log-err'); return; }
-      var check = xorBlob(raw);
-      if (check !== cx) { log('0x11 checksum mismatch', 'log-err'); return; }
-      if (expectDump > 0) {
-        log('Pattern ' + (pat + 1) + ' received (' + (17 - expectDump) + '/16)', 'log-syx');
-        expectDump--;
+    }
+    function applyDrag(clientY) {
+      var blob2 = activeBlob();
+      var L = currentPatLen();
+      if (getStepLock(blob2, step) || getTime(blob2, step) === 2) return;
+      var pk, v = valueFromY(clientY);
+      var flags = blob2[step] & 0xc0;
+      if (pitchEditorFullRange) {
+        pk = linearToPacked(v);
+        wrap.dataset.lin = String(v);
       } else {
-        log('Pattern ' + (pat + 1) + ' received', 'log-syx');
+        var e0 = blob2[step] & 0x3f;
+        if (e0 > PITCH_MAX) e0 = PITCH_MAX;
+        var oct = Math.floor(e0 / 13);
+        pk = Math.min(v + 13 * oct, PITCH_MAX);
+        wrap.dataset.key = String(v);
       }
-      bankRam[pat].set(raw);
-      commitBaseline[pat] = cloneU8(raw);
-      dirty[pat] = false;
-      refreshPillDirty();
-      if (pat === (currentPat & 15)) {
-        blob = bankRam[currentPat];
-        document.getElementById('patLen').value = String(raw[127]);
-        renderGrid();
-      }
-      recomputeDirty();
-
-      if (bankDl && pat >= bankDl.start && pat < bankDl.start + 4) {
-        bankDl.got[pat] = true;
-        bankDl.raw[pat] = cloneU8(raw);
-        var allOk = true;
-        var q;
-        for (q = bankDl.start; q < bankDl.start + 4; q++)
-          if (!bankDl.got[q]) allOk = false;
-        if (allOk) {
-          finishBankDownload(bankDl);
-          bankDl = null;
-        }
-      }
-      return;
+      blob2[step] = (blob2[step] !== 0xff) ? (pk | flags) : pk;
+      layoutPitchKnob(wrap, nameEl, blob2, step, L);
     }
-    if (cmd === 0x14 && bytes.length >= 3) {
-      var names = ['ok','bad_checksum','bad_pattern','blocked_clock'];
-      var st = bytes[2];
-      log('ACK: ' + (names[st] || 'status=' + st), st === 0 ? 'log-ack' : 'log-err');
-      if (saveAckPending) {
-        saveAckPending = false;
-        if (st === 0) {
-          commitBaseline[currentPat] = cloneU8(bankRam[currentPat]);
-          dirty[currentPat] = false;
-          recomputeDirty();
+    track.addEventListener('pointerdown', onDown);
+    track.addEventListener('pointermove', onMove);
+    track.addEventListener('pointerup',   onUp);
+    track.addEventListener('pointercancel', onUp);
+  }
+
+  // ── Playing step update (SysEx 0x15) ──────────────────────────────
+  function updatePlayingStep(pat, step) {
+    // Only show in grid if displaying group 1 (the hardware group)
+    if (activeGroup === 0 && pat === activePat) {
+      var old = document.querySelector('.step-card.is-playing-step');
+      if (old) old.classList.remove('is-playing-step');
+      var cards = document.querySelectorAll('.step-card');
+      for (var i = 0; i < cards.length; i++) {
+        if (parseInt(cards[i].dataset.s, 10) === step) {
+          cards[i].classList.add('is-playing-step');
+          // Re-trigger animation
+          cards[i].querySelector('.step-play-dot').style.animation = 'none';
+          void cards[i].querySelector('.step-play-dot').offsetWidth;
+          cards[i].querySelector('.step-play-dot').style.animation = '';
+          break;
         }
       }
     }
+    if (pat !== playingPat) {
+      playingPat = pat;
+      if (pat === queuedPat) queuedPat = -1;
+      refreshAllPills();
+    }
+    playingStep = step;
   }
 
-  // ── MIDI channel message handler ──────────────────────────
-  // Some USB-MIDI adapters send running status: consecutive messages on the
-  // same channel omit the status byte. Web MIDI *should* restore it, but
-  // several cheap adapters don't. We track lastStatus and re-apply it when
-  // d[0] is a data byte (< 0x80).
-  var lastStatus = 0;
-  var chanBuf    = [];   // accumulates a partial channel message
-
-  function dispatchChannel(status, b1, b2) {
-    var type = status & 0xF0;
-    var ch   = (status & 0x0F) + 1;
-    if (!document.getElementById('logBody').classList.contains('is-open'))
-      document.getElementById('logBar').click();
-    if (type === 0x90 && b2 > 0) {
-      var name = NOTE_NAMES[b1 % 12] + (Math.floor(b1 / 12) - 1);
-      log('Note On   ch' + ch + '  ' + name + '  (MIDI ' + b1 + ')  vel ' + b2, 'log-note');
-    } else if (type === 0x80 || (type === 0x90 && b2 === 0)) {
-      var name = NOTE_NAMES[b1 % 12] + (Math.floor(b1 / 12) - 1);
-      log('Note Off  ch' + ch + '  ' + name, 'log-ack');
-    }
-    // Other channel messages (CC, PC, etc.) arrive silently — add cases here if needed
-  }
-
-  function feedChannelByte(b) {
-    // Status byte — start new message
-    if (b & 0x80) {
-      lastStatus = b;
-      chanBuf = [b];
-      return;
-    }
-    // Data byte — apply running status if buffer is empty
-    if (chanBuf.length === 0 && lastStatus) chanBuf = [lastStatus];
-    chanBuf.push(b);
-    var type = chanBuf[0] & 0xF0;
-    var need = (type === 0xC0 || type === 0xD0) ? 2 : 3;  // 2-byte vs 3-byte message
-    if (chanBuf.length >= need) {
-      dispatchChannel(chanBuf[0], chanBuf[1], chanBuf[2]);
-      chanBuf = [chanBuf[0]];  // keep status for running status continuation
-    }
-  }
-
-  // ── MIDI handler (SysEx bugs fixed) ─────────────────────
-  function onMidi(ev) {
-    var d = ev.data;
-    if (!d || !d.length) return;
-
-    // Channel messages (0x80–0xEF) — feed byte-by-byte into the running-status assembler
-    if (d[0] >= 0x80 && d[0] < 0xf0) {
-      for (var k = 0; k < d.length; k++) feedChannelByte(d[k]);
-      return;
-    }
-
-    // Realtime single-byte messages (0xF8–0xFF) — ignore silently
-    if (d[0] >= 0xf8) return;
-
-    // SysEx
-    if (d[0] === 0xf0) {
-      rxBuf = [];
-      for (var i = 0; i < d.length; i++) rxBuf.push(d[i]);
-      if (rxBuf[rxBuf.length - 1] === 0xf7) {
-        syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length - 1));
-        rxBuf = [];
-      }
-      return;
-    }
-    if (rxBuf.length > 0) {
-      if (d[0] < 0x80 || d[0] === 0xf7) {
-        for (var j = 0; j < d.length; j++) rxBuf.push(d[j]);
-        if (rxBuf[rxBuf.length - 1] === 0xf7) {
-          syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length - 1));
-          rxBuf = [];
-        }
-      } else if (d[0] < 0xf8) {
-        rxBuf = [];
-      }
-    }
-  }
-
-  // ── Keyboard → 303 bridge ───────────────────────────────
-  // Forwards all channel messages from the keyboard port directly to midiOut
-  // (the 303's MIDI IN). Note On/Off are also echoed to the log.
-  function onKeyboard(ev) {
-    var d = ev.data;
-    if (!d || !d.length) return;
-    // Only channel messages (0x80–0xEF) — skip SysEx and realtime
-    if (d[0] < 0x80 || d[0] >= 0xf0) return;
-    // Forward raw bytes to 303
-    if (midiOut) midiOut.send(d);
-    // Log Note On / Off for visibility
-    var type = d[0] & 0xF0;
-    var ch   = (d[0] & 0x0F) + 1;
-    if (d.length >= 3 && (type === 0x90 || type === 0x80)) {
-      var name = NOTE_NAMES[d[1] % 12] + (Math.floor(d[1] / 12) - 1);
-      if (type === 0x90 && d[2] > 0)
-        log('\u2192 303  Note On  ch' + ch + '  ' + name + '  vel ' + d[2], 'log-note');
-      else
-        log('\u2192 303  Note Off ch' + ch + '  ' + name, 'log-ack');
-    }
-  }
-
-  // ── MIDI send ───────────────────────────────────────────
+  // ── MIDI send helpers ──────────────────────────────────────────────
   function sendSysex(inner) {
     if (!midiOut) return;
     var msg = new Uint8Array(2 + inner.length);
@@ -1092,157 +1347,144 @@
     inner.set(packed, 5);
     sendSysex(inner);
   }
+  function sendCfgRead()  { sendSysex(new Uint8Array([0x7d, 0x20])); }
+  function sendCfgWrite(ch, flags) { sendSysex(new Uint8Array([0x7d, 0x22, ch & 0x7f, flags & 0x7f])); }
 
-  // ── Render grid ─────────────────────────────────────────
-  function renderGrid() {
-    var len = Math.min(MAX_STEPS, Math.max(1, Number(document.getElementById('patLen').value) | 0));
-    blob[127] = len;
-    var grid = document.getElementById('seqGrid');
-    grid.className = 'seq-grid' + (len > 32 ? ' cols-16' : '');
-    grid.innerHTML = '';
+  function scheduleLiveSend() {
+    if (!liveEnabled || !midiOut) return;
+    syncBlob();
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = setTimeout(function() {
+      liveTimer = null;
+      sendPattern(activePat & 15, activeBlob());
+    }, 100);
+  }
 
-    for (var s = 0; s < len; s++) {
-      var t      = getTime(blob, s);
-      var raw    = blob[s];
-      var isRest = raw === 0xff;
-      var packed = isRest ? 0 : (raw & 0x3f);
-      var acc    = !isRest && !!(raw & 0x40);
-      var sl     = !isRest && !!(raw & 0x80);
-      var lin    = isRest ? 0 : unpackLinear(packed);
-      var name   = isRest ? '\u2014' : linToName(lin);
+  // ── Bank download (.syx) ───────────────────────────────────────────
+  // ── SysEx parser ───────────────────────────────────────────────────
+  function syxInner(bytes) {
+    if (bytes.length < 2 || bytes[0] !== 0x7d) return;
+    var cmd = bytes[1];
 
-      var cardCls = 'step-card';
-      if      (t === 0) cardCls += ' is-rest';
-      else if (t === 1) cardCls += ' is-note';
-      else if (t === 2) cardCls += ' is-tie';
+    if (cmd === 0x11) {
+      if (bytes.length < 5 + 147) { log('0x11 too short', 'log-err'); return; }
+      var pat = bytes[2];
+      var cx  = bytes[3] | (bytes[4] << 7);
+      var raw = unpack7(bytes.subarray(5), PATTERN_SIZE);
+      if (!raw)         { log('0x11 unpack failed', 'log-err'); return; }
+      if (xorBlob(raw) !== cx) { log('0x11 checksum mismatch', 'log-err'); return; }
 
-      var card = document.createElement('div');
-      card.className = cardCls;
-      card.dataset.s = s;
-
-      var numEl = document.createElement('div');
-      numEl.className = 'step-num';
-      numEl.textContent = String(s + 1).padStart(2, '0');
-      card.appendChild(numEl);
-
-      var timeRow = document.createElement('div');
-      timeRow.className = 'step-time';
-      [['R',0],['N',1],['T',2]].forEach(function(pair) {
-        var lbl = pair[0], val = pair[1];
-        var b = document.createElement('button');
-        b.className = 't-btn' + (t === val ? ' is-on' : '');
-        b.textContent = lbl;
-        b.addEventListener('click', (function(si, tv) {
-          return function() {
-            setTime(blob, si, tv);
-            if (tv === 0)
-              blob[si] = 0xff;
-            else if (blob[si] === 0xff)
-              blob[si] = 13;
-            renderGrid();
-            recomputeDirty();
-            scheduleLiveSend();
-          };
-        })(s, val));
-        timeRow.appendChild(b);
-      });
-      card.appendChild(timeRow);
-
-      var nameEl = document.createElement('div');
-      nameEl.className = 'step-name';
-      nameEl.textContent = name;
-      card.appendChild(nameEl);
-
-      var pkWrap = document.createElement('div');
-      pkWrap.className = 'pitch-knob-wrap' + (isRest ? ' is-disabled' : '');
-      pkWrap.dataset.lin = String(lin);
-      var track = document.createElement('div');
-      track.className = 'pitch-knob-track';
-      var fill = document.createElement('div');
-      fill.className = 'pitch-knob-fill';
-      var thumb = document.createElement('div');
-      thumb.className = 'pitch-knob-thumb';
-      track.appendChild(fill);
-      track.appendChild(thumb);
-      pkWrap.appendChild(track);
-      if (!isRest) {
-        layoutPitchKnob(pkWrap, lin, nameEl);
-        bindPitchKnob(pkWrap, track, s, nameEl);
+      if (expectDump > 0) {
+        log('Pattern ' + (pat+1) + ' received (' + (17 - expectDump) + '/16)', 'log-syx');
+        expectDump--;
+      } else {
+        log('Pattern ' + (pat+1) + ' received', 'log-syx');
       }
-      card.appendChild(pkWrap);
+      // Store in group 1 (group 0 = hardware group)
+      sanitizeStashAfterLoad(raw);
+      normalizePatternTimes(raw, raw[127]);
+      groups[0][pat].set(raw);
+      pushHistory(0, pat);
+      commitIdx[0][pat] = histIdx[0][pat];
+      saveGroupsToLS();
 
-      var flagRow = document.createElement('div');
-      flagRow.className = 'step-flags';
+      if (activeGroup === 0 && pat === activePat) {
+        document.getElementById('patLen').value = String(raw[127]);
+        renderGrid();
+      }
+      recomputeDirty();
 
-      var aBtn = document.createElement('button');
-      aBtn.className = 'f-btn' + (acc ? ' f-on' : '');
-      aBtn.textContent = 'A';
-      aBtn.disabled = isRest;
-      aBtn.addEventListener('click', (function(si, btn) {
-        return function() {
-          if (blob[si] === 0xff) return;
-          blob[si] ^= 0x40;
-          btn.classList.toggle('f-on', !!(blob[si] & 0x40));
-          recomputeDirty();
-          scheduleLiveSend();
-        };
-      })(s, aBtn));
+      return;
+    }
 
-      var sBtn = document.createElement('button');
-      sBtn.className = 'f-btn' + (sl ? ' f-on' : '');
-      sBtn.textContent = 'S';
-      sBtn.disabled = isRest;
-      sBtn.addEventListener('click', (function(si, btn) {
-        return function() {
-          if (blob[si] === 0xff) return;
-          blob[si] ^= 0x80;
-          btn.classList.toggle('f-on', !!(blob[si] & 0x80));
-          recomputeDirty();
-          scheduleLiveSend();
-        };
-      })(s, sBtn));
+    if (cmd === 0x14 && bytes.length >= 3) {
+      var names = ['ok','bad_checksum','bad_pattern','blocked_clock'];
+      var st = bytes[2];
+      log('ACK: ' + (names[st] || 'status=' + st), st === 0 ? 'log-ack' : 'log-err');
+      if (saveAckPending && st === 0) {
+        saveAckPending = false;
+        commitIdx[activeGroup][activePat] = histIdx[activeGroup][activePat];
+        recomputeDirty();
+        log('Saved to 303 \u2714', 'log-ack');
+      }
+      return;
+    }
 
-      flagRow.appendChild(aBtn);
-      flagRow.appendChild(sBtn);
-      card.appendChild(flagRow);
+    if (cmd === 0x15 && bytes.length >= 4) {
+      var hPat = bytes[2] & 0x0f, hStep = bytes[3] & 0x3f;
+      updatePlayingStep(hPat, hStep);
+      return;
+    }
 
-      grid.appendChild(card);
+    if (cmd === 0x21 && bytes.length >= 4) {
+      var ch = bytes[2], fl = bytes[3];
+      document.getElementById('cfgMidiCh').value  = String(ch);
+      document.getElementById('cfgMidiClk').value = String(fl & 1);
+      document.getElementById('configStatus').textContent = 'Synced';
+      document.getElementById('cfgFeedback').textContent  = 'Loaded from 303';
+      log('Config read: ch=' + ch + ' clock_rx=' + (fl & 1), 'log-ack');
+      return;
     }
   }
 
-  function syncBlob() {
-    var len = Math.min(MAX_STEPS, Math.max(1, Number(document.getElementById('patLen').value) | 0));
-    blob[127] = len;
-    var cards = document.querySelectorAll('.step-card');
-    for (var i = 0; i < cards.length; i++) {
-      var si = Number(cards[i].dataset.s);
-      var wrap = cards[i].querySelector('.pitch-knob-wrap');
-      if (wrap && !wrap.classList.contains('is-disabled')) {
-        var lin = Number(wrap.dataset.lin);
-        if (!isNaN(lin)) {
-          var pk = linearToPacked(lin);
-          var flags = blob[si] & 0xc0;
-          if (blob[si] !== 0xff)
-            blob[si] = pk | flags;
-        }
-      }
+  // ── MIDI channel message handler ───────────────────────────────────
+  var lastStatus = 0, chanBuf = [];
+  function dispatchChannel(status, b1, b2) {
+    var type = status & 0xF0, ch = (status & 0x0F) + 1;
+    if (!document.getElementById('logBody').classList.contains('is-open'))
+      document.getElementById('logBar').click();
+    if (type === 0x90 && b2 > 0)
+      log('Note On  ch'+ch+'  '+NOTE_NAMES[b1%12]+(Math.floor(b1/12)-1)+'  vel '+b2, 'log-note');
+    else if (type === 0x80 || (type === 0x90 && b2 === 0))
+      log('Note Off ch'+ch+'  '+NOTE_NAMES[b1%12]+(Math.floor(b1/12)-1), 'log-ack');
+  }
+  function feedChannelByte(b) {
+    if (b & 0x80) { lastStatus = b; chanBuf = [b]; return; }
+    if (chanBuf.length === 0 && lastStatus) chanBuf = [lastStatus];
+    chanBuf.push(b);
+    var type = chanBuf[0] & 0xF0, need = (type === 0xC0 || type === 0xD0) ? 2 : 3;
+    if (chanBuf.length >= need) { dispatchChannel(chanBuf[0], chanBuf[1], chanBuf[2]); chanBuf = [chanBuf[0]]; }
+  }
+
+  function onMidi(ev) {
+    var d = ev.data;
+    if (!d || !d.length) return;
+    if (d[0] >= 0x80 && d[0] < 0xf0) { for (var k = 0; k < d.length; k++) feedChannelByte(d[k]); return; }
+    if (d[0] >= 0xf8) return;
+    if (d[0] === 0xf0) {
+      rxBuf = [];
+      for (var i = 0; i < d.length; i++) rxBuf.push(d[i]);
+      if (rxBuf[rxBuf.length-1] === 0xf7) { syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length-1)); rxBuf = []; }
+      return;
+    }
+    if (rxBuf.length > 0) {
+      if (d[0] < 0x80 || d[0] === 0xf7) {
+        for (var j = 0; j < d.length; j++) rxBuf.push(d[j]);
+        if (rxBuf[rxBuf.length-1] === 0xf7) { syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length-1)); rxBuf = []; }
+      } else if (d[0] < 0xf8) rxBuf = [];
     }
   }
 
-  document.getElementById('patLen').addEventListener('change', function() {
-    renderGrid();
-    recomputeDirty();
-    scheduleLiveSend();
-  });
+  function onKeyboard(ev) {
+    var d = ev.data;
+    if (!d || !d.length || d[0] < 0x80 || d[0] >= 0xf0) return;
+    if (midiOut) midiOut.send(d);
+    var type = d[0] & 0xF0, ch = (d[0] & 0x0F) + 1;
+    if (d.length >= 3 && (type === 0x90 || type === 0x80)) {
+      var name = NOTE_NAMES[d[1]%12]+(Math.floor(d[1]/12)-1);
+      if (type === 0x90 && d[2] > 0) log('\u2192 303  Note On  ch'+ch+'  '+name+'  vel '+d[2], 'log-note');
+      else log('\u2192 303  Note Off ch'+ch+'  '+name, 'log-ack');
+    }
+  }
 
-  // ── Port binding ────────────────────────────────────────
+  // ── Port binding ───────────────────────────────────────────────────
   function fillSel(sel, ports) {
     sel.innerHTML = '';
-    for (var i = 0; i < ports.length; i++) {
+    ports.forEach(function(p) {
       var o = document.createElement('option');
-      o.value = ports[i].id; o.textContent = ports[i].name || ports[i].id;
+      o.value = p.id; o.textContent = p.name || p.id;
       sel.appendChild(o);
-    }
+    });
     sel.disabled = !ports.length;
   }
 
@@ -1255,41 +1497,32 @@
 
     fillSel(selOut, outs);
     fillSel(selIn,  ins);
-
-    // Keyboard selector: all inputs + a "— None —" option at the top
     selKbd.innerHTML = '<option value="">— None —</option>';
-    for (var i = 0; i < ins.length; i++) {
-      var o = document.createElement('option');
-      o.value = ins[i].id; o.textContent = ins[i].name || ins[i].id;
+    ins.forEach(function(p) {
+      var o = document.createElement('option'); o.value = p.id; o.textContent = p.name || p.id;
       selKbd.appendChild(o);
-    }
+    });
     selKbd.disabled = !ins.length;
 
-    // Detach old handlers
     if (midiIn)  midiIn.onmidimessage  = null;
     if (midiKbd) midiKbd.onmidimessage = null;
 
-    midiOut = outs.find(function(p) { return p.id === selOut.value; }) || outs[0] || null;
-    midiIn  = ins.find(function(p)  { return p.id === selIn.value;  }) || ins[0]  || null;
+    midiOut = outs.find(function(p){ return p.id === selOut.value; }) || outs[0] || null;
+    midiIn  = ins.find(function(p) { return p.id === selIn.value;  }) || ins[0]  || null;
     var kbdId = selKbd.value;
-    midiKbd = kbdId ? (ins.find(function(p) { return p.id === kbdId; }) || null) : null;
+    midiKbd = kbdId ? (ins.find(function(p){ return p.id === kbdId; }) || null) : null;
 
     if (midiIn)  midiIn.onmidimessage  = onMidi;
     if (midiKbd) midiKbd.onmidimessage = onKeyboard;
 
-    // Warn if keyboard port is the same as the 303 return port
-    var kbdStatusEl = document.getElementById('kbdStatus');
+    var kbdEl = document.getElementById('kbdStatus');
     if (midiKbd && midiIn && midiKbd.id === midiIn.id) {
-      kbdStatusEl.textContent = 'Loop!';
-      kbdStatusEl.style.color = '#c00';
-      log('WARNING: Keyboard port same as 303 In — this will loop. Pick a different port.', 'log-err');
+      kbdEl.textContent = 'Loop!'; kbdEl.style.color = '#c00';
+      log('WARNING: Keyboard port same as 303 In — loop!', 'log-err');
     } else if (midiKbd) {
-      kbdStatusEl.textContent = 'Active';
-      kbdStatusEl.style.color = '#000';
-      log('Keyboard bridge active: ' + midiKbd.name + ' \u2192 303', 'log-ack');
+      kbdEl.textContent = 'Active'; kbdEl.style.color = '#000';
     } else {
-      kbdStatusEl.textContent = 'Off';
-      kbdStatusEl.style.color = '#aaa';
+      kbdEl.textContent = 'Off'; kbdEl.style.color = '#aaa';
     }
 
     var statusEl = document.getElementById('midiStatus');
@@ -1301,87 +1534,351 @@
       statusEl.className   = 'is-ok';
       btn.classList.add('is-connected');
       btn.textContent = 'Connected';
+      // Auto-request all 16 patterns on connect
+      setTimeout(function() {
+        expectDump = 16;
+        sendSysex(new Uint8Array([0x7d, 0x13]));
+        log('\u2192 Auto-request all 16 patterns on connect', 'log-syx');
+      }, 300);
     } else if (midiOut && !midiIn) {
-      statusEl.textContent = midiOut.name + ' \u2014 select input';
-      statusEl.className   = 'is-warn';
+      statusEl.textContent = midiOut.name + ' — select input'; statusEl.className = 'is-warn';
     } else {
-      statusEl.textContent = 'No ports found';
-      statusEl.className   = '';
+      statusEl.textContent = 'No ports found'; statusEl.className = '';
     }
+    updateButtons();
+  }
 
-    document.getElementById('btnReq').disabled    = !ok;
-    document.getElementById('btnReqAll').disabled = !ok;
-    for (var bi = 0; bi < 4; bi++)
-      document.getElementById('btnBank' + bi).disabled = !ok;
+  // ── Save JSON ──────────────────────────────────────────────────────
+  var JSON_VERSION = 2;
+  function nowISO() { return new Date().toISOString(); }
+
+  function patternToJSON(g, p) {
+    var blob = groups[g][p];
+    var len = blob[127];
+    var steps = [];
+    for (var s = 0; s < len; s++) {
+      var raw = blob[s], t = getTime(blob, s);
+      steps.push({
+        time:   t,
+        pitch:  (raw === 0xff) ? null : (raw & 0x3f),
+        accent: (raw !== 0xff) ? !!(raw & 0x40) : false,
+        slide:  (raw !== 0xff) ? !!(raw & 0x80) : false
+      });
+    }
+    var sc = getStashCount(blob);
+    var stash = [];
+    for (var k = 0; k < sc; k++) stash.push(blob[len + k] & 0xff);
+    return {
+      group: g + 1, pattern: p + 1, length: len, steps: steps,
+      pitch_stash_count: sc, pitch_stash: stash
+    };
+  }
+
+  function saveJSON(obj, fname) {
+    var payload = JSON.stringify(obj, null, 2);
+    var url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+    var a = document.createElement('a'); a.href = url; a.download = fname; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  document.getElementById('btnSavePattern').onclick = function() {
+    var obj = {
+      version: JSON_VERSION, type: 'pattern',
+      saved_at: nowISO(),
+      data: [patternToJSON(activeGroup, activePat)]
+    };
+    saveJSON(obj, 'superos-g' + (activeGroup+1) + '-p' + (activePat+1) + '-' + nowISO().replace(/[:.]/g,'-') + '.json');
+  };
+
+  document.getElementById('btnSaveBank').onclick = function() {
+    var bank = activePat < 8 ? 0 : 1;
+    var start = bank * 8, pats = [];
+    for (var p = start; p < start + 8; p++) pats.push(patternToJSON(activeGroup, p));
+    var obj = { version: JSON_VERSION, type: 'bank', saved_at: nowISO(),
+                group: activeGroup + 1, bank: bank === 0 ? 'A' : 'B', data: pats };
+    saveJSON(obj, 'superos-g' + (activeGroup+1) + '-bank' + (bank===0?'A':'B') + '-' + nowISO().replace(/[:.]/g,'-') + '.json');
+  };
+
+  document.getElementById('btnSaveGroup').onclick = function() {
+    var pats = [];
+    for (var p = 0; p < PATS_PER_GROUP; p++) pats.push(patternToJSON(activeGroup, p));
+    var obj = { version: JSON_VERSION, type: 'group', saved_at: nowISO(),
+                group: activeGroup + 1, data: pats };
+    saveJSON(obj, 'superos-g' + (activeGroup+1) + '-' + nowISO().replace(/[:.]/g,'-') + '.json');
+  };
+
+  document.getElementById('btnSaveAll').onclick = function() {
+    var allPats = [];
+    for (var g = 0; g < NUM_GROUPS; g++)
+      for (var p = 0; p < PATS_PER_GROUP; p++)
+        allPats.push(patternToJSON(g, p));
+    var obj = { version: JSON_VERSION, type: 'all', saved_at: nowISO(), data: allPats };
+    saveJSON(obj, 'superos-all-groups-' + nowISO().replace(/[:.]/g,'-') + '.json');
+  };
+
+  // ── Load JSON (with strict validation) ────────────────────────────
+  function validateStep(step, stepIdx) {
+    if (typeof step !== 'object' || step === null)
+      throw new Error('Step ' + stepIdx + ': not an object');
+    if (![0,1,2].includes(step.time))
+      throw new Error('Step ' + stepIdx + ': invalid time ' + step.time);
+    if (step.pitch !== null) {
+      if (typeof step.pitch !== 'number' || !Number.isInteger(step.pitch) || step.pitch < 0 || step.pitch > PITCH_MAX)
+        throw new Error('Step ' + stepIdx + ': invalid pitch ' + step.pitch);
+    }
+    if (typeof step.accent !== 'boolean')
+      throw new Error('Step ' + stepIdx + ': accent must be boolean');
+    if (typeof step.slide  !== 'boolean')
+      throw new Error('Step ' + stepIdx + ': slide must be boolean');
+  }
+  function validatePatJSON(pd, patIdx) {
+    if (typeof pd !== 'object' || pd === null)
+      throw new Error('Pattern ' + patIdx + ': not an object');
+    if (typeof pd.group   !== 'number' || pd.group   < 1 || pd.group   > NUM_GROUPS)
+      throw new Error('Pattern ' + patIdx + ': group out of range');
+    if (typeof pd.pattern !== 'number' || pd.pattern < 1 || pd.pattern > PATS_PER_GROUP)
+      throw new Error('Pattern ' + patIdx + ': pattern out of range');
+    if (typeof pd.length  !== 'number' || pd.length  < 1 || pd.length  > MAX_STEPS)
+      throw new Error('Pattern ' + patIdx + ': invalid length');
+    if (!Array.isArray(pd.steps) || pd.steps.length !== pd.length)
+      throw new Error('Pattern ' + patIdx + ': steps length mismatch');
+    for (var si = 0; si < pd.steps.length; si++) validateStep(pd.steps[si], si + 1);
+    if (pd.pitch_stash_count != null || pd.pitch_stash != null) {
+      if (typeof pd.pitch_stash_count !== 'number' || pd.pitch_stash_count < 0 || pd.pitch_stash_count > MAX_STEPS)
+        throw new Error('Pattern ' + patIdx + ': invalid pitch_stash_count');
+      if (!Array.isArray(pd.pitch_stash))
+        throw new Error('Pattern ' + patIdx + ': pitch_stash must be an array');
+      if (pd.pitch_stash.length !== pd.pitch_stash_count)
+        throw new Error('Pattern ' + patIdx + ': pitch_stash length mismatch');
+      for (var pj = 0; pj < pd.pitch_stash.length; pj++) {
+        var ps = pd.pitch_stash[pj];
+        if (typeof ps !== 'number' || !Number.isInteger(ps) || ps < 0 || ps > 255)
+          throw new Error('Pattern ' + patIdx + ': invalid pitch_stash[' + pj + ']');
+      }
+    }
+  }
+  function applyPatJSON(pd) {
+    var g = pd.group - 1, p = pd.pattern - 1;
+    var blob = groups[g][p];
+    var len = pd.length;
+    blob[127] = len;
+    // Clear time data
+    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    for (var s = 0; s < len; s++) {
+      var st = pd.steps[s];
+      setTime(blob, s, st.time);
+      if (st.pitch !== null) {
+        var flags = (st.accent ? 0x40 : 0) | (st.slide ? 0x80 : 0);
+        blob[s] = (st.pitch & 0x3f) | flags;
+      } else {
+        blob[s] = 0xff;
+      }
+    }
+    for (var sc = 0; sc < len; sc++)
+      if (blob[sc] !== 0xff) blob[sc] = clampPackedByte(blob[sc]);
+    normalizePatternTimes(blob, len);
+    setStashCount(blob, 0);
+    if (pd.pitch_stash_count != null && Array.isArray(pd.pitch_stash) && pd.pitch_stash.length > 0) {
+      var scn = clampStashToBlob(blob, len, pd.pitch_stash_count);
+      setStashCount(blob, scn);
+      for (var ks = 0; ks < scn; ks++)
+        blob[len + ks] = clampPackedByte(pd.pitch_stash[ks] & 0xff);
+    }
+    pushHistory(g, p);
+    saveGroupsToLS();
+    if (g === activeGroup && p === activePat) {
+      document.getElementById('patLen').value = String(len);
+      renderGrid();
+    }
     recomputeDirty();
   }
 
-  document.getElementById('btnMidi').onclick = async function() {
-    if (!navigator.requestMIDIAccess) {
-      log('Web MIDI unavailable (use Chrome / Edge)', 'log-err'); return;
-    }
-    try {
-      midiAccess = await navigator.requestMIDIAccess({ sysex: true });
-      bindPorts(midiAccess);
-      midiAccess.onstatechange = function() { bindPorts(midiAccess); };
-      log('MIDI ready  \u2014  Computer Out \u2192 303 MIDI In  |  303 MIDI Out \u2192 Computer In', 'log-ack');
-      if (!document.getElementById('logBody').classList.contains('is-open'))
-        document.getElementById('logBar').click();
-    } catch(e) {
-      log('MIDI denied: ' + e, 'log-err');
-      document.getElementById('logBar').click();
-    }
+  document.getElementById('btnLoadJson').onclick = function() {
+    document.getElementById('fileInput').click();
+  };
+  document.getElementById('fileInput').onchange = function(ev) {
+    var file = ev.target.files[0]; if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        var obj = JSON.parse(e.target.result);
+        // Top-level validation
+        if (typeof obj !== 'object' || obj === null)          throw new Error('Root is not an object');
+        if (obj.version !== 1 && obj.version !== 2)           throw new Error('Version mismatch: expected 1 or 2, got ' + obj.version);
+        if (!['pattern','bank','group','all'].includes(obj.type)) throw new Error('Unknown type: ' + obj.type);
+        if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('data array missing or empty');
+        // Validate all patterns before applying any
+        for (var i = 0; i < obj.data.length; i++) validatePatJSON(obj.data[i], i + 1);
+        // Apply
+        for (var j = 0; j < obj.data.length; j++) applyPatJSON(obj.data[j]);
+        log('Loaded ' + obj.data.length + ' pattern(s) from JSON (' + obj.type + ', saved ' + (obj.saved_at || 'unknown') + ')', 'log-syx');
+      } catch(err) {
+        alert('JSON load error: ' + err.message);
+        log('JSON load error: ' + err.message, 'log-err');
+      }
+      ev.target.value = '';
+    };
+    reader.readAsText(file);
   };
 
-  document.getElementById('selOut').onchange =
-  document.getElementById('selIn').onchange  =
-  document.getElementById('selKbd').onchange = function() { if (midiAccess) bindPorts(midiAccess); };
-
-  document.getElementById('btnReq').onclick = function() {
-    if (!midiIn) { log('Select MIDI input first', 'log-err'); return; }
-    requestPattern(currentPat & 15);
-    log('\u2192 Request pattern ' + (currentPat + 1), 'log-syx');
+  // ── Copy / paste ───────────────────────────────────────────────────
+  document.getElementById('btnCopy').onclick = function() {
+    clipboard = cloneU8(activeBlob());
+    copiedFrom = { g: activeGroup, p: activePat };
+    document.getElementById('btnPaste').disabled = false;
+    document.getElementById('copyStatus').textContent =
+        'Copied G' + (activeGroup + 1) + ' \u00b7 P' + (activePat + 1);
+    refreshAllPills();
+    log('Copied pattern ' + (activePat+1) + ' (group ' + (activeGroup+1) + ')', 'log-ack');
   };
+  document.getElementById('btnPaste').onclick = function() {
+    if (!clipboard) return;
+    activeBlob().set(clipboard);
+    document.getElementById('patLen').value = String(clipboard[127]);
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    scheduleLiveSend();
+    log('Pasted to pattern ' + (activePat+1) + ' (group ' + (activeGroup+1) + ')', 'log-ack');
+  };
+
+  // ── Undo / redo / reset ────────────────────────────────────────────
+  document.getElementById('btnUndo').onclick = function() {
+    doUndo(activeGroup, activePat);
+    document.getElementById('patLen').value = String(activeBlob()[127]);
+    renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+  };
+  document.getElementById('btnRedo').onclick = function() {
+    doRedo(activeGroup, activePat);
+    document.getElementById('patLen').value = String(activeBlob()[127]);
+    renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+  };
+  document.getElementById('btnResetBefore').onclick = function() {
+    // Jump to commit baseline
+    var ci = commitIdx[activeGroup][activePat];
+    var h  = history[activeGroup][activePat];
+    if (h[ci]) {
+      histIdx[activeGroup][activePat] = ci;
+      groups[activeGroup][activePat].set(h[ci]);
+      document.getElementById('patLen').value = String(activeBlob()[127]);
+      renderGrid(); recomputeDirty();
+    }
+  };
+  document.getElementById('btnResetAfter').onclick = function() {
+    // Jump to latest (end of history)
+    var h  = history[activeGroup][activePat];
+    histIdx[activeGroup][activePat] = h.length - 1;
+    groups[activeGroup][activePat].set(h[h.length - 1]);
+    document.getElementById('patLen').value = String(activeBlob()[127]);
+    renderGrid(); recomputeDirty();
+  };
+  document.getElementById('btnClearPat').onclick = function() {
+    clearPatternMinimalRest(activeBlob());
+    document.getElementById('patLen').value = '1';
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Cleared pattern \u2192 1 step (rest)', 'log-ack');
+  };
+
   document.getElementById('btnSave303').onclick = function() {
     if (!midiOut) return;
     syncBlob();
     saveAckPending = true;
-    sendPattern(currentPat & 15, bankRam[currentPat]);
-    log('\u2190 Save pattern ' + (currentPat + 1) + ' (SysEx)', 'log-syx');
+    sendPattern(activePat & 15, activeBlob());
+    log('\u2190 Save pattern ' + (activePat+1) + ' to 303 (SysEx)', 'log-syx');
   };
-  document.getElementById('btnUndo').onclick = function() {
-    if (liveTimer) {
-      clearTimeout(liveTimer);
-      liveTimer = null;
-    }
-    saveAckPending = false;
-    bankRam[currentPat].set(commitBaseline[currentPat]);
-    blob = bankRam[currentPat];
-    document.getElementById('patLen').value = String(blob[127]);
-    renderGrid();
-    recomputeDirty();
-    if (midiOut) {
-      syncBlob();
-      sendPattern(currentPat & 15, bankRam[currentPat]);
-    }
+
+  // ── Request ────────────────────────────────────────────────────────
+  document.getElementById('btnReq').onclick = function() {
+    if (!midiIn) { log('Select MIDI input first', 'log-err'); return; }
+    expectDump = 0;
+    requestPattern(activePat & 15);
+    log('\u2192 Request pattern ' + (activePat+1), 'log-syx');
   };
   document.getElementById('btnReqAll').onclick = function() {
     expectDump = 16;
     sendSysex(new Uint8Array([0x7d, 0x13]));
     log('\u2192 Request all 16 patterns', 'log-syx');
   };
-  document.getElementById('chkLive').onchange = function() {
-    liveEnabled = this.checked;
-  };
-  for (var bj = 0; bj < 4; bj++) {
-    (function(bk) {
-      document.getElementById('btnBank' + bk).onclick = function() { startBankDownload(bk); };
-    })(bj);
-  }
 
-  // ── Init ────────────────────────────────────────────────
+  function syncLiveIndicator() {
+    var cb = document.getElementById('chkLive');
+    var label = document.getElementById('liveToggleLabel');
+    liveEnabled = cb && cb.checked;
+    var on = liveEnabled ? 'Live on — pattern pushes to 303 while playing' : 'Live off — tap to push edits while the sequencer runs';
+    if (label) {
+      label.classList.toggle('is-on', !!liveEnabled);
+      label.title = on;
+      label.setAttribute('aria-label', on);
+    }
+  }
+  document.getElementById('chkLive').addEventListener('change', syncLiveIndicator);
+  syncLiveIndicator();
+
+  document.getElementById('patLen').addEventListener('change', function() {
+    var blob = activeBlob();
+    var oldLen = Math.min(MAX_STEPS, Math.max(1, blob[127] | 0));
+    var newLen = Math.min(MAX_STEPS, Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    migratePitchStashOnResize(blob, oldLen, newLen);
+    blob[127] = newLen;
+    syncBlob();
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid(); recomputeDirty(); scheduleLiveSend();
+  });
+  // ── Config panel ───────────────────────────────────────────────────
+  document.getElementById('btnCfgRead').onclick = function() {
+    sendCfgRead();
+    log('\u2192 Request config from 303', 'log-syx');
+  };
+  document.getElementById('btnCfgWrite').onclick = function() {
+    var ch  = parseInt(document.getElementById('cfgMidiCh').value,  10);
+    var clk = parseInt(document.getElementById('cfgMidiClk').value, 10);
+    sendCfgWrite(ch, clk);
+    log('\u2190 Set config: ch=' + ch + ' clock_rx=' + clk, 'log-syx');
+  };
+
+  // ── MIDI connect ───────────────────────────────────────────────────
+  document.getElementById('btnMidi').onclick = async function() {
+    if (!navigator.requestMIDIAccess) { log('Web MIDI unavailable (use Chrome/Edge)', 'log-err'); return; }
+    try {
+      midiAccess = await navigator.requestMIDIAccess({ sysex: true });
+      bindPorts(midiAccess);
+      midiAccess.onstatechange = function() { bindPorts(midiAccess); };
+      log('MIDI ready — Computer Out \u2192 303 MIDI In  |  303 MIDI Out \u2192 Computer In', 'log-ack');
+      if (!document.getElementById('logBody').classList.contains('is-open'))
+        document.getElementById('logBar').click();
+    } catch(e) { log('MIDI denied: ' + e, 'log-err'); document.getElementById('logBar').click(); }
+  };
+
+  document.getElementById('selOut').onchange =
+  document.getElementById('selIn').onchange  =
+  document.getElementById('selKbd').onchange = function() { if (midiAccess) bindPorts(midiAccess); };
+
+  (function initPitchModeUi() {
+    var cb = document.getElementById('pitchModeFull');
+    if (!cb) return;
+    cb.checked = pitchEditorFullRange;
+    cb.addEventListener('change', function() {
+      pitchEditorFullRange = !!cb.checked;
+      try { localStorage.setItem(LS_PITCH_MODE, pitchEditorFullRange ? 'full' : 'og'); } catch (e) {}
+      renderGrid();
+      recomputeDirty();
+      scheduleLiveSend();
+    });
+  })();
+
+  // ── Init ────────────────────────────────────────────────────────────
+  refreshAllPills();
   renderGrid();
   recomputeDirty();
+
 })();
 </script>
 </body>

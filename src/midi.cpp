@@ -1,30 +1,25 @@
 /*
  * SuperOS-303 pattern SysEx (host ↔ DIN MIDI)
- * API: superos_midi.h — implementation in this file (midi.cpp) so #include <MIDI.h>
- * is not shadowed by a project midi.h on case-insensitive filesystems.
+ * API: midi_api.h — implementation in this file.
  *
- * Framing (between F0 and F7, all data bytes 0..127):
- *   F0 7D <cmd> ... F7
+ * Framing: F0 7D <cmd> ... F7   (manufacturer ID 0x7D non-commercial)
  *
- * Bootloader safety (bootload.c): firmware update uses 7D 01 (flash page) with len>9 and
- * a specific 8-byte header + packed payload, or 7D 02 (jump app). Pattern commands use
- * 10h–14h only; the bootloader ignores them because data[1] must be 01 or 02 for those paths.
- *
- * 7-bit packing (same idea as tools/hex2sysex.py pack_7bit): up to 7 raw bytes → one MSB
- * carry byte + 7 low-7 data bytes. Used for 128-byte pattern blobs.
- *
- * Commands:
+ * Pattern commands:
  *   10h  Host→303  Request one pattern: <pat:0..15>
  *   11h  303→Host  Pattern data: <pat> <xor_lo7> <xor_hi1> <packed 128 bytes>
  *   12h  Host→303  Set pattern: same as 11h body; XOR over raw 128 bytes must match.
  *   13h  Host→303  Request all 16 patterns (303 sends sixteen 11h messages, queued).
  *   14h  303→Host  ACK/NAK: <status> 0=ok 1=bad_checksum 2=bad_pattern 3=blocked_clock
- *        (3 is unused for 0x12 since 12h is allowed while transport runs: RAM update only, no EEPROM.)
+ *   15h  303→Host  Step position: <pat:0..15> <step:0..63>  (sent each 16th while running)
  *
- * XOR checksum: XOR of 128 raw EEPROM blob bytes; xor_lo7 = c & 0x7F, xor_hi1 = (c>>7) & 1.
+ * Config commands:
+ *   20h  Host→303  Request config
+ *   21h  303→Host  Config data: <midi_ch:0..16> <flags: bit0=clock_receive>
+ *   22h  Host→303  Set config: same as 21h body
  *
- * Note On (any channel, omni): echoed to output; velocity ≥ 100 sets accent on the current
- * pitch step and maps MIDI note 36..72 onto pattern pitch. Note Off is echoed.
+ * Slide fix: note_off_cb tracks the most-recent live note; only clears s_live_gate when
+ * the Note Off matches that note. This prevents releasing note 1 from killing note 2
+ * during a live slide (two-finger legato play).
  */
 
 #include <Arduino.h>
@@ -77,10 +72,8 @@ static void tx_clear() {
 
 static bool tx_push_byte(uint8_t b) {
   uint16_t n = uint16_t(s_tx_w + 1);
-  if (n >= kTxCap)
-    n = 0;
-  if (n == s_tx_r)
-    return false;
+  if (n >= kTxCap) n = 0;
+  if (n == s_tx_r) return false;
   s_tx[s_tx_w] = b;
   s_tx_w = n;
   return true;
@@ -90,17 +83,14 @@ static void midi_tx_drain() {
   while (s_tx_r != s_tx_w && Serial1.availableForWrite() > 0) {
     Serial1.write(s_tx[s_tx_r]);
     s_tx_r++;
-    if (s_tx_r >= kTxCap)
-      s_tx_r = 0;
+    if (s_tx_r >= kTxCap) s_tx_r = 0;
   }
 }
 
 static bool tx_push_message(const uint8_t *inner, uint16_t inner_len) {
-  if (!tx_push_byte(0xF0))
-    return false;
+  if (!tx_push_byte(0xF0)) return false;
   for (uint16_t i = 0; i < inner_len; ++i) {
-    if (!tx_push_byte(inner[i]))
-      return false;
+    if (!tx_push_byte(inner[i])) return false;
   }
   return tx_push_byte(0xF7);
 }
@@ -110,11 +100,9 @@ static uint16_t pack_7bit(const uint8_t *src, uint16_t len, uint8_t *out) {
   uint16_t o = 0;
   for (uint16_t i = 0; i < len; i += 7) {
     uint8_t msb = 0;
-    const uint8_t n =
-        (len - i >= 7) ? 7 : static_cast<uint8_t>(len - i);
+    const uint8_t n = (len - i >= 7) ? 7 : static_cast<uint8_t>(len - i);
     for (uint8_t b = 0; b < n; ++b)
-      if (src[i + b] & 0x80)
-        msb |= static_cast<uint8_t>(1u << b);
+      if (src[i + b] & 0x80) msb |= static_cast<uint8_t>(1u << b);
     out[o++] = msb;
     for (uint8_t b = 0; b < n; ++b)
       out[o++] = src[i + b] & 0x7F;
@@ -122,18 +110,15 @@ static uint16_t pack_7bit(const uint8_t *src, uint16_t len, uint8_t *out) {
   return o;
 }
 
-static constexpr uint16_t kPacked128Len = 147; // ceil(128/7) groups → 18*8 + 3
+static constexpr uint16_t kPacked128Len = 147;
 
-static bool unpack_7bit(const uint8_t *in, uint16_t in_len, uint8_t *out,
-                          uint16_t out_len) {
+static bool unpack_7bit(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16_t out_len) {
   uint16_t oi = 0, ii = 0;
   while (oi < out_len) {
-    if (ii >= in_len)
-      return false;
+    if (ii >= in_len) return false;
     const uint8_t msb = in[ii++];
     for (uint8_t b = 0; b < 7 && oi < out_len; ++b) {
-      if (ii >= in_len)
-        return false;
+      if (ii >= in_len) return false;
       out[oi] = static_cast<uint8_t>(in[ii++] | ((msb & (1u << b)) ? 0x80u : 0u));
       ++oi;
     }
@@ -149,8 +134,7 @@ static uint8_t xor_blob128(const uint8_t *p) {
 }
 
 static void enqueue_pattern_reply(uint8_t pat) {
-  if (!g_eng)
-    return;
+  if (!g_eng) return;
   uint8_t raw[PATTERN_SIZE];
   g_eng->export_pattern_blob(pat, raw);
   const uint8_t cx = xor_blob128(raw);
@@ -174,107 +158,138 @@ static bool s_dump_active = false;
 static uint8_t s_dump_next = 0;
 
 static void dump_try_advance() {
-  if (!s_dump_active || s_tx_r != s_tx_w)
-    return;
-  if (s_dump_next >= 16) {
-    s_dump_active = false;
-    return;
-  }
+  if (!s_dump_active || s_tx_r != s_tx_w) return;
+  if (s_dump_next >= 16) { s_dump_active = false; return; }
   enqueue_pattern_reply(s_dump_next++);
 }
 
-// --- SysEx parse (callback: array includes F0 ... F7) ----------------------------
+// --- SysEx parse ----------------------------------------------------------------
 static void handle_sysex_body(const uint8_t *p, unsigned n) {
-  if (!g_eng || n < 3)
-    return;
-  if (p[0] != 0x7D)
-    return;
+  if (!g_eng || n < 3) return;
+  if (p[0] != 0x7D) return;
   const uint8_t cmd = p[1];
 
   switch (cmd) {
   case 0x10: { // request pattern
-    if (n < 3)
-      return;
+    if (n < 3) return;
     const uint8_t pat = p[2] & 0x0F;
     enqueue_pattern_reply(pat);
     break;
   }
-  case 0x12: { // set pattern (while clock runs: RAM only, no EEPROM — live edit from host)
-    if (n < 5 + kPacked128Len) {
-      send_ack(1);
-      return;
-    }
+  case 0x12: { // set pattern
+    if (n < 5 + kPacked128Len) { send_ack(1); return; }
     const uint8_t pat = p[2] & 0x0F;
-    const uint8_t c0 = p[3];
-    const uint8_t c1 = p[4];
-    const uint8_t cx = static_cast<uint8_t>(c0 | (c1 << 7));
+    const uint8_t cx = static_cast<uint8_t>(p[3] | (p[4] << 7));
     uint8_t raw[PATTERN_SIZE];
-    if (!unpack_7bit(p + 5, static_cast<uint16_t>(n - 5), raw, PATTERN_SIZE)) {
-      send_ack(1);
-      return;
-    }
-    if (xor_blob128(raw) != cx) {
-      send_ack(1);
-      return;
-    }
+    if (!unpack_7bit(p + 5, static_cast<uint16_t>(n - 5), raw, PATTERN_SIZE)) { send_ack(1); return; }
+    if (xor_blob128(raw) != cx) { send_ack(1); return; }
     const bool persist = !g_clk_run;
-    if (!g_eng->import_pattern_blob(pat, raw, persist)) {
-      send_ack(2);
-      return;
-    }
+    if (!g_eng->import_pattern_blob(pat, raw, persist)) { send_ack(2); return; }
     send_ack(0);
-    if (persist)
-      enqueue_pattern_reply(pat);
+    if (persist) enqueue_pattern_reply(pat);
     break;
   }
-  case 0x13: // request all (allowed while transport runs; host should avoid floods)
+  case 0x13: // request all
     s_dump_next = 0;
     s_dump_active = true;
     dump_try_advance();
     break;
+  case 0x20: { // request config
+    const uint8_t fl = GlobalSettings.midi_clock_receive ? 1 : 0;
+    const uint8_t inner[4] = {0x7D, 0x21, GlobalSettings.midi_channel, fl};
+    tx_push_message(inner, 4);
+    break;
+  }
+  case 0x22: { // set config
+    if (n < 4) return;
+    const uint8_t ch = p[2];
+    const uint8_t fl = p[3];
+    if (ch <= 16) GlobalSettings.midi_channel = ch;
+    GlobalSettings.midi_clock_receive = (fl & 1) != 0;
+    GlobalSettings.save_midi_to_storage();
+    midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive);
+    send_ack(0);
+    // Echo back new config
+    const uint8_t nfl = GlobalSettings.midi_clock_receive ? 1 : 0;
+    const uint8_t reply[4] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl};
+    tx_push_message(reply, 4);
+    break;
+  }
   default:
     break;
   }
 }
 
 static void sysex_cb(byte *data, unsigned sz) {
-  // Library passes full buffer including F0 … F7 (see MidiInputCallbacks tests).
-  if (sz < 4 || data[0] != 0xF0 || data[sz - 1] != 0xF7)
-    return;
+  if (sz < 4 || data[0] != 0xF0 || data[sz - 1] != 0xF7) return;
   handle_sysex_body(reinterpret_cast<const uint8_t *>(data + 1),
                     static_cast<unsigned>(sz - 2));
 }
 
+// --- Live gate / accent ---------------------------------------------------------
 static bool s_live_accent = false;
-static bool s_live_gate = false;
+static bool s_live_gate   = false;
+static uint8_t s_live_note = 0; // most-recent live Note On pitch
 
 bool midi_live_accent() { return s_live_accent; }
 bool midi_live_gate()   { return s_live_gate; }
 
 static void note_on_cb(byte ch, byte pitch, byte vel) {
-  if (vel == 0)
-    return;
-  if (s_in_channel != 0 && ch != s_in_channel)
-    return;
+  if (vel == 0) return;
+  if (s_in_channel != 0 && ch != s_in_channel) return;
   MIDI.sendNoteOn(pitch, vel, ch);
   if (g_eng)
     g_eng->midi_apply_note_on(static_cast<uint8_t>(pitch), static_cast<uint8_t>(vel));
   if (!g_clk_run) {
     s_live_accent = (vel >= 100);
-    s_live_gate = true;
+    s_live_gate   = true;
+    s_live_note   = static_cast<uint8_t>(pitch); // track most-recent note
   }
 }
 
 static void note_off_cb(byte ch, byte pitch, byte vel) {
   (void)vel;
-  if (s_in_channel != 0 && ch != s_in_channel)
-    return;
+  if (s_in_channel != 0 && ch != s_in_channel) return;
   MIDI.sendNoteOff(pitch, 0, ch);
   if (!g_clk_run) {
-    s_live_gate = false;
+    // Only clear the gate if this Note Off matches the currently-active live note.
+    // This prevents releasing note 1 (slide source) from silencing note 2 (slide dest).
+    if (static_cast<uint8_t>(pitch) == s_live_note) {
+      s_live_gate = false;
+    }
   }
 }
 
+// --- Audition note (pitch write / edit step preview) ----------------------------
+static uint8_t s_audition_note = 0;
+static bool    s_audition_on   = false;
+
+void midi_audition_note_on(uint8_t note, uint8_t vel) {
+  if (s_audition_on && s_audition_note != note) {
+    // Pitch changed mid-press — close previous note first
+    MIDI.sendNoteOff(s_audition_note, 0, out_ch());
+  }
+  if (!s_audition_on || s_audition_note != note) {
+    MIDI.sendNoteOn(note, vel, out_ch());
+    s_audition_note = note;
+    s_audition_on   = true;
+  }
+}
+
+void midi_audition_note_off() {
+  if (s_audition_on) {
+    MIDI.sendNoteOff(s_audition_note, 0, out_ch());
+    s_audition_on = false;
+  }
+}
+
+// --- Step position broadcast (SysEx 0x15) ---------------------------------------
+void midi_send_step_position(uint8_t pat, uint8_t step) {
+  const uint8_t inner[4] = {0x7D, 0x15, pat & 0x0F, step & 0x3F};
+  tx_push_message(inner, 4);
+}
+
+// --- midi_init ------------------------------------------------------------------
 void midi_init(Engine *engine) {
   g_eng = engine;
   Serial1.begin(31250);
@@ -285,20 +300,17 @@ void midi_init(Engine *engine) {
   MIDI.setHandleNoteOff(note_off_cb);
   tx_clear();
   s_dump_active = false;
-  // main calls midi_apply_settings() after engine.Load()
 }
 
 static uint8_t s_seq_note = 0;
 static bool s_seq_note_on = false;
 
-void midi_poll(Engine &engine, bool clk_run, bool &midi_clk,
-               bool &midi_clock_pulse) {
+void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pulse) {
   g_eng = &engine;
   g_clk_run = clk_run;
   midi_clock_pulse = false;
 
-  if (!s_midi_clock_rx)
-    midi_clk = false;
+  if (!s_midi_clock_rx) midi_clk = false;
 
   if (!clk_run && s_seq_note_on) {
     MIDI.sendNoteOff(s_seq_note, 0, out_ch());
@@ -309,27 +321,20 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk,
     const midi::MidiType t = MIDI.getType();
     switch (t) {
     case midi::MidiType::Clock:
-      if (s_midi_clock_rx)
-        midi_clock_pulse = true;
+      if (s_midi_clock_rx) midi_clock_pulse = true;
       break;
     case midi::MidiType::Start:
-      if (s_midi_clock_rx) {
-        midi_clk = true;
-        engine.Reset();
-      }
+      if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); }
       break;
     case midi::MidiType::Stop:
-      if (s_midi_clock_rx) {
-        midi_clk = false;
-        engine.Reset();
-      }
+      if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); }
       break;
     case midi::MidiType::ProgramChange:
       if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel)
         engine.SetPattern(MIDI.getData1(), !clk_run);
       break;
     case midi::MidiType::SystemExclusive:
-      break; // handled in sysex_cb
+      break;
     default:
       break;
     }
@@ -341,14 +346,10 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk,
 
 void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave,
                            bool run_rising, bool run_falling) {
-  if (midi_transport_slave)
-    return;
-  if (run_rising)
-    MIDI.sendStart();
-  if (run_falling)
-    MIDI.sendStop();
-  if (clocked && clk_run)
-    MIDI.sendClock();
+  if (midi_transport_slave) return;
+  if (run_rising)  MIDI.sendStart();
+  if (run_falling) MIDI.sendStop();
+  if (clocked && clk_run) MIDI.sendClock();
 }
 
 void midi_after_clock(Engine &engine, uint8_t transpose) {
@@ -363,14 +364,13 @@ void midi_after_clock(Engine &engine, uint8_t transpose) {
   }
 
   uint16_t n = static_cast<uint16_t>(engine.get_midi_note()) + transpose;
-  if (n > 127)
-    n = 127;
+  if (n > 127) n = 127;
   const uint8_t vel = engine.get_accent() ? 127 : 80;
 
   if (s_seq_note_on && s_seq_note != static_cast<uint8_t>(n)) {
-    // TB-303 slide: gate stays high while pitch glides. Overlap MIDI notes (new On before
-    // old Off) so monophonic / legato voices glide like the hardware slide CV.
-    if (engine.get_slide_dac()) {
+    const bool slide_midi =
+        engine.get_slide_dac() || engine.get_sequence().note_after_tie_run();
+    if (slide_midi) {
       MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
       MIDI.sendNoteOff(s_seq_note, 0, och);
     } else {
