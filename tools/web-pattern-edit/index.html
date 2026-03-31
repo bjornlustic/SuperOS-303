@@ -951,6 +951,8 @@
   var autoPatternDumpTimer = null;
   var rxBuf = [];
   var expectDump = 0;
+  /** Group index (0–3) to store patterns during a 0x13 bulk read; set when dump starts. */
+  var patternBulkTargetGroup = 0;
   var saveAckPending = false;
   var liveTimer = null;
   var liveEnabled = false;
@@ -1490,21 +1492,24 @@
       if (!raw)         { log('0x11 unpack failed', 'log-err'); return; }
       if (xorBlob(raw) !== cx) { log('0x11 checksum mismatch', 'log-err'); return; }
 
-      if (expectDump > 0) {
+      var inBulk = expectDump > 0;
+      if (inBulk) {
         log('Pattern ' + (pat+1) + ' received (' + (17 - expectDump) + '/16)', 'log-syx');
         expectDump--;
       } else {
         log('Pattern ' + (pat+1) + ' received', 'log-syx');
       }
-      // Store in group 1 (group 0 = hardware group)
+      // Bulk dump: fill the group that was active when the request started. Single request / save
+      // echo: use the group currently being edited.
+      var g = inBulk ? patternBulkTargetGroup : activeGroup;
       sanitizeStashAfterLoad(raw);
       normalizePatternTimes(raw, raw[127]);
-      groups[0][pat].set(raw);
-      pushHistory(0, pat);
-      commitIdx[0][pat] = histIdx[0][pat];
+      groups[g][pat].set(raw);
+      pushHistory(g, pat);
+      commitIdx[g][pat] = histIdx[g][pat];
       saveGroupsToLS();
 
-      if (activeGroup === 0 && pat === activePat) {
+      if (activeGroup === g && pat === activePat) {
         document.getElementById('patLen').value = String(raw[127]);
         renderGrid();
       }
@@ -1657,6 +1662,7 @@
       if (autoPatternDumpTimer) clearTimeout(autoPatternDumpTimer);
       autoPatternDumpTimer = setTimeout(function() {
         autoPatternDumpTimer = null;
+        patternBulkTargetGroup = activeGroup;
         expectDump = 16;
         sendSysex(new Uint8Array([0x7d, 0x13]));
         log('\u2192 Auto-request all 16 patterns on connect', 'log-syx');
@@ -1929,6 +1935,7 @@
     log('\u2192 Request pattern ' + (activePat+1), 'log-syx');
   };
   document.getElementById('btnReqAll').onclick = function() {
+    patternBulkTargetGroup = activeGroup;
     expectDump = 16;
     sendSysex(new Uint8Array([0x7d, 0x13]));
     log('\u2192 Request all 16 patterns', 'log-syx');
