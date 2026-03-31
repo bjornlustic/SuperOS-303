@@ -226,11 +226,45 @@ static void sysex_cb(byte *data, unsigned sz) {
                     static_cast<unsigned>(sz - 2));
 }
 
+// --- Live note stack (legato / slide-back) ---------------------------------------
+// Tracks all physically-held notes so releasing the top note slides back to
+// whatever is still held underneath (e.g. hold C, slide up to B, release B → slide back to C).
+static constexpr uint8_t kNoteStackSize = 8;
+static uint8_t s_note_stack[kNoteStackSize];
+static uint8_t s_note_stack_vel[kNoteStackSize]; // velocity stored per note
+static uint8_t s_note_stack_depth = 0;
+
+static void live_stack_clear() {
+  s_note_stack_depth = 0;
+}
+
+static void live_stack_remove(uint8_t note) {
+  for (uint8_t i = 0; i < s_note_stack_depth; ++i) {
+    if (s_note_stack[i] == note) {
+      for (uint8_t j = i; j < s_note_stack_depth - 1; ++j) {
+        s_note_stack[j]     = s_note_stack[j + 1];
+        s_note_stack_vel[j] = s_note_stack_vel[j + 1];
+      }
+      --s_note_stack_depth;
+      return;
+    }
+  }
+}
+
+static void live_stack_push(uint8_t note, uint8_t vel) {
+  live_stack_remove(note); // remove if already present (avoid duplicates)
+  if (s_note_stack_depth < kNoteStackSize) {
+    s_note_stack[s_note_stack_depth]     = note;
+    s_note_stack_vel[s_note_stack_depth] = vel;
+    ++s_note_stack_depth;
+  }
+}
+
 // --- Live gate / accent / slide -------------------------------------------------
 static bool    s_live_accent = false;
 static bool    s_live_gate   = false;
-static bool    s_live_slide  = false; // true while destination note of a live legato slide
-static uint8_t s_live_note   = 0;     // most-recent live Note On pitch
+static bool    s_live_slide  = false;
+static uint8_t s_live_note   = 0;
 
 bool midi_live_accent() { return s_live_accent; }
 bool midi_live_gate()   { return s_live_gate; }
@@ -240,25 +274,31 @@ static void note_on_cb(byte ch, byte pitch, byte vel) {
   if (vel == 0) return;
   if (s_in_channel != 0 && ch != s_in_channel) return;
 
-  if (!g_clk_run && s_live_gate && s_live_note != static_cast<uint8_t>(pitch)) {
-    // Legato: new note while previous still held — slide ordering.
-    // Send Note On new BEFORE Note Off old so receiving synths trigger portamento.
-    MIDI.sendNoteOn(pitch, vel, ch);
-    MIDI.sendNoteOff(s_live_note, 0, ch);
-    s_live_slide = true;
+  if (!g_clk_run) {
+    const uint8_t prev_note = s_live_note;
+    const bool was_playing  = s_live_gate;
+
+    live_stack_push(static_cast<uint8_t>(pitch), static_cast<uint8_t>(vel));
+
+    if (was_playing && prev_note != static_cast<uint8_t>(pitch)) {
+      // Legato: slide from previous note — Note On new BEFORE Note Off old.
+      MIDI.sendNoteOn(pitch, vel, ch);
+      MIDI.sendNoteOff(prev_note, 0, ch);
+      s_live_slide = true;
+    } else {
+      MIDI.sendNoteOn(pitch, vel, ch);
+      s_live_slide = false;
+    }
+
+    s_live_accent = (vel >= 100);
+    s_live_gate   = true;
+    s_live_note   = static_cast<uint8_t>(pitch);
   } else {
     MIDI.sendNoteOn(pitch, vel, ch);
-    if (!g_clk_run) s_live_slide = false;
   }
 
   if (g_eng)
     g_eng->midi_apply_note_on(static_cast<uint8_t>(pitch), static_cast<uint8_t>(vel));
-
-  if (!g_clk_run) {
-    s_live_accent = (vel >= 100);
-    s_live_gate   = true;
-    s_live_note   = static_cast<uint8_t>(pitch);
-  }
 }
 
 static void note_off_cb(byte ch, byte pitch, byte vel) {
@@ -266,12 +306,29 @@ static void note_off_cb(byte ch, byte pitch, byte vel) {
   if (s_in_channel != 0 && ch != s_in_channel) return;
 
   if (!g_clk_run) {
-    // Only send Note Off if this is the currently-active note.
-    // If the player slid away from this note, its Note Off was already sent in note_on_cb.
-    if (static_cast<uint8_t>(pitch) == s_live_note) {
-      MIDI.sendNoteOff(pitch, 0, ch);
-      s_live_gate  = false;
-      s_live_slide = false;
+    const bool was_top = (static_cast<uint8_t>(pitch) == s_live_note);
+    live_stack_remove(static_cast<uint8_t>(pitch));
+
+    if (was_top && s_note_stack_depth > 0) {
+      // Slide back: Note On new BEFORE Note Off old for portamento ordering.
+      const uint8_t back_note = s_note_stack[s_note_stack_depth - 1];
+      const uint8_t back_vel  = s_note_stack_vel[s_note_stack_depth - 1];
+      MIDI.sendNoteOn(back_note, back_vel, ch);
+      MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
+      s_live_note  = back_note;
+      s_live_slide = true;
+      s_live_gate  = true;
+      if (g_eng)
+        g_eng->midi_apply_note_on(back_note, back_vel);
+    } else {
+      // Always send Note Off — covers normal release, notes pressed during clock-run,
+      // and duplicate Note Off for already-slid notes (harmless to receiving synth).
+      MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
+      if (was_top) {
+        s_live_gate  = false;
+        s_live_slide = false;
+        s_live_note  = 0;
+      }
     }
   } else {
     MIDI.sendNoteOff(pitch, 0, ch);
@@ -325,6 +382,13 @@ static bool s_seq_note_on = false;
 
 void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pulse) {
   g_eng = &engine;
+  if (clk_run && !g_clk_run) {
+    // Transitioning to running: discard any held live notes.
+    live_stack_clear();
+    s_live_gate  = false;
+    s_live_slide = false;
+    s_live_note  = 0;
+  }
   g_clk_run = clk_run;
   midi_clock_pulse = false;
 
