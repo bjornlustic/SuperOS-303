@@ -169,12 +169,24 @@ void input_pitch(bool mod = false, bool clk_run = false) {
     if (inputs[pitched_keys[i]].rising()) {
       if (mod) {
         engine.SetPitchSemitone(i);
+        {
+          const uint8_t pp = uint8_t(engine.get_sequence().pitch_pos & (MAX_STEPS - 1));
+          midi_send_step_update(engine.get_patsel(), pp,
+              engine.get_sequence().pitch[pp],
+              engine.get_sequence().get_time());
+        }
       } else {
         const uint8_t oct   = resolve_octave();
         const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
                               (inputs[SLIDE_KEY].held()   << 7);
-        // Write current NOTE step, then advance to next NOTE (matches TAP write; no skip with TAP).
+        // Write current step, notify web editor, then advance.
         engine.SetPitch(i + 13 * oct, flags);
+        {
+          const uint8_t pp = uint8_t(engine.get_sequence().pitch_pos & (MAX_STEPS - 1));
+          midi_send_step_update(engine.get_patsel(), pp,
+              engine.get_sequence().pitch[pp],
+              engine.get_sequence().get_time());
+        }
         engine.get_sequence().advance_pitch_to_next_note();
         break;
       }
@@ -183,17 +195,23 @@ void input_pitch(bool mod = false, bool clk_run = false) {
 }
 void input_time(bool mod = false, bool clk_run = false) {
   if (clk_run && engine.is_step_locked()) return;
+  uint8_t written_time = 0xFF;
   if (inputs[DOWN_KEY].rising()) {
     if (!mod) engine.Advance();
-    engine.SetTime(1); // note
+    engine.SetTime(1); written_time = 1; // note
   }
   if (inputs[UP_KEY].rising()) {
     if (!mod) engine.Advance();
-    engine.SetTime(2); // tie
+    engine.SetTime(2); written_time = 2; // tie
   }
   if (inputs[ACCENT_KEY].rising()) {
     if (!mod) engine.Advance();
-    engine.SetTime(0); // rest
+    engine.SetTime(0); written_time = 0; // rest
+  }
+  if (written_time != 0xFF) {
+    const uint8_t tp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
+    midi_send_step_update(engine.get_patsel(), tp,
+        engine.get_sequence().pitch[tp], written_time);
   }
 }
 
@@ -251,6 +269,8 @@ void setup() {
 // Edit-mode LED feedback — current step pitch / time / flags
 // =============================================================================
 void PrintPitch() {
+  // Only light LEDs on NOTE steps — TIE and REST steps are invisible in pitch mode.
+  if (engine.get_sequence().get_time() != 1) return;
   const uint8_t semitone = engine.get_semitone();
   if (semitone != PITCH_EMPTY) {
     const Sequence &s = engine.get_sequence();
@@ -330,12 +350,12 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                const bool &clk_run) {
   switch (engine.get_mode()) {
   case PITCH_MODE:
-    PrintPitch();
+    if (clk_run) PrintPitch(); // live pitch chase while sequencer runs; TAP overlay handles stopped clock
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
   case TIME_MODE:
-    PrintTime();
+    // PrintTime() is handled by ProcessEdit (TAP held); nothing to show during live run without TAP
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 

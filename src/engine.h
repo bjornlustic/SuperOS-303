@@ -290,19 +290,22 @@ struct Sequence {
     return from;
   }
 
-  /// Handle reset flag on PITCH_MODE entry: snap to step 0.
+  /// PITCH_MODE entry: clear reset flag and land on the first NOTE step.
+  /// If no NOTE steps exist, defaults to step 0 (caller handles display guard).
   void ensure_pitch_edit_entry() {
     if (reset) {
       reset = false;
-      pitch_pos = 0;
-      time_pos = 0;
+      pitch_pos = int(first_note_idx()); // first NOTE step, or 0 if none
+      time_pos = pitch_pos;
     }
   }
 
-  /// After recording/audition: advance one step linearly (same as original AdvancePitch).
+  /// PITCH_MODE advance: jump to the next NOTE step, skipping REST and TIE.
+  /// If there are no other NOTE steps, stays on the current position.
   void advance_pitch_to_next_note() {
     first_step = false;
-    pitch_pos = (pitch_pos + 1) % length;
+    const uint8_t cur = uint8_t(pitch_pos & (MAX_STEPS - 1));
+    pitch_pos = int(next_note_step_idx(cur)); // returns cur if no other NOTE steps
     time_pos = pitch_pos;
   }
 
@@ -584,9 +587,12 @@ struct Engine {
     }
     if (result) {
       // Gate overlap: source step holds gate open all 6 clocks so the destination note
-      // starts while gate is still high (continuous legato/portamento). Tie steps also
-      // hold gate. slide_from_prev() is used only by get_slide_dac() for the CV slide pin.
-      slide_gate = get_sequence().get_slide() || get_sequence().is_tied();
+      // starts while gate is still high (continuous legato/portamento). Tie steps (both
+      // "next is tie" and "current is tie") also hold gate for full step duration.
+      // slide_from_prev() is used only by get_slide_dac() for the CV slide pin.
+      slide_gate = get_sequence().get_slide()
+                || get_sequence().is_tied()
+                || get_sequence().is_tie();
     }
     resting = !result;
     return result;
