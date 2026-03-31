@@ -22,30 +22,101 @@
     }
 
     html { background: var(--white); color: var(--black); font-family: var(--font); font-size: 14px; -webkit-font-smoothing: antialiased; }
-    body { min-height: 100vh; }
-    .app { padding: 36px 36px 48px; }
+    body { min-height: 100vh; margin: 0; overflow-x: hidden; }
+    .app {
+      padding: clamp(16px, 3vw, 36px) clamp(16px, 3vw, 36px) clamp(24px, 4vw, 48px);
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
 
     /* ── Header ── */
-    .header { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 12px; border-bottom: var(--rule); margin-bottom: 24px; }
-    .logo { font-size: 30px; font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase; line-height: 1; }
-    .logo-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gray-4); align-self: flex-end; padding-bottom: 4px; }
+    .header {
+      display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+      gap: 8px 20px; padding-bottom: 12px; border-bottom: var(--rule); margin-bottom: 24px;
+      min-width: 0;
+    }
+    .logo { font-size: clamp(22px, 5vw, 30px); font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase; line-height: 1; }
+    .logo-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gray-4); align-self: flex-end; padding-bottom: 4px; flex-shrink: 0; }
 
     /* ── Banner ── */
     .banner { display: none; padding: 10px 14px; border: var(--rule); margin-bottom: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: var(--black); color: var(--white); }
     .banner.visible { display: block; }
 
     /* ── Control strips ── */
-    .strip { display: flex; flex-wrap: wrap; align-items: stretch; border: var(--rule); margin-bottom: 6px; }
-    .group { display: flex; align-items: center; gap: 0; padding: 0 14px; border-right: var(--rule); }
+    .strip { display: flex; flex-wrap: wrap; align-items: stretch; border: var(--rule); margin-bottom: 6px; min-width: 0; }
+    .group { display: flex; align-items: center; gap: 0; padding: 0 14px; border-right: var(--rule); min-width: 0; flex: 0 1 auto; }
     .group:last-child { border-right: none; }
-    .group-inner { display: flex; align-items: center; gap: 6px; padding: 10px 0; }
+    .group--grow { flex: 1 1 220px; min-width: min(100%, 220px); }
+    .group-inner { display: flex; align-items: center; gap: 6px; padding: 10px 0; flex-wrap: wrap; min-width: 0; }
     .lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); white-space: nowrap; padding-right: 10px; border-right: var(--rule-sm); margin-right: 10px; align-self: stretch; display: flex; align-items: center; }
+
+    /* Live / Edits / Clipboard — grid sections, label above controls */
+    .strip--action-bar {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0;
+      align-items: stretch;
+    }
+    .strip--action-bar .group {
+      flex-direction: column;
+      align-items: stretch;
+      align-self: stretch;
+      gap: 0;
+      padding: 14px 16px 16px;
+      border-right: none;
+      border-bottom: var(--rule);
+      flex: initial;
+      min-width: 0;
+    }
+    .strip--action-bar .group:last-child { border-bottom: none; }
+    .strip--action-bar .group .lbl {
+      border-right: none;
+      margin-right: 0;
+      padding: 0 0 10px 0;
+      margin-bottom: 12px;
+      border-bottom: var(--rule-sm);
+      align-self: stretch;
+      justify-content: flex-start;
+      letter-spacing: 0.2em;
+    }
+    .strip--action-bar .group-inner {
+      padding: 0;
+      align-items: flex-start;
+    }
+    .strip--action-bar .live-group-inner { align-self: stretch; flex: 0 0 auto; }
+    .group-inner--edits {
+      gap: 8px 10px;
+      flex-wrap: wrap;
+    }
+    .group-inner--clipboard {
+      gap: 8px 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .strip--action-bar #copyStatus {
+      padding-left: 0;
+      flex: 1 1 auto;
+      min-width: 0;
+      line-height: 1.35;
+      white-space: normal;
+    }
+    @media (min-width: 960px) {
+      .strip--action-bar {
+        grid-template-columns: minmax(220px, 1fr) minmax(340px, 1.75fr) minmax(200px, 1fr);
+      }
+      .strip--action-bar .group {
+        border-bottom: none;
+        border-right: var(--rule);
+      }
+      .strip--action-bar .group:last-child { border-right: none; }
+    }
 
     /* ── Inputs ── */
     input[type="number"], select { height: 30px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 13px; font-weight: 600; outline: none; border-radius: 0; appearance: none; transition: background 0.08s; }
     input[type="number"]:focus, select:focus { background: var(--black); color: var(--white); }
     input[type="number"] { width: 54px; text-align: center; }
-    select { min-width: 150px; cursor: pointer; padding-right: 8px; }
+    select { min-width: min(150px, 100%); max-width: 100%; cursor: pointer; padding-right: 8px; }
     input[type="file"] { display: none; }
 
     /* ── Buttons ── */
@@ -64,7 +135,7 @@
     #midiStatus.is-warn { color: var(--gray-4); }
 
     /* ── Group tabs + Bank A/B (one bar) ── */
-    .bank-group-bar { display: flex; align-items: stretch; flex-wrap: wrap; border: var(--rule); margin-bottom: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .bank-group-bar { display: flex; align-items: stretch; flex-wrap: wrap; border: var(--rule); margin-bottom: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
     .bank-group-bar .group-tabs { display: flex; flex-direction: row; flex-shrink: 0; border-right: var(--rule); margin: 0; }
     .bank-group-bar .group-tab {
       flex: 0 0 auto; min-width: 44px; min-height: 36px; padding: 0 8px; box-sizing: border-box;
@@ -100,8 +171,11 @@
     @keyframes pill-blink-inv { 0%,100%{background:var(--black)} 50%{background:var(--gray-4)} }
 
     /* ── Sequencer panel ── */
-    .seq-panel { border: var(--rule); margin-bottom: 6px; }
-    .seq-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: var(--rule); flex-wrap: wrap; gap: 8px; }
+    .seq-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
+    .seq-toolbar {
+      display: flex; align-items: center; justify-content: flex-start; padding: 10px 14px; border-bottom: var(--rule);
+      flex-wrap: wrap; gap: 10px 14px; min-width: 0;
+    }
     .live-group-inner { padding: 0 !important; align-self: stretch; flex: 1; min-width: 0; }
     .live-toggle {
       display: flex; align-items: center; justify-content: flex-start;
@@ -120,13 +194,24 @@
     .live-push-lbl { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 
     .seq-toolbar-lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
-    .seq-toolbar-steps { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-    .seq-pat-len { width: 54px; text-align: center; }
-    .seq-hint { font-size: 11px; font-weight: 500; color: var(--gray-3); letter-spacing: 0.02em; }
+    .seq-toolbar-steps { display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-width: 0; }
+    .seq-pat-len { width: 54px; text-align: center; flex-shrink: 0; }
+    .seq-hint {
+      font-size: 11px; font-weight: 500; color: var(--gray-3); letter-spacing: 0.02em;
+      flex: 1 1 260px; min-width: 0; max-width: 100%;
+    }
     .seq-hint b { color: var(--black); font-weight: 700; }
-    .seq-grid-wrap { padding: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    .seq-grid { display: grid; grid-template-columns: repeat(8, minmax(68px, 1fr)); gap: 0; border-top: var(--rule-sm); border-left: var(--rule-sm); min-width: min(100%, 544px); }
-    .seq-grid.cols-16 { grid-template-columns: repeat(16, minmax(56px, 1fr)); min-width: 896px; }
+    .seq-grid-wrap { padding: 12px; overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
+    /* Column min scales down on narrow viewports; when min track sum exceeds the wrap, horizontal scroll appears */
+    .seq-grid {
+      display: grid;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      grid-template-columns: repeat(8, minmax(clamp(44px, 10vw, 72px), 1fr));
+      gap: 0; border-top: var(--rule-sm); border-left: var(--rule-sm);
+    }
+    .seq-grid.cols-16 { grid-template-columns: repeat(16, minmax(clamp(40px, 5.5vw, 60px), 1fr)); }
 
     /* ── Step card ── */
     .step-card { background: var(--white); border-right: var(--rule-sm); border-bottom: var(--rule-sm); padding: 8px 8px 8px; display: flex; flex-direction: column; gap: 6px; transition: background 0.08s; min-width: 0; position: relative; }
@@ -214,7 +299,7 @@
     #copyStatus { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; color: var(--red); padding-left: 8px; white-space: nowrap; }
 
     /* ── Config panel ── */
-    .config-panel { border: var(--rule); margin-bottom: 6px; }
+    .config-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
     .config-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
     .config-bar:hover { background: var(--gray-1); }
     .config-bar.is-open { border-bottom: var(--rule-sm); }
@@ -229,7 +314,7 @@
     .config-status { font-size: 11px; color: var(--gray-4); font-weight: 600; align-self: center; }
 
     /* ── Log ── */
-    .log-panel { border: var(--rule); }
+    .log-panel { border: var(--rule); min-width: 0; max-width: 100%; }
     .log-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
     .log-bar:hover { background: var(--gray-1); }
     .log-bar.is-open { border-bottom: var(--rule-sm); }
@@ -239,7 +324,7 @@
     .log-bar-count { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; }
     .log-body { display: none; }
     .log-body.is-open { display: block; }
-    #log { font-family: var(--mono); font-size: 11px; font-weight: 500; background: var(--gray-1); padding: 12px 14px; height: 132px; overflow: auto; white-space: pre-wrap; color: var(--gray-4); line-height: 1.9; letter-spacing: 0.02em; }
+    #log { font-family: var(--mono); font-size: 11px; font-weight: 500; background: var(--gray-1); padding: 12px 14px; min-height: 132px; height: clamp(120px, 25vh, 220px); max-height: 50vh; overflow: auto; white-space: pre-wrap; color: var(--gray-4); line-height: 1.9; letter-spacing: 0.02em; }
     .log-note { color: var(--black); font-weight: 700; }
     .log-syx  { color: var(--black); }
     .log-err  { color: var(--red); font-weight: 700; }
@@ -319,8 +404,8 @@
   </div>
 
   <!-- Live + Edits + clipboard (above step grid) -->
-  <div class="strip">
-    <div class="group" style="flex:1;min-width:min(100%,220px)">
+  <div class="strip strip--action-bar">
+    <div class="group">
       <span class="lbl">Live</span>
       <div class="group-inner live-group-inner">
         <label class="live-toggle" id="liveToggleLabel" title="Live off — tap to push edits while the sequencer runs">
@@ -331,7 +416,7 @@
     </div>
     <div class="group">
       <span class="lbl">Edits</span>
-      <div class="group-inner" style="gap:6px;flex-wrap:wrap;align-items:center">
+      <div class="group-inner group-inner--edits">
         <button class="btn" id="btnUndo" disabled>&#8592; Undo</button>
         <button class="btn" id="btnRedo" disabled>Redo &#8594;</button>
         <button class="btn" id="btnResetBefore" disabled>Reset to Saved</button>
@@ -342,7 +427,7 @@
     </div>
     <div class="group">
       <span class="lbl">Clipboard</span>
-      <div class="group-inner" style="gap:6px">
+      <div class="group-inner group-inner--clipboard">
         <button class="btn" id="btnCopy">Copy Pattern</button>
         <button class="btn" id="btnPaste" disabled>Paste Pattern</button>
         <span id="copyStatus"></span>
@@ -364,8 +449,9 @@
         </label>
       </div>
       <span class="seq-hint">
-        <b>R</b> rest &nbsp;&middot;&nbsp; <b>N</b> note &nbsp;&middot;&nbsp; <b>T</b> tie &nbsp;&mdash;&nbsp;
-        vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide &nbsp;&mdash;&nbsp;
+        <b>N</b> note &nbsp;&middot;&nbsp; <b>T</b> tie &nbsp;&middot;&nbsp; <b>R</b> rest &nbsp;&mdash;&nbsp;
+        vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide &nbsp;&middot;&nbsp; <b>L</b> lock step
+        &nbsp;&mdash;&nbsp;
         up to <b>64</b> steps &nbsp;&middot;&nbsp; red dot = currently playing step
       </span>
     </div>
@@ -503,6 +589,20 @@
     var chroma = lin % 12;
     var oct = Math.floor(lin / 12);
     return NOTE_NAMES[chroma] + oct;
+  }
+
+  /**
+   * MIDI log labels: match firmware + grid (MIDI 36..84 = linear 0..48 → C0..C4).
+   * Standard wire naming (e.g. MIDI 36 = "C2") is wrong next to SysEx / step editor.
+   */
+  function midiNoteNameForLog(midi) {
+    var n = midi | 0;
+    if (n >= 36 && n <= 84) {
+      var lin = n - 36;
+      if (lin > 48) lin = 48;
+      return noteNameFromLinear(lin);
+    }
+    return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1);
   }
 
   // ── 7-bit pack / unpack ────────────────────────────────────────────
@@ -848,6 +948,7 @@
 
   // ── MIDI state ─────────────────────────────────────────────────────
   var midiAccess = null, midiOut = null, midiIn = null, midiKbd = null;
+  var autoPatternDumpTimer = null;
   var rxBuf = [];
   var expectDump = 0;
   var saveAckPending = false;
@@ -982,6 +1083,19 @@
     }
   }
 
+  function toggleStepLockAtStep(si) {
+    si = si | 0;
+    var blob2 = activeBlob();
+    var L = currentPatLen();
+    if (si < 0 || si >= L) return;
+    toggleStepLock(blob2, si);
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    scheduleLiveSend();
+  }
+
   // ── Sequencer rendering ────────────────────────────────────────────
   function renderGrid() {
     var blob = activeBlob();
@@ -1029,7 +1143,7 @@
 
       var timeRow = document.createElement('div');
       timeRow.className = 'step-time';
-      [['R',0],['N',1],['T',2]].forEach(function(pair) {
+      [['N',1],['T',2],['R',0]].forEach(function(pair) {
         var lbl = pair[0], val = pair[1];
         var b = document.createElement('button');
         b.className = 't-btn' + (t === val ? ' is-on' : '');
@@ -1040,6 +1154,16 @@
             var blob2 = activeBlob();
             if (getStepLock(blob2, si)) return;
             var L = currentPatLen();
+            var nxt = (si + 1) % L;
+            var prv = (si + L - 1) % L;
+            if (tv === 0 && getTime(blob2, nxt) === 2) {
+              alert('Cannot put rest before a tie.');
+              return;
+            }
+            if (tv === 2 && getTime(blob2, prv) === 0) {
+              alert('Cannot put rest before a tie.');
+              return;
+            }
             var tb = snapshotTimes(blob2, L);
             var st = snapshotPitchState(blob2, L);
             setTime(blob2, si, tv);
@@ -1151,21 +1275,13 @@
       var lBtn = document.createElement('button');
       lBtn.className = 'f-btn f-lock' + (locked ? ' f-on f-lock-active' : '');
       lBtn.textContent = 'L';
-      lBtn.title = 'Step lock — unlock (L) to edit time, pitch, octave, accent, slide';
-      lBtn.addEventListener('click', (function(si, btn, cardEl) {
-        return function() {
-          var blob2 = activeBlob();
-          toggleStepLock(blob2, si);
-          var now = getStepLock(blob2, si);
-          btn.classList.toggle('f-on', now);
-          btn.classList.toggle('f-lock-active', now);
-          cardEl.classList.toggle('is-locked', now);
-          pushHistory(activeGroup, activePat);
-          saveGroupsToLS();
-          recomputeDirty();
-          scheduleLiveSend();
+      lBtn.title = 'Step lock — locked steps ignore edits; click to toggle';
+      lBtn.addEventListener('click', (function(si) {
+        return function(ev) {
+          ev.preventDefault();
+          toggleStepLockAtStep(si);
         };
-      })(s, lBtn, card));
+      })(s));
 
       flagRow.appendChild(aBtn);
       flagRow.appendChild(sBtn);
@@ -1394,6 +1510,10 @@
       }
       recomputeDirty();
 
+      // After a full read from 303 (single pattern or last of bulk), refresh config so
+      // Device Config shows Synced and matches the unit.
+      if (expectDump === 0) sendCfgRead();
+
       return;
     }
 
@@ -1434,9 +1554,9 @@
     if (!document.getElementById('logBody').classList.contains('is-open'))
       document.getElementById('logBar').click();
     if (type === 0x90 && b2 > 0)
-      log('Note On  ch'+ch+'  '+NOTE_NAMES[b1%12]+(Math.floor(b1/12)-1)+'  vel '+b2, 'log-note');
+      log('Note On  ch'+ch+'  '+midiNoteNameForLog(b1)+'  vel '+b2, 'log-note');
     else if (type === 0x80 || (type === 0x90 && b2 === 0))
-      log('Note Off ch'+ch+'  '+NOTE_NAMES[b1%12]+(Math.floor(b1/12)-1), 'log-ack');
+      log('Note Off ch'+ch+'  '+midiNoteNameForLog(b1), 'log-ack');
   }
   function feedChannelByte(b) {
     if (b & 0x80) { lastStatus = b; chanBuf = [b]; return; }
@@ -1471,7 +1591,7 @@
     if (midiOut) midiOut.send(d);
     var type = d[0] & 0xF0, ch = (d[0] & 0x0F) + 1;
     if (d.length >= 3 && (type === 0x90 || type === 0x80)) {
-      var name = NOTE_NAMES[d[1]%12]+(Math.floor(d[1]/12)-1);
+      var name = midiNoteNameForLog(d[1]);
       if (type === 0x90 && d[2] > 0) log('\u2192 303  Note On  ch'+ch+'  '+name+'  vel '+d[2], 'log-note');
       else log('\u2192 303  Note Off ch'+ch+'  '+name, 'log-ack');
     }
@@ -1534,15 +1654,22 @@
       statusEl.className   = 'is-ok';
       btn.classList.add('is-connected');
       btn.textContent = 'Connected';
-      // Auto-request all 16 patterns on connect
-      setTimeout(function() {
+      if (autoPatternDumpTimer) clearTimeout(autoPatternDumpTimer);
+      autoPatternDumpTimer = setTimeout(function() {
+        autoPatternDumpTimer = null;
         expectDump = 16;
         sendSysex(new Uint8Array([0x7d, 0x13]));
         log('\u2192 Auto-request all 16 patterns on connect', 'log-syx');
       }, 300);
-    } else if (midiOut && !midiIn) {
-      statusEl.textContent = midiOut.name + ' — select input'; statusEl.className = 'is-warn';
     } else {
+      if (autoPatternDumpTimer) {
+        clearTimeout(autoPatternDumpTimer);
+        autoPatternDumpTimer = null;
+      }
+    }
+    if (!ok && midiOut && !midiIn) {
+      statusEl.textContent = midiOut.name + ' — select input'; statusEl.className = 'is-warn';
+    } else if (!ok) {
       statusEl.textContent = 'No ports found'; statusEl.className = '';
     }
     updateButtons();
@@ -1872,6 +1999,36 @@
       recomputeDirty();
       scheduleLiveSend();
     });
+  })();
+
+  /** Re-apply pitch knob layout after viewport / grid size changes (resize, zoom). */
+  function reflowPitchKnobsInGrid() {
+    var blob = activeBlob();
+    var len = currentPatLen();
+    var cards = document.querySelectorAll('#seqGrid .step-card');
+    for (var i = 0; i < cards.length; i++) {
+      var wrap = cards[i].querySelector('.pitch-knob-wrap');
+      if (!wrap) continue;
+      var nameEl = cards[i].querySelector('.step-name');
+      var si = parseInt(cards[i].dataset.s, 10);
+      if (isNaN(si)) continue;
+      layoutPitchKnob(wrap, nameEl, blob, si, len);
+    }
+  }
+  (function bindGridResizeReflow() {
+    var gridWrap = document.querySelector('.seq-grid-wrap');
+    if (!gridWrap) return;
+    var raf = null;
+    function schedule() {
+      if (raf != null) return;
+      raf = requestAnimationFrame(function() {
+        raf = null;
+        reflowPitchKnobsInGrid();
+      });
+    }
+    if (typeof ResizeObserver !== 'undefined')
+      new ResizeObserver(schedule).observe(gridWrap);
+    window.addEventListener('resize', schedule, { passive: true });
   })();
 
   // ── Init ────────────────────────────────────────────────────────────
