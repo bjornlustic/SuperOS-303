@@ -290,23 +290,22 @@ struct Sequence {
     return from;
   }
 
-  /// Clear PITCH_MODE entry reset and land on first NOTE step (skips leading rests/ties).
+  /// PITCH_MODE entry: clear reset flag and land on the first NOTE step.
+  /// If no NOTE steps exist, defaults to step 0 (caller handles display guard).
   void ensure_pitch_edit_entry() {
     if (reset) {
       reset = false;
-      pitch_pos = int(first_note_idx());
-      time_pos = pitch_pos;
-    }
-    if (time(uint8_t(pitch_pos & (MAX_STEPS - 1))) != 1) {
-      pitch_pos = int(next_note_step_idx(uint8_t(pitch_pos & (MAX_STEPS - 1))));
+      pitch_pos = int(first_note_idx()); // first NOTE step, or 0 if none
       time_pos = pitch_pos;
     }
   }
 
-  /// After recording/audition: move to next NOTE step only (rest/tie slots invisible in pitch edit).
+  /// PITCH_MODE advance: jump to the next NOTE step, skipping REST and TIE.
+  /// If there are no other NOTE steps, stays on the current position.
   void advance_pitch_to_next_note() {
     first_step = false;
-    pitch_pos = int(next_note_step_idx(uint8_t(pitch_pos & (MAX_STEPS - 1))));
+    const uint8_t cur = uint8_t(pitch_pos & (MAX_STEPS - 1));
+    pitch_pos = int(next_note_step_idx(cur)); // returns cur if no other NOTE steps
     time_pos = pitch_pos;
   }
 
@@ -344,16 +343,9 @@ struct Sequence {
     return true;
   }
 
-  /// PITCH_MODE: previous NOTE step (not raw index).
+  /// PITCH_MODE: step back one position linearly (same as TIME_MODE).
   bool StepBackPitchByNote() {
-    ensure_pitch_edit_entry();
-    const uint8_t first = first_note_idx();
-    const uint8_t cur = uint8_t(pitch_pos & (MAX_STEPS - 1));
-    if (cur == first)
-      return false;
-    pitch_pos = int(prev_note_step_idx(cur));
-    time_pos = pitch_pos;
-    return true;
+    return StepBack();
   }
 };
 
@@ -594,10 +586,16 @@ struct Engine {
       result = get_sequence().Advance();
     }
     if (result) {
-      // Gate overlap: source step holds gate open all 6 clocks so the destination note
-      // starts while gate is still high (continuous legato/portamento). Tie steps also
-      // hold gate. slide_from_prev() is used only by get_slide_dac() for the CV slide pin.
-      slide_gate = get_sequence().get_slide() || get_sequence().is_tied();
+      // Gate overlap: source step (slide flag set) and steps leading into/through a
+      // slide hold gate open all 6 clocks for legato/portamento.
+      // Plain tie chains (no slide on the source note) allow the gate to close at
+      // clk_count==3 on the last TIE step so the following note retrigggers normally.
+      // is_tie() && slide_from_prev(): TIE step that belongs to a slide chain — stay open.
+      // is_tied(): current note is held into the next TIE — stay open.
+      // get_slide(): source note of a slide — stay open.
+      slide_gate = get_sequence().get_slide()
+                || get_sequence().is_tied()
+                || (get_sequence().is_tie() && get_sequence().slide_from_prev());
     }
     resting = !result;
     return result;

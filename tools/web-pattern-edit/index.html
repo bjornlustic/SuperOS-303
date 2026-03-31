@@ -412,6 +412,10 @@
           <input type="checkbox" id="chkLive" />
           <span>Push pattern to 303 while playing</span>
         </label>
+        <label class="live-toggle" id="reflectToggleLabel" title="Reflect 303 edits off — tap to mirror hardware knob writes into the web editor in real time">
+          <input type="checkbox" id="chkReflect" />
+          <span>Reflect 303 edits live</span>
+        </label>
       </div>
     </div>
     <div class="group">
@@ -956,6 +960,8 @@
   var saveAckPending = false;
   var liveTimer = null;
   var liveEnabled = false;
+  var reflect303Enabled = false;
+  var reflect303HistTimer = null;
 
   // ── Build UI ───────────────────────────────────────────────────────
   // Group tabs
@@ -1541,6 +1547,32 @@
       return;
     }
 
+    if (cmd === 0x16 && bytes.length >= 7) {
+      if (!reflect303Enabled) return;
+      var rPat  = bytes[2] & 0x0f;
+      var rStep = bytes[3] & 0x3f;
+      var pitchByte = (bytes[4] & 0x7f) | ((bytes[5] & 0x01) << 7);
+      var timeNibble = bytes[6] & 0x0f;
+      // Update group 0 (hardware group) blob in RAM
+      var rBlob = groups[0][rPat];
+      rBlob[rStep] = pitchByte;
+      setTime(rBlob, rStep, timeNibble);
+      saveGroupsToLS();
+      // Re-render if this is the currently visible pattern
+      if (activeGroup === 0 && rPat === activePat) {
+        renderGrid();
+      }
+      recomputeDirty();
+      // Debounced history entry so undo works after a burst of 303 edits
+      if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
+      reflect303HistTimer = setTimeout(function() {
+        reflect303HistTimer = null;
+        pushHistory(0, rPat);
+        recomputeDirty();
+      }, 1200);
+      return;
+    }
+
     if (cmd === 0x21 && bytes.length >= 4) {
       var ch = bytes[2], fl = bytes[3];
       document.getElementById('cfgMidiCh').value  = String(ch);
@@ -1954,6 +1986,22 @@
   }
   document.getElementById('chkLive').addEventListener('change', syncLiveIndicator);
   syncLiveIndicator();
+
+  function syncReflectIndicator() {
+    var cb = document.getElementById('chkReflect');
+    var label = document.getElementById('reflectToggleLabel');
+    reflect303Enabled = cb && cb.checked;
+    var tip = reflect303Enabled
+      ? 'Reflect on — hardware edits are mirrored here in real time'
+      : 'Reflect off — tap to mirror 303 hardware edits into the web editor';
+    if (label) {
+      label.classList.toggle('is-on', !!reflect303Enabled);
+      label.title = tip;
+      label.setAttribute('aria-label', tip);
+    }
+  }
+  document.getElementById('chkReflect').addEventListener('change', syncReflectIndicator);
+  syncReflectIndicator();
 
   document.getElementById('patLen').addEventListener('change', function() {
     var blob = activeBlob();
