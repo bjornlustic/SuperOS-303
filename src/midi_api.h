@@ -35,6 +35,10 @@ void midi_audition_note_off();
 /// Called once per 16th-note advance while transport is running.
 void midi_send_step_position(uint8_t pat, uint8_t step);
 
+/// Broadcast the full pattern blob to host (SysEx 0x11).
+/// Call after any operation that rewrites the whole pattern (e.g. Clear).
+void midi_send_pattern_update(uint8_t pat);
+
 /// Broadcast a single step edit to host (SysEx 0x16).
 /// Called after every pitch or time write in pattern-write mode so the
 /// web editor can reflect 303 hardware edits in real time.

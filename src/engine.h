@@ -586,13 +586,16 @@ struct Engine {
       result = get_sequence().Advance();
     }
     if (result) {
-      // Gate overlap: source step holds gate open all 6 clocks so the destination note
-      // starts while gate is still high (continuous legato/portamento). Tie steps (both
-      // "next is tie" and "current is tie") also hold gate for full step duration.
-      // slide_from_prev() is used only by get_slide_dac() for the CV slide pin.
+      // Gate overlap: source step (slide flag set) and steps leading into/through a
+      // slide hold gate open all 6 clocks for legato/portamento.
+      // Plain tie chains (no slide on the source note) allow the gate to close at
+      // clk_count==3 on the last TIE step so the following note retrigggers normally.
+      // is_tie() && slide_from_prev(): TIE step that belongs to a slide chain — stay open.
+      // is_tied(): current note is held into the next TIE — stay open.
+      // get_slide(): source note of a slide — stay open.
       slide_gate = get_sequence().get_slide()
                 || get_sequence().is_tied()
-                || get_sequence().is_tie();
+                || (get_sequence().is_tie() && get_sequence().slide_from_prev());
     }
     resting = !result;
     return result;
