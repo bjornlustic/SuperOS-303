@@ -33,10 +33,8 @@ namespace DAC {
   }
 
   inline void SetPitch(uint8_t p) {
-    if (p > 63)
-      gate_ = false;
-    else
-      pitch_ = p;
+    // 6-bit CV: clamp — values >63 used to clear gate and leave stale pitch (bad preview)
+    pitch_ = (p > 63) ? 63 : p;
   }
   inline void SetGate(bool on) { 
     gate_ = on; 

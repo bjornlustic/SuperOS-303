@@ -266,6 +266,50 @@ struct Sequence {
     length = 8;
   }
 
+  uint8_t first_note_idx() const {
+    for (uint8_t j = 0; j < length; ++j)
+      if (time(j) == 1)
+        return j;
+    return 0;
+  }
+  uint8_t next_note_step_idx(uint8_t from) const {
+    for (uint8_t k = 1; k <= length; ++k) {
+      const uint8_t j = uint8_t((unsigned(from) + k) % unsigned(length));
+      if (time(j) == 1)
+        return j;
+    }
+    return from;
+  }
+  uint8_t prev_note_step_idx(uint8_t from) const {
+    for (uint8_t k = 1; k <= length; ++k) {
+      const uint8_t j =
+          uint8_t((unsigned(from) + unsigned(length) - k) % unsigned(length));
+      if (time(j) == 1)
+        return j;
+    }
+    return from;
+  }
+
+  /// Clear PITCH_MODE entry reset and land on first NOTE step (skips leading rests/ties).
+  void ensure_pitch_edit_entry() {
+    if (reset) {
+      reset = false;
+      pitch_pos = int(first_note_idx());
+      time_pos = pitch_pos;
+    }
+    if (time(uint8_t(pitch_pos & (MAX_STEPS - 1))) != 1) {
+      pitch_pos = int(next_note_step_idx(uint8_t(pitch_pos & (MAX_STEPS - 1))));
+      time_pos = pitch_pos;
+    }
+  }
+
+  /// After recording/audition: move to next NOTE step only (rest/tie slots invisible in pitch edit).
+  void advance_pitch_to_next_note() {
+    first_step = false;
+    pitch_pos = int(next_note_step_idx(uint8_t(pitch_pos & (MAX_STEPS - 1))));
+    time_pos = pitch_pos;
+  }
+
   /// 1:1 model: pitch_pos always equals time_pos.
   /// On a NOTE step, pitch[time_pos] is played. On TIE, get_pitch() walks backward.
   /// On REST, gate is low regardless.
@@ -282,34 +326,33 @@ struct Sequence {
     return time(time_pos) != 0;
   }
 
-  /// PITCH_MODE step editor: step through all positions (1:1, same as Advance).
-  void AdvancePitch() {
-    if (reset) {
-      reset = false;
-      pitch_pos = 0;
-      time_pos = 0;
-      return;
-    }
-    first_step = false;
-    ++pitch_pos %= length;
-    time_pos = pitch_pos; // keep in sync
-  }
+  /// PITCH_MODE: advance to next NOTE step (used by TAP write).
+  void AdvancePitch() { advance_pitch_to_next_note(); }
 
-  /// Step back one position (used by BACK_KEY in step edit modes).
-  /// Returns false if already at step 0 (stays at 0).
+  /// TIME_MODE step back: one physical step toward 0 (unchanged TB behaviour).
   bool StepBack() {
     if (reset || (pitch_pos == 0 && time_pos == 0)) {
-      // Already at start — stay here
       return false;
     }
     if (pitch_pos > 0) {
       --pitch_pos;
       time_pos = pitch_pos;
     } else {
-      // Wrap to end? No — clamp at 0.
       pitch_pos = 0;
       time_pos = 0;
     }
+    return true;
+  }
+
+  /// PITCH_MODE: previous NOTE step (not raw index).
+  bool StepBackPitchByNote() {
+    ensure_pitch_edit_entry();
+    const uint8_t first = first_note_idx();
+    const uint8_t cur = uint8_t(pitch_pos & (MAX_STEPS - 1));
+    if (cur == first)
+      return false;
+    pitch_pos = int(prev_note_step_idx(cur));
+    time_pos = pitch_pos;
     return true;
   }
 };
@@ -551,7 +594,10 @@ struct Engine {
       result = get_sequence().Advance();
     }
     if (result) {
-      slide_gate = get_slide() || get_sequence().is_tied();
+      // Gate overlap: source step holds gate open all 6 clocks so the destination note
+      // starts while gate is still high (continuous legato/portamento). Tie steps also
+      // hold gate. slide_from_prev() is used only by get_slide_dac() for the CV slide pin.
+      slide_gate = get_sequence().get_slide() || get_sequence().is_tied();
     }
     resting = !result;
     return result;
@@ -615,10 +661,10 @@ struct Engine {
   uint8_t get_pitch() const {
     return get_sequence().get_pitch();
   }
-  // MIDI note number: OCTAVE_DOWN C = 36 (C2), OCTAVE_ZERO C = 48 (C3)
+  // MIDI note number: OCTAVE_DOWN C = 36 (C2). Uses get_pitch() so TIE steps with an
+  // empty pitch slot still resolve to the carried note (must match DAC / audition).
   uint8_t get_midi_note() const {
-    if (get_sequence().step_is_empty()) return 48;
-    return 36 + get_sequence().get_pitch();
+    return uint8_t(36 + get_sequence().get_pitch());
   }
   bool get_slide() const {
     return get_sequence().get_slide();
@@ -642,7 +688,9 @@ struct Engine {
   // setters
   void SetPattern(uint8_t p_, bool override = false) {
     next_p = p_ & 0xf;
-    if (override) p_select = next_p;
+    if (override) {
+      p_select = next_p;
+    }
   }
   void SetLength(uint8_t len) {
     get_sequence().SetLength(len);
@@ -684,10 +732,10 @@ struct Engine {
     stale = true;
   }
 
-  /// Step back one position in the current edit mode.
-  /// Returns true if step actually moved (false if already at step 0).
+  /// Step back one position in the current edit mode (TIME: linear; PITCH: previous NOTE).
   bool StepBack() {
-    bool moved = get_sequence().StepBack();
+    bool moved = (mode_ == PITCH_MODE) ? get_sequence().StepBackPitchByNote()
+                                       : get_sequence().StepBack();
     if (moved) stale = true;
     return moved;
   }
@@ -731,17 +779,20 @@ struct Engine {
     return true;
   }
 
-  /// MIDI Note On → current playing pitch step (live). `note` 36..72 → linear pitch 0..36.
+  /// MIDI Note On → current playing pitch step (live). `note` 36..84 → linear 0..48 (matches CV / pack range).
   void midi_apply_note_on(uint8_t note, uint8_t velocity) {
-    if (note < 36 || note > 36 + 36)
+    if (note < 36 || note > 36 + 48)
       return;
-    uint8_t lin = note - 36;
-    if (lin > 36) lin = 36;
-    uint8_t oct = lin / 12;
-    if (oct > 2) oct = 2;
-    uint8_t key = lin - oct * 12;
-    if (key > 12) key = 12;
-    const uint8_t pk = pack_pitch(key, oct);
+    uint8_t lin = uint8_t(note - 36);
+    if (lin > 48)
+      lin = 48;
+    uint8_t oct_btn = lin / 12;
+    if (oct_btn > 3)
+      oct_btn = 3;
+    uint8_t key_idx = uint8_t(lin - oct_btn * 12);
+    if (key_idx > PITCH_KEY_HIGH_C)
+      key_idx = PITCH_KEY_HIGH_C;
+    const uint8_t pk = pack_pitch(key_idx, oct_btn);
     const uint8_t acc = (velocity >= 100) ? uint8_t(1u << 6) : 0;
     Sequence &s = get_sequence();
     const uint8_t st = uint8_t(s.pitch_pos) & (MAX_STEPS - 1);
