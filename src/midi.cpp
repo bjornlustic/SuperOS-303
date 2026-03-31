@@ -364,6 +364,25 @@ void midi_send_step_position(uint8_t pat, uint8_t step) {
   tx_push_message(inner, 4);
 }
 
+// --- Full pattern broadcast (SysEx 0x11) ----------------------------------------
+// Used after hardware edits that change the whole pattern (e.g. Clear).
+void midi_send_pattern_update(uint8_t pat) {
+  enqueue_pattern_reply(pat & 0x0F);
+}
+
+// --- Step edit broadcast (SysEx 0x16) -------------------------------------------
+void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble) {
+  const uint8_t inner[7] = {
+    0x7D, 0x16,
+    static_cast<uint8_t>(pat & 0x0F),
+    static_cast<uint8_t>(step & 0x3F),
+    static_cast<uint8_t>(pitch_byte & 0x7F),       // low 7 bits
+    static_cast<uint8_t>((pitch_byte >> 7) & 0x01), // bit 7 (slide/empty flag)
+    static_cast<uint8_t>(time_nibble & 0x0F)
+  };
+  tx_push_message(inner, 7);
+}
+
 // --- midi_init ------------------------------------------------------------------
 void midi_init(Engine *engine) {
   g_eng = engine;
@@ -450,8 +469,7 @@ void midi_after_clock(Engine &engine, uint8_t transpose) {
   const uint8_t vel = engine.get_accent() ? 127 : 80;
 
   if (s_seq_note_on && s_seq_note != static_cast<uint8_t>(n)) {
-    const bool slide_midi =
-        engine.get_slide_dac() || engine.get_sequence().note_after_tie_run();
+    const bool slide_midi = engine.get_slide_dac();
     if (slide_midi) {
       MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
       MIDI.sendNoteOff(s_seq_note, 0, och);

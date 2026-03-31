@@ -154,8 +154,9 @@ static uint8_t resolve_octave() {
   return 1;                // OCTAVE_ZERO (center)
 }
 
-void input_pitch(bool mod = false, bool clk_run = false) {
-  if (clk_run && engine.is_step_locked()) return;
+// Returns the MIDI note number (36-108) written this call, or 0 if nothing was written.
+uint8_t input_pitch(bool mod = false, bool clk_run = false) {
+  if (clk_run && engine.is_step_locked()) return 0;
   engine.get_sequence().ensure_pitch_edit_entry();
   if (mod) {
     if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
@@ -169,31 +170,52 @@ void input_pitch(bool mod = false, bool clk_run = false) {
     if (inputs[pitched_keys[i]].rising()) {
       if (mod) {
         engine.SetPitchSemitone(i);
+        {
+          const uint8_t pp = uint8_t(engine.get_sequence().pitch_pos & (MAX_STEPS - 1));
+          midi_send_step_update(engine.get_patsel(), pp,
+              engine.get_sequence().pitch[pp],
+              engine.get_sequence().get_time());
+        }
+        return uint8_t(engine.get_midi_note()); // return for re-audition while TAP held
       } else {
         const uint8_t oct   = resolve_octave();
         const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
                               (inputs[SLIDE_KEY].held()   << 7);
-        // Write current NOTE step, then advance to next NOTE (matches TAP write; no skip with TAP).
+        // Write current step, notify web editor, capture MIDI note, then advance.
         engine.SetPitch(i + 13 * oct, flags);
+        {
+          const uint8_t pp = uint8_t(engine.get_sequence().pitch_pos & (MAX_STEPS - 1));
+          midi_send_step_update(engine.get_patsel(), pp,
+              engine.get_sequence().pitch[pp],
+              engine.get_sequence().get_time());
+        }
+        const uint8_t written_note = uint8_t(engine.get_midi_note()); // before advance
         engine.get_sequence().advance_pitch_to_next_note();
-        break;
+        return written_note;
       }
     }
   }
+  return 0;
 }
 void input_time(bool mod = false, bool clk_run = false) {
   if (clk_run && engine.is_step_locked()) return;
+  uint8_t written_time = 0xFF;
   if (inputs[DOWN_KEY].rising()) {
     if (!mod) engine.Advance();
-    engine.SetTime(1); // note
+    engine.SetTime(1); written_time = 1; // note
   }
   if (inputs[UP_KEY].rising()) {
     if (!mod) engine.Advance();
-    engine.SetTime(2); // tie
+    engine.SetTime(2); written_time = 2; // tie
   }
   if (inputs[ACCENT_KEY].rising()) {
     if (!mod) engine.Advance();
-    engine.SetTime(0); // rest
+    engine.SetTime(0); written_time = 0; // rest
+  }
+  if (written_time != 0xFF) {
+    const uint8_t tp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
+    midi_send_step_update(engine.get_patsel(), tp,
+        engine.get_sequence().pitch[tp], written_time);
   }
 }
 
@@ -251,6 +273,8 @@ void setup() {
 // Edit-mode LED feedback — current step pitch / time / flags
 // =============================================================================
 void PrintPitch() {
+  // Only light LEDs on NOTE steps — TIE and REST steps are invisible in pitch mode.
+  if (engine.get_sequence().get_time() != 1) return;
   const uint8_t semitone = engine.get_semitone();
   if (semitone != PITCH_EMPTY) {
     const Sequence &s = engine.get_sequence();
@@ -286,8 +310,18 @@ void PrintTime() {
 void ProcessEdit(const bool &write_mode, const bool clk_run) {
   switch (engine.get_mode()) {
   case PITCH_MODE: {
-    if (write_mode)
-      input_pitch(true, clk_run);
+    if (write_mode) {
+      const uint8_t updated_note = input_pitch(true, clk_run);
+      // When user presses a pitch key while TAP is held, re-audition with the new pitch
+      // (the initial TAP audition plays the old/default pitch before the key is pressed).
+      if (!clk_run && updated_note) {
+        uint16_t mn = uint16_t(updated_note) + transpose;
+        if (mn > 127) mn = 127;
+        const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
+        s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
+        midi_audition_note_on(uint8_t(mn), vel);
+      }
+    }
     PrintPitch();
     break;
   }
@@ -330,17 +364,13 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                const bool &clk_run) {
   switch (engine.get_mode()) {
   case PITCH_MODE:
-    if (!write_mode) {
-      PrintPitch();
-      engine.SetMode(NORMAL_MODE);
-    }
+    if (clk_run) PrintPitch(); // live pitch chase while sequencer runs; TAP overlay handles stopped clock
+    if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
   case TIME_MODE:
-    if (!write_mode) {
-      PrintTime();
-      engine.SetMode(NORMAL_MODE);
-    }
+    if (clk_run) PrintTime(); // live step chase while sequencer runs; TAP overlay handles stopped clock
+    if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
   case NORMAL_MODE:
@@ -363,6 +393,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
         if (clear_mod) {
           engine.ClearPattern(patsel);
           pattern_cleared_flash_timer = 0;
+          midi_send_pattern_update(patsel);
         } else
           engine.SetPattern(patsel, !clk_run);
       }
@@ -497,6 +528,9 @@ void loop() {
       if (b == UP_KEY && inputs[C_KEY2].held()) continue;
       Leds::Set(OutputIndex(i), true);
     }
+    // A# is a direct LED (switched_leds[17]) not covered by the 0-15 loop above
+    if (inputs[ASHARP_KEY].held())
+      Leds::Set(ASHARP_KEY_LED, true);
   }
 
   Leds::Send(ticks);
@@ -527,6 +561,7 @@ void loop() {
       if (clear_pat != 0xFF) {
         engine.ClearPattern(clear_pat);
         pattern_cleared_flash_timer = 0;
+        midi_send_pattern_update(clear_pat);
       }
     }
 
@@ -614,21 +649,34 @@ void loop() {
     if (engine.get_mode() == PITCH_MODE) {
       const bool check = check_pitch_inputs();
       if (clk_run || check) {
-        input_pitch(clk_run, clk_run);
-        // After recording the pitch, open a MIDI audition note
-        if (!clk_run && check) {
-          uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
+        const uint8_t written_note = input_pitch(clk_run, clk_run);
+        // After recording the pitch, open audition on the hardware VCO + MIDI out.
+        // Set the preview CV/gate so the DAC plays the written note (not the next step).
+        if (!clk_run && check && written_note) {
+          uint16_t mn = uint16_t(written_note) + transpose;
           if (mn > 127) mn = 127;
           const uint8_t vel = inputs[ACCENT_KEY].held() ? 127 : 80;
+          s_tap_pitch_preview_cv  = uint8_t(written_note - 36 + 4 + transpose);
+          s_tap_pitch_preview_gate = true;
           midi_audition_note_on(uint8_t(mn), vel);
         }
       }
       // Close audition when all pitch keys released
       if (!clk_run && !check) {
+        s_tap_pitch_preview_gate = false;
         midi_audition_note_off();
       }
-      if (!clk_run && engine.get_sequence().pitch_pos >= engine.get_length() - 1)
+      // Exit PITCH_MODE only after a full loop back to the first NOTE step.
+      // first_step is true until the first write+advance, preventing false exit on entry.
+      if (!clk_run
+          && !engine.get_sequence().first_step
+          && uint8_t(engine.get_sequence().pitch_pos) == engine.get_sequence().first_note_idx())
         engine.SetMode(NORMAL_MODE, true);
+    }
+    // If mode exited while a write-preview gate was latched, release it on key-up.
+    if (!clk_run && !edit_mode && s_tap_pitch_preview_gate && !check_pitch_inputs()) {
+      s_tap_pitch_preview_gate = false;
+      midi_audition_note_off();
     }
 
     // BACK without TAP_NEXT held: same step-back as edit overlay (clock stopped)
