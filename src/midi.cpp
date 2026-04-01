@@ -45,19 +45,24 @@ static Engine *g_eng = nullptr;
 static bool g_clk_run = false;
 static uint8_t s_in_channel = 0; // 0 = omni
 static bool s_midi_clock_rx = true;
+static bool s_midi_thru = false;
 
 static uint8_t out_ch() {
   return s_in_channel == 0 ? 1 : s_in_channel;
 }
 
-void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive) {
+void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive, bool midi_thru) {
   s_in_channel = midi_in_channel_0_omni_16 <= 16 ? midi_in_channel_0_omni_16 : 1;
   s_midi_clock_rx = midi_clock_receive;
+  s_midi_thru = midi_thru;
   if (s_in_channel == 0)
     MIDI.begin(MIDI_CHANNEL_OMNI);
   else
     MIDI.begin(s_in_channel);
-  MIDI.turnThruOff();
+  if (s_midi_thru)
+    MIDI.turnThruOn();
+  else
+    MIDI.turnThruOff();
 }
 
 uint8_t midi_sequencer_out_channel() { return out_ch(); }
@@ -196,7 +201,8 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     dump_try_advance();
     break;
   case 0x20: { // request config
-    const uint8_t fl  = GlobalSettings.midi_clock_receive ? 1 : 0;
+    const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
+                                              (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
     const uint8_t inner[5] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir};
     tx_push_message(inner, 5);
@@ -208,16 +214,18 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t fl = p[3];
     if (ch <= 16) GlobalSettings.midi_channel = ch;
     GlobalSettings.midi_clock_receive = (fl & 1) != 0;
+    GlobalSettings.midi_thru          = (fl & 2) != 0;
     if (n >= 5 && g_eng) {
       const SequenceDirection d = static_cast<SequenceDirection>(p[4] & 0x07);
       g_eng->SetDirection(d);
       GlobalSettings.sequence_direction = static_cast<uint8_t>(d);
     }
     GlobalSettings.save_midi_to_storage();
-    midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive);
+    midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
     send_ack(0);
     // Echo back new config
-    const uint8_t nfl  = GlobalSettings.midi_clock_receive ? 1 : 0;
+    const uint8_t nfl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
+                                               (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t ndir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
     const uint8_t reply[5] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl, ndir};
     tx_push_message(reply, 5);
@@ -288,20 +296,25 @@ static void note_on_cb(byte ch, byte pitch, byte vel) {
 
     live_stack_push(static_cast<uint8_t>(pitch), static_cast<uint8_t>(vel));
 
-    if (was_playing && prev_note != static_cast<uint8_t>(pitch)) {
-      // Legato: slide from previous note — Note On new BEFORE Note Off old.
-      MIDI.sendNoteOn(pitch, vel, ch);
-      MIDI.sendNoteOff(prev_note, 0, ch);
-      s_live_slide = true;
+    if (!s_midi_thru) {
+      if (was_playing && prev_note != static_cast<uint8_t>(pitch)) {
+        // Legato: slide from previous note — Note On new BEFORE Note Off old.
+        MIDI.sendNoteOn(pitch, vel, ch);
+        MIDI.sendNoteOff(prev_note, 0, ch);
+        s_live_slide = true;
+      } else {
+        MIDI.sendNoteOn(pitch, vel, ch);
+        s_live_slide = false;
+      }
     } else {
-      MIDI.sendNoteOn(pitch, vel, ch);
-      s_live_slide = false;
+      // Thru: note already forwarded by library; just update slide state.
+      s_live_slide = (was_playing && prev_note != static_cast<uint8_t>(pitch));
     }
 
     s_live_accent = (vel >= 100);
     s_live_gate   = true;
     s_live_note   = static_cast<uint8_t>(pitch);
-  } else {
+  } else if (!s_midi_thru) {
     MIDI.sendNoteOn(pitch, vel, ch);
   }
 
@@ -322,23 +335,25 @@ static void note_off_cb(byte ch, byte pitch, byte vel) {
       const uint8_t back_note = s_note_stack[s_note_stack_depth - 1];
       const uint8_t back_vel  = s_note_stack_vel[s_note_stack_depth - 1];
       MIDI.sendNoteOn(back_note, back_vel, ch);
-      MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
+      if (!s_midi_thru)
+        MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
       s_live_note  = back_note;
       s_live_slide = true;
       s_live_gate  = true;
       if (g_eng)
         g_eng->midi_apply_note_on(back_note, back_vel);
     } else {
-      // Always send Note Off — covers normal release, notes pressed during clock-run,
-      // and duplicate Note Off for already-slid notes (harmless to receiving synth).
-      MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
+      // When thru is off, explicitly send Note Off (covers normal release and
+      // duplicate Note Off for already-slid notes, harmless to receiving synth).
+      if (!s_midi_thru)
+        MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
       if (was_top) {
         s_live_gate  = false;
         s_live_slide = false;
         s_live_note  = 0;
       }
     }
-  } else {
+  } else if (!s_midi_thru) {
     MIDI.sendNoteOff(pitch, 0, ch);
   }
 }
@@ -533,4 +548,15 @@ void midi_after_clock(Engine &engine, uint8_t transpose) {
     s_seq_note = static_cast<uint8_t>(n);
     s_seq_note_on = true;
   }
+}
+
+void midi_ratchet_retrigger(Engine &engine, uint8_t transpose) {
+  if (!s_seq_note_on || engine.resting) return;
+  const byte och = static_cast<byte>(out_ch());
+  uint16_t n = static_cast<uint16_t>(engine.get_midi_note()) + transpose;
+  if (n > 127) n = 127;
+  const uint8_t vel = engine.get_accent() ? 127 : 80;
+  MIDI.sendNoteOff(s_seq_note, 0, och);
+  MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
+  s_seq_note = static_cast<uint8_t>(n);
 }
