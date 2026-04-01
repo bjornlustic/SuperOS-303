@@ -415,11 +415,11 @@
       <div class="group-inner live-group-inner">
         <label class="live-toggle" id="liveToggleLabel" title="Live off — tap to push edits while the sequencer runs">
           <input type="checkbox" id="chkLive" />
-          <span>Push pattern to 303 while playing</span>
+          <span>Push web edits to 303 while playing</span>
         </label>
         <label class="live-toggle" id="reflectToggleLabel" title="Reflect 303 edits off — tap to mirror hardware knob writes into the web editor in real time">
           <input type="checkbox" id="chkReflect" />
-          <span>Reflect 303 edits live</span>
+          <span>Pull 303 edits to web editor while playing</span>
         </label>
       </div>
     </div>
@@ -444,6 +444,21 @@
     </div>
   </div>
 
+  <!-- Nudge -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Nudge</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnNudgePitchL">&#8592; Pitch</button>
+        <button class="btn" id="btnNudgePitchR">Pitch &#8594;</button>
+        <button class="btn" id="btnNudgeTimeL">&#8592; Time</button>
+        <button class="btn" id="btnNudgeTimeR">Time &#8594;</button>
+        <button class="btn" id="btnNudgeBothL">&#8592; Both</button>
+        <button class="btn" id="btnNudgeBothR">Both &#8594;</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Randomize -->
   <div class="strip">
     <div class="group">
@@ -453,7 +468,7 @@
         <button class="btn" id="btnRandOctave">Octave</button>
         <button class="btn" id="btnRandTime">Time</button>
         <button class="btn" id="btnRandFlags">Accent / Slide</button>
-        <button class="btn btn-primary" id="btnRandAll">All</button>
+        <button class="btn" id="btnRandAll">All</button>
       </div>
     </div>
   </div>
@@ -2145,6 +2160,86 @@
     if (midiOut) scheduleLiveSend();
     log('Randomized all', 'log-ack');
   };
+
+  // ── Nudge ──────────────────────────────────────────────────────────
+  /**
+   * Nudge the pattern by one step.
+   * mode: 'pitch' | 'time' | 'both'
+   * direction: +1 = forward (content shifts right, last step wraps to first)
+   *            -1 = backward (content shifts left, first step wraps to last)
+   * Locked steps are fixed anchors; unlocked steps rotate among themselves.
+   */
+  function nudgePattern(blob, len, mode, direction) {
+    if (len < 2) return;
+
+    if (mode === 'pitch') {
+      // Rotate pitch bytes only among unlocked NOTE steps; rhythm is unchanged.
+      var noteSteps = [];
+      for (var s = 0; s < len; s++) {
+        if (getTime(blob, s) === 1 && !getStepLock(blob, s)) noteSteps.push(s);
+      }
+      if (noteSteps.length < 2) return;
+      var pitches = noteSteps.map(function(s) { return blob[s]; });
+      if (direction > 0) pitches.unshift(pitches.pop());
+      else pitches.push(pitches.shift());
+      for (var i = 0; i < noteSteps.length; i++) blob[noteSteps[i]] = pitches[i];
+
+    } else if (mode === 'time') {
+      // Rotate time values (N/T/R) among unlocked steps; pitch stream stays intact via reflow.
+      var unlockedT = [];
+      for (var s = 0; s < len; s++) {
+        if (!getStepLock(blob, s)) unlockedT.push(s);
+      }
+      if (unlockedT.length < 2) return;
+      var timesBefore = snapshotTimes(blob, len);
+      var pitchState = snapshotPitchState(blob, len);
+      var times = unlockedT.map(function(s) { return getTime(blob, s); });
+      if (direction > 0) times.unshift(times.pop());
+      else times.push(times.shift());
+      for (var i = 0; i < unlockedT.length; i++) setTime(blob, unlockedT[i], times[i]);
+      normalizePatternTimes(blob, len);
+      reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+
+    } else { // 'both'
+      // Rotate time + pitch as a unit among unlocked steps.
+      var unlockedB = [];
+      for (var s = 0; s < len; s++) {
+        if (!getStepLock(blob, s)) unlockedB.push(s);
+      }
+      if (unlockedB.length < 2) return;
+      var pairs = unlockedB.map(function(s) { return { t: getTime(blob, s), p: blob[s] }; });
+      if (direction > 0) pairs.unshift(pairs.pop());
+      else pairs.push(pairs.shift());
+      for (var i = 0; i < unlockedB.length; i++) {
+        setTime(blob, unlockedB[i], pairs[i].t);
+        blob[unlockedB[i]] = pairs[i].p;
+      }
+      normalizePatternTimes(blob, len);
+      // Enforce 1:1 model: non-NOTE steps must have PITCH_EMPTY.
+      for (var s = 0; s < len; s++) {
+        if (getTime(blob, s) !== 1) blob[s] = 0xff;
+      }
+    }
+  }
+
+  function doNudge(mode, direction) {
+    var blob = activeBlob(), len = currentPatLen();
+    nudgePattern(blob, len, mode, direction);
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    var arrow = direction > 0 ? '\u2192' : '\u2190';
+    log('Nudge ' + mode + ' ' + arrow, 'log-ack');
+  }
+
+  document.getElementById('btnNudgePitchL').onclick = function() { doNudge('pitch', -1); };
+  document.getElementById('btnNudgePitchR').onclick = function() { doNudge('pitch', +1); };
+  document.getElementById('btnNudgeTimeL').onclick  = function() { doNudge('time',  -1); };
+  document.getElementById('btnNudgeTimeR').onclick  = function() { doNudge('time',  +1); };
+  document.getElementById('btnNudgeBothL').onclick  = function() { doNudge('both',  -1); };
+  document.getElementById('btnNudgeBothR').onclick  = function() { doNudge('both',  +1); };
 
   document.getElementById('btnSave303').onclick = function() {
     if (!midiOut) return;
