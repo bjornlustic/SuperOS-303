@@ -299,6 +299,19 @@
     .is-rest .pitch-knob-wrap,
     .is-rest .step-oct-row { display: none !important; }
     .is-rest .step-flags .f-btn:not(.f-lock) { display: none !important; }
+
+    .step-ratchet { display: flex; gap: 0; margin-top: 2px; }
+    .is-rest .step-ratchet,
+    .is-tie  .step-ratchet { display: none !important; }
+    .r-btn { flex: 1; min-width: 0; height: 18px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 7px; font-weight: 900; letter-spacing: 0; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; }
+    .r-btn:last-child { margin-right: 0; }
+    .r-btn:disabled { opacity: 0.2; cursor: default; }
+    .r-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
+    .r-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
+    .is-note .r-btn { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.45); }
+    .is-note .r-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
+    .is-note .r-btn.is-on { background: var(--white); border-color: var(--white); color: var(--black); }
+
     #copyStatus { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; color: var(--red); padding-left: 8px; white-space: nowrap; }
 
     /* ── Config panel ── */
@@ -332,6 +345,16 @@
     .log-syx  { color: var(--black); }
     .log-err  { color: var(--red); font-weight: 700; }
     .log-ack  { color: var(--gray-4); }
+
+    /* ── Scale Lock ── */
+    .scale-select { height: 30px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 11px; font-weight: 700; cursor: pointer; border-radius: 0; min-width: 168px; }
+    .scale-root-btn, .scale-note-btn { height: 26px; padding: 0 6px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; white-space: nowrap; }
+    .scale-root-btn:hover, .scale-note-btn:hover { background: var(--gray-2); }
+    .scale-root-btn.active, .scale-note-btn.active { background: var(--black); color: var(--white); border-color: var(--black); }
+    .scale-root-btn.is-black, .scale-note-btn.is-black { background: var(--gray-2); color: var(--black); }
+    .scale-root-btn.is-black.active, .scale-note-btn.is-black.active { background: var(--black); color: var(--white); }
+    .scale-root-btn.is-black:hover, .scale-note-btn.is-black:hover { background: var(--gray-3); }
+    #btnScaleLockToggle.is-on { background: var(--black); color: var(--white); border-color: var(--black); }
   </style>
 </head>
 <body>
@@ -468,8 +491,34 @@
         <button class="btn" id="btnRandOctave">Octave</button>
         <button class="btn" id="btnRandTime">Time</button>
         <button class="btn" id="btnRandFlags">Accent / Slide</button>
+        <button class="btn" id="btnRandRatchet">Ratchet</button>
         <button class="btn" id="btnRandAll">All</button>
+        <button class="btn" id="btnRandBrownian">Brownian</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Scale Lock -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Scale<br>Lock</span>
+      <div class="group-inner">
+        <button type="button" class="btn" id="btnScaleLockToggle">Off</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Root</span>
+      <div class="group-inner" id="scaleRootBtns" style="gap:3px;flex-wrap:wrap"></div>
+    </div>
+    <div class="group">
+      <span class="lbl">Scale</span>
+      <div class="group-inner">
+        <select id="scaleSelect" class="scale-select"></select>
+      </div>
+    </div>
+    <div class="group group--grow">
+      <span class="lbl">Notes</span>
+      <div class="group-inner" id="scaleNoteBtns" style="gap:3px;flex-wrap:wrap"></div>
     </div>
   </div>
 
@@ -487,6 +536,7 @@
         <button class="dir-btn" data-dir="2" title="Ping-pong">Ping</button>
         <button class="dir-btn" data-dir="3" title="Random">Rnd</button>
         <button class="dir-btn" data-dir="4" title="Half-random">Half</button>
+        <button class="dir-btn" data-dir="5" title="Brownian (random walk ±1 step)">Brn</button>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center">
         <label class="live-push-lbl" title="Unchecked: 303 octave row + buttons. Checked: one slider C0–C4.">
@@ -529,6 +579,13 @@
             <option value="0">Internal only (DIN jack)</option>
           </select>
         </div>
+        <div class="config-field">
+          <label>MIDI Thru</label>
+          <select id="cfgMidiThru">
+            <option value="0">Off</option>
+            <option value="1">On (forward MIDI IN → OUT)</option>
+          </select>
+        </div>
         <div class="group-inner" style="gap:6px">
           <button class="btn" id="btnCfgRead" disabled>Read from 303</button>
           <button class="btn btn-primary" id="btnCfgWrite" disabled>Write to 303</button>
@@ -560,6 +617,8 @@
   var MAX_STEPS    = 64;
   /** Extra note pitches when there are fewer NOTE steps than stored stream (303-style). */
   var STASH_COUNT_IDX = 125;
+  /** Ratchet data: 2 bits per step, 4 steps per byte, 16 bytes at reserved[1..16] = blob[105..120]. Values 0–3 = 1x–4x. */
+  var RATCHET_BASE = 105;
   var PITCH_MAX    = 12 + 13 * 3; // 51 (supports DOUBLE_UP octave)
   /** Full-range slider: linear semitones 0..48 (= unpack_pitch_linear), C0..C4 for natural notes at C boundaries. */
   var PITCH_FULL_LIN_MIN = 0;
@@ -728,6 +787,21 @@
     blob[b] ^= (1 << (s & 7));
   }
 
+  // Ratchet: 2 bits per step packed into blob[RATCHET_BASE..RATCHET_BASE+15].
+  // Value 0=1x, 1=2x, 2=3x, 3=4x. Only meaningful on NOTE steps without slide.
+  function getRatchet(blob, s) {
+    var idx = s & (MAX_STEPS - 1);
+    var b   = RATCHET_BASE + (idx >> 2);
+    var sh  = (idx & 3) << 1;
+    return (blob[b] >> sh) & 0x03;
+  }
+  function setRatchet(blob, s, val) {
+    var idx = s & (MAX_STEPS - 1);
+    var b   = RATCHET_BASE + (idx >> 2);
+    var sh  = (idx & 3) << 1;
+    blob[b] = (blob[b] & ~(0x03 << sh)) | ((val & 0x03) << sh);
+  }
+
   function snapshotTimes(blob, len) {
     var t = [];
     for (var i = 0; i < len; i++) t.push(getTime(blob, i));
@@ -870,6 +944,56 @@
   // Hardware holds 16 patterns; groups 2-4 are stored locally in localStorage.
   var groups = []; // [4][16]
   var LS_KEY = 'superos303_groups';
+  var LS_SCALE_LOCK = 'superos303_scale_lock';
+
+  // ── Scale definitions ──────────────────────────────────────────────
+  var NOTE_NAMES       = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  var BLACK_KEY_INDICES = [1,3,6,8,10];
+  var SCALES = {
+    'Major':              [0,2,4,5,7,9,11],
+    'Minor':              [0,2,3,5,7,8,10],
+    'Dorian':             [0,2,3,5,7,9,10],
+    'Mixolydian':         [0,2,4,5,7,9,10],
+    'Lydian':             [0,2,4,6,7,9,11],
+    'Phrygian':           [0,1,3,5,7,8,10],
+    'Locrian':            [0,1,3,5,6,8,10],
+    'Whole Tone':         [0,2,4,6,8,10],
+    'Half-Whole Dim.':    [0,1,3,4,6,7,9,10],
+    'Whole-Half Dim.':    [0,2,3,5,6,8,9,11],
+    'Minor Blues':        [0,3,5,6,7,10],
+    'Minor Pentatonic':   [0,3,5,7,10],
+    'Major Pentatonic':   [0,2,4,7,9],
+    'Harmonic Minor':     [0,2,3,5,7,8,11],
+    'Harmonic Major':     [0,2,4,5,7,8,11],
+    'Dorian #4':          [0,2,3,6,7,9,10],
+    'Phrygian Dominant':  [0,1,4,5,7,8,10],
+    'Melodic Minor':      [0,2,3,5,7,9,11],
+    'Lydian Augmented':   [0,2,4,6,8,9,11],
+    'Lydian Dominant':    [0,2,4,6,7,9,10],
+    'Super Locrian':      [0,1,3,4,6,8,10],
+    '8-Tone Spanish':     [0,1,3,4,5,6,8,10],
+    'Bhairav':            [0,1,4,5,7,8,11],
+    'Hungarian Minor':    [0,2,3,6,7,8,11],
+    'Hirajoshi':          [0,2,3,7,8],
+    'In-Sen':             [0,1,5,7,10],
+    'Iwato':              [0,1,5,6,10],
+    'Kumoi':              [0,2,3,7,9],
+    'Pelog Selisir':      [0,1,3,7,8],
+    'Pelog Tembung':      [0,1,5,7,8],
+    'Messiaen 3':         [0,2,3,4,6,7,8,10,11],
+    'Messiaen 4':         [0,1,2,5,6,7,8,11],
+    'Messiaen 5':         [0,1,5,6,7,11],
+    'Messiaen 6':         [0,2,4,5,6,8,10,11],
+    'Messiaen 7':         [0,1,2,3,5,6,7,8,9,11]
+  };
+  var SCALE_NAMES = Object.keys(SCALES);
+
+  // ── Scale lock state ───────────────────────────────────────────────
+  var scaleLockEnabled   = false;
+  var scaleLockRoot      = 0;
+  var scaleLockName      = 'Major';
+  var scaleLockIntervals = SCALES['Major'].slice(); // intervals relative to root (0–11)
+  var scaleLockSnaps     = [];  // [NUM_GROUPS][PATS_PER_GROUP] Uint8Array(64) | null
 
   function makeBlankPat() {
     var b = new Uint8Array(PATTERN_SIZE);
@@ -1060,6 +1184,7 @@
   function switchGroup(g) {
     syncBlob();
     activeGroup = g;
+    if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat); applySnapToBlob(activeGroup, activePat); }
     var tabs = tabsEl.querySelectorAll('.group-tab');
     for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('is-active', i === g);
     refreshAllPills();
@@ -1070,6 +1195,7 @@
   function switchToPat(p) {
     syncBlob();
     activePat = p & 15;
+    if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat); applySnapToBlob(activeGroup, activePat); }
     document.getElementById('patLen').value = String(activeBlob()[127]);
     refreshAllPills();
     recomputeDirty();
@@ -1314,9 +1440,11 @@
           if (getStepLock(blob2, si)) return;
           if (blob2[si] === 0xff) blob2[si] = 13;
           blob2[si] ^= 0x80;
-          btn.classList.toggle('f-on', !!(blob2[si] & 0x80));
+          // If slide just turned on, reset ratchet to 1x
+          if (!!(blob2[si] & 0x80)) setRatchet(blob2, si, 0);
           pushHistory(activeGroup, activePat);
           saveGroupsToLS();
+          renderGrid();
           recomputeDirty();
           scheduleLiveSend();
         };
@@ -1337,6 +1465,37 @@
       flagRow.appendChild(sBtn);
       flagRow.appendChild(lBtn);
       card.appendChild(flagRow);
+
+      // Ratchet row — only active on NOTE steps without slide
+      var ratchetRow = document.createElement('div');
+      ratchetRow.className = 'step-ratchet';
+      var curRatchet = getRatchet(blob, s);
+      var ratchetDisabled = !noteStep || sl || locked;
+      [0, 1, 2, 3].forEach(function(rv) {
+        var rb = document.createElement('button');
+        rb.type = 'button';
+        rb.className = 'r-btn' + (curRatchet === rv ? ' is-on' : '');
+        rb.textContent = (rv + 1) + 'x';
+        rb.disabled = ratchetDisabled;
+        rb.title = (rv + 1) + 'x ratchet' + (!noteStep ? ' (note steps only)' : sl ? ' (disabled when slide is on)' : '');
+        rb.addEventListener('click', (function(si, val) {
+          return function() {
+            var blob2 = activeBlob();
+            if (getStepLock(blob2, si)) return;
+            if (getTime(blob2, si) !== 1) return;
+            if (blob2[si] !== 0xff && !!(blob2[si] & 0x80)) return; // slide on
+            setRatchet(blob2, si, val);
+            pushHistory(activeGroup, activePat);
+            saveGroupsToLS();
+            renderGrid();
+            recomputeDirty();
+            scheduleLiveSend();
+          };
+        })(s, rv));
+        ratchetRow.appendChild(rb);
+      });
+      card.appendChild(ratchetRow);
+
       grid.appendChild(card);
     }
   }
@@ -1461,6 +1620,13 @@
         var oct = Math.floor(e0 / 13);
         pk = Math.min(v + 13 * oct, PITCH_MAX);
         wrap.dataset.key = String(v);
+      }
+      if (scaleLockEnabled) {
+        // Update snapshot with intended (unsnapped) value so lock-off restores it
+        if (scaleLockSnaps[activeGroup] && scaleLockSnaps[activeGroup][activePat]) {
+          scaleLockSnaps[activeGroup][activePat][step] = (blob2[step] !== 0xff) ? (pk | flags) : pk;
+        }
+        pk = linearToPacked(snapLinToScale(unpackLinear(pk & 0x3f)));
       }
       blob2[step] = (blob2[step] !== 0xff) ? (pk | flags) : pk;
       layoutPitchKnob(wrap, nameEl, blob2, step, L);
@@ -1681,12 +1847,13 @@
 
     if (cmd === 0x21 && bytes.length >= 4) {
       var ch = bytes[2], fl = bytes[3];
-      document.getElementById('cfgMidiCh').value  = String(ch);
-      document.getElementById('cfgMidiClk').value = String(fl & 1);
+      document.getElementById('cfgMidiCh').value   = String(ch);
+      document.getElementById('cfgMidiClk').value  = String(fl & 1);
+      document.getElementById('cfgMidiThru').value = String((fl >> 1) & 1);
       if (bytes.length >= 5) setActiveDirection(bytes[4] & 0x07);
       document.getElementById('configStatus').textContent = 'Synced';
       document.getElementById('cfgFeedback').textContent  = 'Loaded from 303';
-      log('Config read: ch=' + ch + ' clock_rx=' + (fl & 1) + ' dir=' + (kDirNames[currentDirection] || currentDirection), 'log-ack');
+      log('Config read: ch=' + ch + ' clock_rx=' + (fl & 1) + ' thru=' + ((fl >> 1) & 1) + ' dir=' + (kDirNames[currentDirection] || currentDirection), 'log-ack');
       return;
     }
   }
@@ -2109,6 +2276,25 @@
     }
   }
   /**
+   * Randomly assign ratchet values to unlocked NOTE steps without slide.
+   * Distribution: ~50% no ratchet (1x), ~27% 2x, ~13% 3x, ~10% 4x.
+   * Clears ratchet on all other steps.
+   */
+  function applyRandomRatchets(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      var slide = blob[s] !== 0xff && (blob[s] & 0x80);
+      if (getTime(blob, s) === 1 && !slide) {
+        var r = Math.random();
+        var rv = r < 0.50 ? 0 : r < 0.77 ? 1 : r < 0.90 ? 2 : 3;
+        setRatchet(blob, s, rv);
+      } else {
+        setRatchet(blob, s, 0);
+      }
+    }
+  }
+
+  /**
    * Randomly set accent (~20% probability) and slide (~15% probability)
    * flags on existing NOTE steps, preserving pitch.
    */
@@ -2150,16 +2336,256 @@
     if (midiOut) scheduleLiveSend();
     log('Randomized accent/slide', 'log-ack');
   };
+  document.getElementById('btnRandRatchet').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomRatchets(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized ratchets', 'log-ack');
+  };
   document.getElementById('btnRandAll').onclick = function() {
     var blob = activeBlob(), len = currentPatLen();
     applyRandomTime(blob, len);
     applyRandomPitches(blob, len);
     applyRandomOctave(blob, len);
     applyRandomFlags(blob, len);
+    applyRandomRatchets(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
     if (midiOut) scheduleLiveSend();
     log('Randomized all', 'log-ack');
   };
+
+  // ── Brownian pitch generator ────────────────────────────────────────
+  /**
+   * Brownian (random-walk) pitch generator.
+   * Each unlocked NOTE step drifts ±1–4 semitones (linear) from the previous NOTE pitch.
+   * Locked steps act as anchors — walk resumes from their pitch.
+   * Accent/slide flags preserved.
+   */
+  function applyBrownianPitches(blob, len) {
+    var STEP_MAX = 4;
+    var curLin = 12; // seed: C3
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff) { curLin = unpackLinear(blob[s] & 0x3f); break; }
+    }
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) !== 1) continue;
+      if (isStepLocked(blob, s)) {
+        if (blob[s] !== 0xff) curLin = unpackLinear(blob[s] & 0x3f);
+        continue;
+      }
+      curLin = Math.max(0, Math.min(48, curLin + Math.round((Math.random() * 2 - 1) * STEP_MAX)));
+      var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : 0;
+      blob[s] = linearToPacked(curLin) | flags;
+    }
+  }
+  document.getElementById('btnRandBrownian').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyBrownianPitches(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Brownian pitches applied', 'log-ack');
+  };
+
+  // ── Scale Lock ─────────────────────────────────────────────────────
+  function scaleNoteClasses() {
+    return scaleLockIntervals.map(function(i) { return (scaleLockRoot + i) % 12; });
+  }
+
+  function snapLinToScale(lin) {
+    var cls = scaleNoteClasses();
+    if (cls.length === 0) return lin;
+    var best = lin, bestDist = Infinity;
+    for (var i = 0; i < cls.length; i++) {
+      for (var o = 0; o <= 4; o++) {
+        var c = o * 12 + cls[i];
+        if (c > 48) break;
+        var d = Math.abs(c - lin);
+        if (d < bestDist) { bestDist = d; best = c; }
+      }
+    }
+    return Math.max(0, Math.min(48, best));
+  }
+
+  function snapPackedToScale(raw) {
+    if (raw === 0xff) return raw;
+    return linearToPacked(snapLinToScale(unpackLinear(raw & 0x3f))) | (raw & 0xc0);
+  }
+
+  function ensureScaleSnap(g, p) {
+    if (scaleLockSnaps[g][p] === null) {
+      var src = groups[g][p], snap = new Uint8Array(64);
+      for (var i = 0; i < 64; i++) snap[i] = src[i];
+      scaleLockSnaps[g][p] = snap;
+    }
+  }
+
+  function applySnapToBlob(g, p) {
+    var blob = groups[g][p], snap = scaleLockSnaps[g][p];
+    if (!snap) return;
+    var len = blob[127] || 16;
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s) || getTime(blob, s) !== 1) continue;
+      blob[s] = snapPackedToScale(snap[s]);
+    }
+  }
+
+  function restoreSnapForBlob(g, p) {
+    var snap = scaleLockSnaps[g][p];
+    if (!snap) return;
+    var blob = groups[g][p];
+    for (var i = 0; i < 64; i++) blob[i] = snap[i];
+    scaleLockSnaps[g][p] = null;
+  }
+
+  function initScaleLockSnaps() {
+    scaleLockSnaps = [];
+    for (var g = 0; g < NUM_GROUPS; g++) {
+      scaleLockSnaps[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++) scaleLockSnaps[g][p] = null;
+    }
+  }
+
+  function enableScaleLock() {
+    scaleLockEnabled = true;
+    ensureScaleSnap(activeGroup, activePat);
+    applySnapToBlob(activeGroup, activePat);
+    updateScaleLockUI();
+    saveScaleLockToLS();
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Scale lock on — ' + NOTE_NAMES[scaleLockRoot] + ' ' + scaleLockName, 'log-ack');
+  }
+
+  function disableScaleLock() {
+    scaleLockEnabled = false;
+    for (var g = 0; g < NUM_GROUPS; g++)
+      for (var p = 0; p < PATS_PER_GROUP; p++) restoreSnapForBlob(g, p);
+    updateScaleLockUI();
+    saveScaleLockToLS();
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Scale lock off — pitches restored', 'log-ack');
+  }
+
+  function reapplyScaleLock() {
+    if (!scaleLockEnabled) return;
+    ensureScaleSnap(activeGroup, activePat);
+    applySnapToBlob(activeGroup, activePat);
+    saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+  }
+
+  function updateScaleLockUI() {
+    var toggleBtn = document.getElementById('btnScaleLockToggle');
+    toggleBtn.textContent = scaleLockEnabled ? 'On' : 'Off';
+    toggleBtn.classList.toggle('is-on', scaleLockEnabled);
+    var rootBtns = document.getElementById('scaleRootBtns').querySelectorAll('.scale-root-btn');
+    rootBtns.forEach(function(b) {
+      b.classList.toggle('active', parseInt(b.dataset.root, 10) === scaleLockRoot);
+    });
+    var sel = document.getElementById('scaleSelect');
+    if (sel.value !== scaleLockName) sel.value = scaleLockName;
+    rebuildScaleNoteBtns();
+  }
+
+  function rebuildScaleNoteBtns() {
+    var container = document.getElementById('scaleNoteBtns');
+    container.innerHTML = '';
+    var cls = scaleNoteClasses();
+    for (var n = 0; n < 12; n++) {
+      var isBlack  = BLACK_KEY_INDICES.indexOf(n) !== -1;
+      var isActive = cls.indexOf(n) !== -1;
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scale-note-btn' + (isBlack ? ' is-black' : '') + (isActive ? ' active' : '');
+      btn.textContent = NOTE_NAMES[n];
+      btn.dataset.note = String(n);
+      btn.title = NOTE_NAMES[n] + (isActive ? ' (in scale — click to remove)' : ' (click to add)');
+      btn.addEventListener('click', (function(nc) {
+        return function() {
+          var interval = (nc - scaleLockRoot + 12) % 12;
+          var idx = scaleLockIntervals.indexOf(interval);
+          if (idx !== -1) scaleLockIntervals.splice(idx, 1);
+          else { scaleLockIntervals.push(interval); scaleLockIntervals.sort(function(a,b){return a-b;}); }
+          saveScaleLockToLS();
+          rebuildScaleNoteBtns();
+          reapplyScaleLock();
+        };
+      })(n));
+      container.appendChild(btn);
+    }
+  }
+
+  function saveScaleLockToLS() {
+    try {
+      localStorage.setItem(LS_SCALE_LOCK, JSON.stringify({
+        root: scaleLockRoot, name: scaleLockName, intervals: scaleLockIntervals
+      }));
+    } catch(_e) {}
+  }
+
+  function loadScaleLockFromLS() {
+    try {
+      var raw = localStorage.getItem(LS_SCALE_LOCK);
+      if (!raw) return;
+      var d = JSON.parse(raw);
+      if (typeof d.root === 'number' && d.root >= 0 && d.root < 12) scaleLockRoot = d.root;
+      if (typeof d.name === 'string' && SCALES[d.name]) {
+        scaleLockName = d.name;
+        scaleLockIntervals = SCALES[d.name].slice();
+      }
+      if (Array.isArray(d.intervals) && d.intervals.length > 0)
+        scaleLockIntervals = d.intervals.filter(function(x) { return Number.isInteger(x) && x >= 0 && x < 12; });
+    } catch(_e) {}
+  }
+
+  function initScaleLockUI() {
+    loadScaleLockFromLS();
+    initScaleLockSnaps();
+    // Root buttons
+    var rootContainer = document.getElementById('scaleRootBtns');
+    for (var n = 0; n < 12; n++) {
+      (function(root) {
+        var isBlack = BLACK_KEY_INDICES.indexOf(root) !== -1;
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'scale-root-btn' + (isBlack ? ' is-black' : '');
+        btn.textContent = NOTE_NAMES[root];
+        btn.dataset.root = String(root);
+        btn.addEventListener('click', function() {
+          scaleLockRoot = root;
+          saveScaleLockToLS();
+          updateScaleLockUI();
+          reapplyScaleLock();
+        });
+        rootContainer.appendChild(btn);
+      })(n);
+    }
+    // Scale dropdown
+    var sel = document.getElementById('scaleSelect');
+    SCALE_NAMES.forEach(function(name) {
+      var opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    sel.value = scaleLockName;
+    sel.addEventListener('change', function() {
+      scaleLockName = sel.value;
+      scaleLockIntervals = SCALES[scaleLockName].slice();
+      saveScaleLockToLS();
+      updateScaleLockUI();
+      reapplyScaleLock();
+    });
+    // Toggle
+    document.getElementById('btnScaleLockToggle').addEventListener('click', function() {
+      if (scaleLockEnabled) disableScaleLock(); else enableScaleLock();
+    });
+    updateScaleLockUI();
+  }
+  initScaleLockUI();
 
   // ── Nudge ──────────────────────────────────────────────────────────
   /**
@@ -2340,10 +2766,12 @@
     log('\u2192 Request config from 303', 'log-syx');
   };
   document.getElementById('btnCfgWrite').onclick = function() {
-    var ch  = parseInt(document.getElementById('cfgMidiCh').value,  10);
-    var clk = parseInt(document.getElementById('cfgMidiClk').value, 10);
-    sendCfgWrite(ch, clk, currentDirection);
-    log('\u2190 Set config: ch=' + ch + ' clock_rx=' + clk + ' dir=' + (kDirNames[currentDirection] || currentDirection), 'log-syx');
+    var ch   = parseInt(document.getElementById('cfgMidiCh').value,   10);
+    var clk  = parseInt(document.getElementById('cfgMidiClk').value,  10);
+    var thru = parseInt(document.getElementById('cfgMidiThru').value, 10);
+    var fl   = (clk & 1) | ((thru & 1) << 1);
+    sendCfgWrite(ch, fl, currentDirection);
+    log('\u2190 Set config: ch=' + ch + ' clock_rx=' + clk + ' thru=' + thru + ' dir=' + (kDirNames[currentDirection] || currentDirection), 'log-syx');
   };
 
   // Direction buttons
@@ -2352,9 +2780,11 @@
       var dir = parseInt(btn.getAttribute('data-dir'), 10);
       setActiveDirection(dir);
       if (midiOut) {
-        var ch  = parseInt(document.getElementById('cfgMidiCh').value,  10);
-        var clk = parseInt(document.getElementById('cfgMidiClk').value, 10);
-        sendCfgWrite(ch, clk, dir);
+        var ch   = parseInt(document.getElementById('cfgMidiCh').value,   10);
+        var clk  = parseInt(document.getElementById('cfgMidiClk').value,  10);
+        var thru = parseInt(document.getElementById('cfgMidiThru').value, 10);
+        var fl   = (clk & 1) | ((thru & 1) << 1);
+        sendCfgWrite(ch, fl, dir);
         log('\u2190 Direction: ' + (kDirNames[dir] || dir), 'log-syx');
       }
     });

@@ -65,8 +65,10 @@ static Engine engine;
 // Setup menu: hold FUNCTION + press CLEAR (TAP not held) → main menu.
 //   C → MIDI channel (C# + white keys 1–8, D# then 9–16; CLEAR → main).
 //   D → MIDI clock: TIME_MODE_LED on = internal only; LED off = MIDI clock receive.
-//     Press TIME_KEY to toggle; CLEAR → main. CLEAR in main exits menu entirely.
-//   EEPROM bytes 16–17 + midi_apply_settings() — survives power cycle.
+//     Press TIME_KEY to toggle; CLEAR → main.
+//   E → MIDI thru: SLIDE_KEY_LED on = thru enabled; off = disabled.
+//     Press SLIDE_KEY to toggle; CLEAR → main. CLEAR in main exits menu entirely.
+//   EEPROM bytes 16–19 + midi_apply_settings() — survives power cycle.
 // =============================================================================
 static const OutputIndex kCfgWhiteNoteLeds[8] = {
     C_KEY_LED, D_KEY_LED, E_KEY_LED, F_KEY_LED,
@@ -74,7 +76,7 @@ static const OutputIndex kCfgWhiteNoteLeds[8] = {
 static const InputIndex kCfgWhiteKeys[8] = {
     C_KEY, D_KEY, E_KEY, F_KEY, G_KEY, A_KEY, B_KEY, C_KEY2};
 
-enum class CfgMenu : uint8_t { Off, Main, MidiCh, MidiChHigh, MidiClk };
+enum class CfgMenu : uint8_t { Off, Main, MidiCh, MidiChHigh, MidiClk, MidiThru };
 static CfgMenu s_cfg_menu = CfgMenu::Off;
 static bool s_cfg_suppress_clear_exit = false;
 
@@ -86,7 +88,7 @@ static uint8_t cfg_display_channel() {
 
 static void cfg_save_midi() {
   GlobalSettings.save_midi_to_storage();
-  midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive);
+  midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
 }
 
 static void process_config_menu() {
@@ -105,6 +107,7 @@ static void process_config_menu() {
     }
     if (inputs[C_KEY].rising()) s_cfg_menu = CfgMenu::MidiCh;
     if (inputs[D_KEY].rising()) s_cfg_menu = CfgMenu::MidiClk;
+    if (inputs[E_KEY].rising()) s_cfg_menu = CfgMenu::MidiThru;
     break;
   case CfgMenu::MidiCh: {
     Leds::Set(CSHARP_KEY_LED, true);
@@ -136,6 +139,15 @@ static void process_config_menu() {
     Leds::Set(TIME_MODE_LED, !GlobalSettings.midi_clock_receive);
     if (inputs[TIME_KEY].rising()) {
       GlobalSettings.midi_clock_receive = !GlobalSettings.midi_clock_receive;
+      cfg_save_midi();
+    }
+    if (inputs[CLEAR_KEY].rising()) s_cfg_menu = CfgMenu::Main;
+    break;
+  case CfgMenu::MidiThru:
+    // SLIDE_KEY_LED on = MIDI thru enabled; off = disabled.
+    Leds::Set(SLIDE_KEY_LED, GlobalSettings.midi_thru);
+    if (inputs[SLIDE_KEY].rising()) {
+      GlobalSettings.midi_thru = !GlobalSettings.midi_thru;
       cfg_save_midi();
     }
     if (inputs[CLEAR_KEY].rising()) s_cfg_menu = CfgMenu::Main;
@@ -299,7 +311,7 @@ void setup() {
 #endif
 
   engine.Load();
-  midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive);
+  midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
 }
 
 // =============================================================================
@@ -334,15 +346,15 @@ void PrintTime() {
 
 // ---------------------------------------------------------------------------
 // ProcessDirectionMode — FN + PITCH_KEY: select playback direction
-// C=Forward D=Reverse E=PingPong F=Random G=HalfRand; FN to exit
+// C=Forward D=Reverse E=PingPong F=Random G=HalfRand A=Brownian; FN to exit
 // ---------------------------------------------------------------------------
-static const InputIndex  kDirKeys[5] = {C_KEY, D_KEY, E_KEY, F_KEY, G_KEY};
-static const OutputIndex kDirLeds[5] = {C_KEY_LED, D_KEY_LED, E_KEY_LED, F_KEY_LED, G_KEY_LED};
-static const char *const kDirNames[5] = {"Fwd","Rev","Ping","Rnd","Half"};
+static const InputIndex  kDirKeys[DIR_COUNT] = {C_KEY, D_KEY, E_KEY, F_KEY, G_KEY, A_KEY};
+static const OutputIndex kDirLeds[DIR_COUNT] = {C_KEY_LED, D_KEY_LED, E_KEY_LED, F_KEY_LED, G_KEY_LED, A_KEY_LED};
+static const char *const kDirNames[DIR_COUNT] = {"Fwd","Rev","Ping","Rnd","Half","Brn"};
 
 void ProcessDirectionMode() {
   Leds::Set(PITCH_MODE_LED, clk_count & 4);
-  for (uint8_t d = 0; d < 5; ++d) {
+  for (uint8_t d = 0; d < DIR_COUNT; ++d) {
     const bool active = (engine.get_direction() == SequenceDirection(d));
     // Active direction blinks, others solid
     Leds::Set(kDirLeds[d], active ? bool(clk_count & 4) : true);
@@ -768,6 +780,8 @@ void loop() {
           midi_metronome_stop();
         }
       }
+    } else if (engine.is_ratchet_retrigger()) {
+      midi_ratchet_retrigger(engine, transpose);
     }
   }
 
@@ -855,7 +869,7 @@ void loop() {
         engine.SetMode(NORMAL_MODE, true);
     }
 
-    if (engine.get_mode() == PITCH_MODE) {
+    if (engine.get_mode() == PITCH_MODE && !pitch_mod) {
       const bool check = check_pitch_inputs();
       if (clk_run || check) {
         const uint8_t written_note = input_pitch(clk_run, clk_run);
