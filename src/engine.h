@@ -838,10 +838,16 @@ struct Engine {
           if (old_dir == DIR_PINGPONG) {
             const int len = int(get_sequence().length);
             if (direction_ == DIR_FORWARD) {
-              // Advance() does ++time_pos % length; pre-position at length-1 → step 0.
-              get_sequence().time_pos  = len - 1;
-              get_sequence().pitch_pos = len - 1;
+              // The direction change fires on a pingpong endpoint retrigger step.
+              // Pre-positioning at len-1 + first_step would add a phantom step before
+              // step 0, shifting forward phase by 1.  Instead, play step 0 directly on
+              // this tick so timing stays phase-locked with the advance_count_ boundary.
+              get_sequence().time_pos  = 0;
+              get_sequence().pitch_pos = 0;
               get_sequence().first_step = true;
+              result        = get_sequence().time(0) != 0;
+              step_dir      = 1;
+              next_step_dir = 1;
             } else if (direction_ == DIR_REVERSE) {
               // AdvanceDirectional(REVERSE): time_pos <= 0 → length-1; force 0.
               get_sequence().time_pos  = 0;
