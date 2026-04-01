@@ -355,6 +355,33 @@
     .scale-root-btn.is-black.active, .scale-note-btn.is-black.active { background: var(--black); color: var(--white); }
     .scale-root-btn.is-black:hover, .scale-note-btn.is-black:hover { background: var(--gray-3); }
     #btnScaleLockToggle.is-on { background: var(--black); color: var(--white); border-color: var(--black); }
+
+    /* ── Play Buddy ── */
+    .buddy-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
+    .buddy-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .buddy-bar:hover { background: var(--gray-1); }
+    .buddy-bar.is-open { border-bottom: var(--rule-sm); }
+    .buddy-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .buddy-bar-arrow { font-size: 8px; color: var(--gray-3); display: inline-block; transition: transform 0.12s; }
+    .buddy-bar.is-open .buddy-bar-arrow { transform: rotate(90deg); }
+    .buddy-run-lbl { font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; margin-left: auto; }
+    .buddy-run-lbl.is-on { color: var(--red); }
+    .buddy-body { display: none; }
+    .buddy-body.is-open { display: block; }
+    .buddy-inner { padding: 14px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+    .buddy-ctrl-row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+    .buddy-ctrl-lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray-4); }
+    .buddy-sep { border-bottom: var(--rule-sm); }
+    .buddy-cats { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+    .buddy-cat { display: flex; align-items: center; gap: 6px; }
+    .buddy-cat input[type="checkbox"] { width: 13px; height: 13px; cursor: pointer; accent-color: var(--black); flex-shrink: 0; }
+    .buddy-cat-name { font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; min-width: 54px; cursor: pointer; color: var(--black); }
+    .buddy-cat-name.is-off { color: var(--gray-3); }
+    .buddy-cat-pair { display: flex; align-items: center; gap: 4px; }
+    .buddy-cat-pair-lbl { font-size: 8px; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray-4); }
+    .buddy-cat input[type="range"] { width: 72px; height: 4px; cursor: pointer; accent-color: var(--black); }
+    .buddy-cat input[type="range"]:disabled { opacity: 0.25; cursor: default; }
+    .buddy-cat-val { font-size: 9px; font-weight: 700; color: var(--gray-4); min-width: 26px; font-family: var(--mono); }
   </style>
 </head>
 <body>
@@ -474,10 +501,18 @@
       <div class="group-inner" style="gap:6px;flex-wrap:wrap">
         <button class="btn" id="btnNudgePitchL">&#8592; Pitch</button>
         <button class="btn" id="btnNudgePitchR">Pitch &#8594;</button>
+        <button class="btn" id="btnNudgeOctaveL">&#8592; Oct</button>
+        <button class="btn" id="btnNudgeOctaveR">Oct &#8594;</button>
+        <button class="btn" id="btnNudgeAccentL">&#8592; Acc</button>
+        <button class="btn" id="btnNudgeAccentR">Acc &#8594;</button>
+        <button class="btn" id="btnNudgeSlideL">&#8592; Slide</button>
+        <button class="btn" id="btnNudgeSlideR">Slide &#8594;</button>
+        <button class="btn" id="btnNudgeRatchetL">&#8592; Rtch</button>
+        <button class="btn" id="btnNudgeRatchetR">Rtch &#8594;</button>
         <button class="btn" id="btnNudgeTimeL">&#8592; Time</button>
         <button class="btn" id="btnNudgeTimeR">Time &#8594;</button>
-        <button class="btn" id="btnNudgeBothL">&#8592; Both</button>
-        <button class="btn" id="btnNudgeBothR">Both &#8594;</button>
+        <button class="btn" id="btnNudgeAllL">&#8592; All</button>
+        <button class="btn" id="btnNudgeAllR">All &#8594;</button>
       </div>
     </div>
   </div>
@@ -490,7 +525,8 @@
         <button class="btn" id="btnRandPitch">Pitches</button>
         <button class="btn" id="btnRandOctave">Octave</button>
         <button class="btn" id="btnRandTime">Time</button>
-        <button class="btn" id="btnRandFlags">Accent / Slide</button>
+        <button class="btn" id="btnRandAccent">Accent</button>
+        <button class="btn" id="btnRandSlide">Slide</button>
         <button class="btn" id="btnRandRatchet">Ratchet</button>
         <button class="btn" id="btnRandAll">All</button>
         <button class="btn" id="btnRandBrownian">Brownian</button>
@@ -553,6 +589,37 @@
     </div>
     <div class="seq-grid-wrap">
       <div class="seq-grid" id="seqGrid"></div>
+    </div>
+  </div>
+
+  <!-- Play Buddy -->
+  <div class="buddy-panel" id="buddyPanel">
+    <div class="buddy-bar" id="buddyBar">
+      <span class="buddy-bar-arrow">&#9658;</span>
+      <span class="buddy-bar-label">Play Buddy</span>
+      <span class="buddy-run-lbl" id="buddyRunLbl">Off</span>
+    </div>
+    <div class="buddy-body" id="buddyBody">
+      <div class="buddy-inner">
+        <div class="buddy-ctrl-row">
+          <button class="btn btn-primary" id="btnBuddyToggle">Start</button>
+          <span class="buddy-ctrl-lbl">Interval</span>
+          <input type="number" id="buddyInterval" min="1" max="64" value="8" style="width:54px;cursor:ns-resize" />
+          <span class="buddy-ctrl-lbl">Notes / tick</span>
+          <input type="number" id="buddyNotesPerTick" min="1" max="64" value="1" style="width:54px;cursor:ns-resize" />
+          <span class="buddy-ctrl-lbl">Changes / note</span>
+          <select id="buddyChangesPerTick">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="8">8</option>
+          </select>
+          <button class="btn" id="btnBuddyRestore" disabled>Restore Original</button>
+        </div>
+        <div class="buddy-sep"></div>
+        <div class="buddy-cats" id="buddyCatsEl"></div>
+      </div>
     </div>
   </div>
 
@@ -1661,6 +1728,14 @@
       refreshAllPills();
     }
     playingStep = step;
+    if (buddyRunning) {
+      buddyStepCount++;
+      var buddyTarget = parseInt(document.getElementById('buddyInterval').value, 10) || 8;
+      if (buddyStepCount >= buddyTarget) {
+        buddyStepCount = 0;
+        buddyTick();
+      }
+    }
   }
 
   // ── MIDI send helpers ──────────────────────────────────────────────
@@ -2295,15 +2370,28 @@
   }
 
   /**
-   * Randomly set accent (~20% probability) and slide (~15% probability)
-   * flags on existing NOTE steps, preserving pitch.
+   * Randomly set accent (~20% probability) on existing NOTE steps, preserving pitch and slide.
    */
-  function applyRandomFlags(blob, len) {
+  function applyRandomAccent(blob, len) {
     for (var s = 0; s < len; s++) {
       if (isStepLocked(blob, s)) continue;
       if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
-        var p6 = blob[s] & 0x3f;
-        blob[s] = p6 | (Math.random() < 0.20 ? 0x40 : 0) | (Math.random() < 0.15 ? 0x80 : 0);
+        blob[s] = (blob[s] & 0xbf) | (Math.random() < 0.20 ? 0x40 : 0);
+      }
+    }
+  }
+
+  /**
+   * Randomly set slide (~15% probability) on existing NOTE steps, preserving pitch and accent.
+   * Clears ratchet on any step that gains a slide flag.
+   */
+  function applyRandomSlide(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
+        var slide = Math.random() < 0.15;
+        blob[s] = (blob[s] & 0x7f) | (slide ? 0x80 : 0);
+        if (slide) setRatchet(blob, s, 0);
       }
     }
   }
@@ -2329,12 +2417,19 @@
     if (midiOut) scheduleLiveSend();
     log('Randomized time', 'log-ack');
   };
-  document.getElementById('btnRandFlags').onclick = function() {
+  document.getElementById('btnRandAccent').onclick = function() {
     var blob = activeBlob(), len = currentPatLen();
-    applyRandomFlags(blob, len);
+    applyRandomAccent(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
     if (midiOut) scheduleLiveSend();
-    log('Randomized accent/slide', 'log-ack');
+    log('Randomized accent', 'log-ack');
+  };
+  document.getElementById('btnRandSlide').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomSlide(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized slide', 'log-ack');
   };
   document.getElementById('btnRandRatchet').onclick = function() {
     var blob = activeBlob(), len = currentPatLen();
@@ -2348,7 +2443,8 @@
     applyRandomTime(blob, len);
     applyRandomPitches(blob, len);
     applyRandomOctave(blob, len);
-    applyRandomFlags(blob, len);
+    applyRandomAccent(blob, len);
+    applyRandomSlide(blob, len);
     applyRandomRatchets(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
     if (midiOut) scheduleLiveSend();
@@ -2600,60 +2696,108 @@
   // ── Nudge ──────────────────────────────────────────────────────────
   /**
    * Nudge the pattern by one step.
-   * mode: 'pitch' | 'time' | 'both'
+   * mode: 'pitch' | 'octave' | 'accent' | 'slide' | 'ratchet' | 'time' | 'all'
    * direction: +1 = forward (content shifts right, last step wraps to first)
    *            -1 = backward (content shifts left, first step wraps to last)
    * Locked steps are fixed anchors; unlocked steps rotate among themselves.
+   *
+   * NOTE-step modes (pitch/octave/accent/slide/ratchet): operate only on unlocked NOTE steps.
+   * time:  rotates time values + ratchets among all unlocked steps; pitches reflow.
+   * all:   rotates every attribute (time + pitch byte + ratchet) as a unit.
    */
   function nudgePattern(blob, len, mode, direction) {
     if (len < 2) return;
 
+    // ── Helpers shared by NOTE-step modes ──────────────────────────
+    function noteUnlocked() {
+      var a = [];
+      for (var s = 0; s < len; s++)
+        if (getTime(blob, s) === 1 && !getStepLock(blob, s)) a.push(s);
+      return a;
+    }
+    function rotate(arr) {
+      if (direction > 0) arr.unshift(arr.pop());
+      else               arr.push(arr.shift());
+    }
+
     if (mode === 'pitch') {
-      // Rotate pitch bytes only among unlocked NOTE steps; rhythm is unchanged.
-      var noteSteps = [];
-      for (var s = 0; s < len; s++) {
-        if (getTime(blob, s) === 1 && !getStepLock(blob, s)) noteSteps.push(s);
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var pitches  = ns.map(function(s) { return blob[s]; });
+      var ratchets = ns.map(function(s) { return getRatchet(blob, s); });
+      rotate(pitches); rotate(ratchets);
+      for (var i = 0; i < ns.length; i++) {
+        blob[ns[i]] = pitches[i];
+        setRatchet(blob, ns[i], ratchets[i]);
       }
-      if (noteSteps.length < 2) return;
-      var pitches = noteSteps.map(function(s) { return blob[s]; });
-      if (direction > 0) pitches.unshift(pitches.pop());
-      else pitches.push(pitches.shift());
-      for (var i = 0; i < noteSteps.length; i++) blob[noteSteps[i]] = pitches[i];
+
+    } else if (mode === 'octave') {
+      // Rotate the packed octave button (0–3) among NOTE steps; key and flags stay put.
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var octs = ns.map(function(s) { return Math.floor((blob[s] & 0x3f) / 13); });
+      rotate(octs);
+      for (var i = 0; i < ns.length; i++) {
+        var key   = (blob[ns[i]] & 0x3f) % 13;
+        var flags = blob[ns[i]] & 0xc0;
+        blob[ns[i]] = (key + 13 * octs[i]) | flags;
+      }
+
+    } else if (mode === 'accent') {
+      // Rotate accent flags (bit 6) among NOTE steps.
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var accs = ns.map(function(s) { return (blob[s] >> 6) & 1; });
+      rotate(accs);
+      for (var i = 0; i < ns.length; i++)
+        blob[ns[i]] = (blob[ns[i]] & 0xbf) | (accs[i] << 6);
+
+    } else if (mode === 'slide') {
+      // Rotate slide flags (bit 7) among NOTE steps.
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var sls = ns.map(function(s) { return (blob[s] >> 7) & 1; });
+      rotate(sls);
+      for (var i = 0; i < ns.length; i++)
+        blob[ns[i]] = (blob[ns[i]] & 0x7f) | (sls[i] << 7);
+
+    } else if (mode === 'ratchet') {
+      // Rotate ratchet values among NOTE steps.
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var rats = ns.map(function(s) { return getRatchet(blob, s); });
+      rotate(rats);
+      for (var i = 0; i < ns.length; i++) setRatchet(blob, ns[i], rats[i]);
 
     } else if (mode === 'time') {
-      // Rotate time values (N/T/R) among unlocked steps; pitch stream stays intact via reflow.
-      var unlockedT = [];
-      for (var s = 0; s < len; s++) {
-        if (!getStepLock(blob, s)) unlockedT.push(s);
-      }
-      if (unlockedT.length < 2) return;
+      // Rotate time values + ratchets among all unlocked steps; pitches reflow.
+      var ul = [];
+      for (var s = 0; s < len; s++) if (!getStepLock(blob, s)) ul.push(s);
+      if (ul.length < 2) return;
       var timesBefore = snapshotTimes(blob, len);
-      var pitchState = snapshotPitchState(blob, len);
-      var times = unlockedT.map(function(s) { return getTime(blob, s); });
-      if (direction > 0) times.unshift(times.pop());
-      else times.push(times.shift());
-      for (var i = 0; i < unlockedT.length; i++) setTime(blob, unlockedT[i], times[i]);
+      var pitchState  = snapshotPitchState(blob, len);
+      var times    = ul.map(function(s) { return getTime(blob, s); });
+      var ratchets = ul.map(function(s) { return getRatchet(blob, s); });
+      rotate(times); rotate(ratchets);
+      for (var i = 0; i < ul.length; i++) {
+        setTime(blob, ul[i], times[i]);
+        setRatchet(blob, ul[i], ratchets[i]);
+      }
       normalizePatternTimes(blob, len);
       reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+      for (var s = 0; s < len; s++) if (getTime(blob, s) !== 1) setRatchet(blob, s, 0);
 
-    } else { // 'both'
-      // Rotate time + pitch as a unit among unlocked steps.
-      var unlockedB = [];
-      for (var s = 0; s < len; s++) {
-        if (!getStepLock(blob, s)) unlockedB.push(s);
-      }
-      if (unlockedB.length < 2) return;
-      var pairs = unlockedB.map(function(s) { return { t: getTime(blob, s), p: blob[s] }; });
-      if (direction > 0) pairs.unshift(pairs.pop());
-      else pairs.push(pairs.shift());
-      for (var i = 0; i < unlockedB.length; i++) {
-        setTime(blob, unlockedB[i], pairs[i].t);
-        blob[unlockedB[i]] = pairs[i].p;
+    } else { // 'all' — rotate every attribute as a unit
+      var ul = [];
+      for (var s = 0; s < len; s++) if (!getStepLock(blob, s)) ul.push(s);
+      if (ul.length < 2) return;
+      var steps = ul.map(function(s) {
+        return { t: getTime(blob, s), p: blob[s], r: getRatchet(blob, s) };
+      });
+      rotate(steps);
+      for (var i = 0; i < ul.length; i++) {
+        setTime(blob, ul[i], steps[i].t);
+        blob[ul[i]] = steps[i].p;
+        setRatchet(blob, ul[i], steps[i].r);
       }
       normalizePatternTimes(blob, len);
-      // Enforce 1:1 model: non-NOTE steps must have PITCH_EMPTY.
       for (var s = 0; s < len; s++) {
-        if (getTime(blob, s) !== 1) blob[s] = 0xff;
+        if (getTime(blob, s) !== 1) { blob[s] = 0xff; setRatchet(blob, s, 0); }
       }
     }
   }
@@ -2670,12 +2814,20 @@
     log('Nudge ' + mode + ' ' + arrow, 'log-ack');
   }
 
-  document.getElementById('btnNudgePitchL').onclick = function() { doNudge('pitch', -1); };
-  document.getElementById('btnNudgePitchR').onclick = function() { doNudge('pitch', +1); };
-  document.getElementById('btnNudgeTimeL').onclick  = function() { doNudge('time',  -1); };
-  document.getElementById('btnNudgeTimeR').onclick  = function() { doNudge('time',  +1); };
-  document.getElementById('btnNudgeBothL').onclick  = function() { doNudge('both',  -1); };
-  document.getElementById('btnNudgeBothR').onclick  = function() { doNudge('both',  +1); };
+  document.getElementById('btnNudgePitchL').onclick   = function() { doNudge('pitch',   -1); };
+  document.getElementById('btnNudgePitchR').onclick   = function() { doNudge('pitch',   +1); };
+  document.getElementById('btnNudgeOctaveL').onclick  = function() { doNudge('octave',  -1); };
+  document.getElementById('btnNudgeOctaveR').onclick  = function() { doNudge('octave',  +1); };
+  document.getElementById('btnNudgeAccentL').onclick  = function() { doNudge('accent',  -1); };
+  document.getElementById('btnNudgeAccentR').onclick  = function() { doNudge('accent',  +1); };
+  document.getElementById('btnNudgeSlideL').onclick   = function() { doNudge('slide',   -1); };
+  document.getElementById('btnNudgeSlideR').onclick   = function() { doNudge('slide',   +1); };
+  document.getElementById('btnNudgeRatchetL').onclick = function() { doNudge('ratchet', -1); };
+  document.getElementById('btnNudgeRatchetR').onclick = function() { doNudge('ratchet', +1); };
+  document.getElementById('btnNudgeTimeL').onclick    = function() { doNudge('time',    -1); };
+  document.getElementById('btnNudgeTimeR').onclick    = function() { doNudge('time',    +1); };
+  document.getElementById('btnNudgeAllL').onclick     = function() { doNudge('all',     -1); };
+  document.getElementById('btnNudgeAllR').onclick     = function() { doNudge('all',     +1); };
 
   document.getElementById('btnSave303').onclick = function() {
     if (!midiOut) return;
@@ -2857,6 +3009,347 @@
       new ResizeObserver(schedule).observe(gridWrap);
     window.addEventListener('resize', schedule, { passive: true });
   })();
+
+  // ── Play Buddy ────────────────────────────────────────────────────────
+  // chance: probability (0-100%) this category fires for a given note
+  // amount: magnitude of change (0-100%)
+  var BUDDY_CAT_DEFS = [
+    { id: 'pitch',   label: 'Pitch',   on: true,  chance: 60, amount: 40 },
+    { id: 'octave',  label: 'Octave',  on: true,  chance: 30, amount: 30 },
+    { id: 'timing',  label: 'Timing',  on: true,  chance: 30, amount: 40 },
+    { id: 'accent',  label: 'Accent',  on: true,  chance: 20, amount: 20 },
+    { id: 'slide',   label: 'Slide',   on: true,  chance: 15, amount: 15 },
+    { id: 'ratchet', label: 'Ratchet', on: false, chance: 20, amount: 50 },
+    { id: 'length',  label: 'Length',  on: false, chance: 30, amount: 30 }
+  ];
+  var buddyCatEnabled = {};
+  var buddyCatChance  = {};
+  var buddyCatAmount  = {};
+  BUDDY_CAT_DEFS.forEach(function(d) {
+    buddyCatEnabled[d.id] = d.on;
+    buddyCatChance[d.id]  = d.chance;
+    buddyCatAmount[d.id]  = d.amount;
+  });
+
+  var buddyRunning    = false;
+  var buddyStepCount  = 0;
+  var buddyBaseline   = null;
+  var buddyBaselineG  = -1;
+  var buddyBaselineP  = -1;
+
+  // Build two-slider category rows
+  (function() {
+    var catsEl = document.getElementById('buddyCatsEl');
+    BUDDY_CAT_DEFS.forEach(function(def) {
+      var row = document.createElement('div');
+      row.className = 'buddy-cat';
+
+      var chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.id = 'bchk_' + def.id;
+      chk.checked = def.on;
+
+      var nameLbl = document.createElement('label');
+      nameLbl.htmlFor = 'bchk_' + def.id;
+      nameLbl.className = 'buddy-cat-name' + (def.on ? '' : ' is-off');
+      nameLbl.textContent = def.label;
+
+      function makeSliderPair(labelText, initVal, storageKey, storeObj) {
+        var pair = document.createElement('div');
+        pair.className = 'buddy-cat-pair';
+
+        var lbl = document.createElement('span');
+        lbl.className = 'buddy-cat-pair-lbl';
+        lbl.textContent = labelText;
+
+        var slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = '0'; slider.max = '100'; slider.step = '5';
+        slider.value = String(initVal);
+        slider.disabled = !def.on;
+
+        var valLbl = document.createElement('span');
+        valLbl.className = 'buddy-cat-val';
+        valLbl.textContent = initVal + '%';
+
+        slider.addEventListener('input', function() {
+          storeObj[storageKey] = parseInt(this.value, 10);
+          valLbl.textContent = this.value + '%';
+        });
+
+        pair.appendChild(lbl);
+        pair.appendChild(slider);
+        pair.appendChild(valLbl);
+        return { el: pair, slider: slider };
+      }
+
+      var chancePair = makeSliderPair('Chance', def.chance, def.id, buddyCatChance);
+      var amountPair = makeSliderPair('Amount', def.amount, def.id, buddyCatAmount);
+
+      chk.addEventListener('change', function() {
+        buddyCatEnabled[def.id] = this.checked;
+        nameLbl.classList.toggle('is-off', !this.checked);
+        chancePair.slider.disabled = !this.checked;
+        amountPair.slider.disabled = !this.checked;
+      });
+
+      row.appendChild(chk);
+      row.appendChild(nameLbl);
+      row.appendChild(chancePair.el);
+      row.appendChild(amountPair.el);
+      catsEl.appendChild(row);
+    });
+  })();
+
+  // Per-step apply functions (step is pre-selected by buddyTick)
+  function buddyApplyPitchToStep(blob, step, amount) {
+    var maxDrift = Math.max(1, Math.round(amount / 100 * 8));
+    var curLin = unpackLinear(blob[step] & 0x3f);
+    var drift = Math.round((Math.random() * 2 - 1) * maxDrift);
+    if (drift === 0) drift = Math.random() < 0.5 ? 1 : -1;
+    var newLin = Math.max(0, Math.min(48, curLin + drift));
+    if (scaleLockEnabled) newLin = snapLinToScale(newLin);
+    blob[step] = linearToPacked(newLin) | (blob[step] & 0xc0);
+    return true;
+  }
+
+  function buddyApplyOctaveToStep(blob, step, amount) {
+    var e = blob[step] & 0x3f;
+    var key = e % 13, oct = Math.floor(e / 13);
+    var newOct = amount > 60
+      ? Math.floor(Math.random() * 4)
+      : Math.max(0, Math.min(3, oct + (Math.random() < 0.5 ? -1 : 1)));
+    blob[step] = Math.min(key + 13 * newOct, PITCH_MAX) | (blob[step] & 0xc0);
+    return true;
+  }
+
+  function buddyApplyTimingToStep(blob, len, step, amount) {
+    var timesBefore = snapshotTimes(blob, len);
+    var pitchState  = snapshotPitchState(blob, len);
+    var cur = getTime(blob, step);
+    // Low amount: note↔tie only; high amount: include rest
+    var opts = amount < 40
+      ? (cur === 1 ? [2] : cur === 2 ? [1] : [1])
+      : [0, 1, 2].filter(function(v) { return v !== cur; });
+    setTime(blob, step, opts[Math.floor(Math.random() * opts.length)]);
+    normalizePatternTimes(blob, len);
+    reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+    return true;
+  }
+
+  function buddyApplyAccentToStep(blob, step, amount) {
+    // Amount biases towards on (>50) or off (<50); 50 = pure toggle
+    var wantOn = Math.random() * 100 < amount;
+    var isOn   = !!(blob[step] & 0x40);
+    if (wantOn === isOn) return false;
+    blob[step] ^= 0x40;
+    return true;
+  }
+
+  function buddyApplySlideToStep(blob, step, amount) {
+    var wantOn = Math.random() * 100 < amount;
+    var isOn   = !!(blob[step] & 0x80);
+    if (wantOn === isOn) return false;
+    blob[step] ^= 0x80;
+    return true;
+  }
+
+  function buddyApplyRatchetToStep(blob, step, amount) {
+    if (blob[step] & 0x80) return false; // skip slide steps
+    var maxVal = amount > 50 ? 2 : 1;    // high amount allows 3x
+    setRatchet(blob, step, (getRatchet(blob, step) + 1) % (maxVal + 1));
+    return true;
+  }
+
+  function buddyApplyLength(blob, amount) {
+    var len = blob[127] | 0;
+    var maxDelta = Math.max(1, Math.round(amount / 100 * 8));
+    var delta = Math.round((Math.random() * 2 - 1) * maxDelta);
+    if (delta === 0) delta = Math.random() < 0.5 ? 1 : -1;
+    var newLen = Math.max(1, Math.min(MAX_STEPS, len + delta));
+    if (newLen === len) return false;
+    migratePitchStashOnResize(blob, len, newLen);
+    blob[127] = newLen;
+    normalizePatternTimes(blob, newLen);
+    return true;
+  }
+
+  function buddyTick() {
+    var blob = activeBlob();
+    var len  = blob[127] | 0;
+    var changesPerNote = parseInt(document.getElementById('buddyChangesPerTick').value, 10) || 1;
+    var notesPerTick   = Math.max(1, Math.min(len, parseInt(document.getElementById('buddyNotesPerTick').value, 10) || 1));
+
+    var changed = false;
+
+    // Length is pattern-level: one chance per tick regardless of note selection
+    if (buddyCatEnabled['length'] && Math.random() * 100 < buddyCatChance['length']) {
+      if (buddyApplyLength(blob, buddyCatAmount['length'])) {
+        len = blob[127] | 0;
+        changed = true;
+      }
+    }
+
+    // Collect eligible note steps
+    var noteSteps = [];
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff && !isStepLocked(blob, s)) noteSteps.push(s);
+    }
+
+    // For timing changes we also want non-note steps (any unlocked step)
+    var anySteps = [];
+    for (var s = 0; s < len; s++) {
+      if (!isStepLocked(blob, s)) anySteps.push(s);
+    }
+
+    if (noteSteps.length === 0 && anySteps.length === 0) {
+      if (changed) { document.getElementById('patLen').value = String(blob[127]); pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty(); if (liveEnabled && midiOut) scheduleLiveSend(); }
+      return;
+    }
+
+    // Shuffle note steps and pick notesPerTick
+    var shuffled = noteSteps.slice();
+    for (var i = shuffled.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = shuffled[i]; shuffled[i] = shuffled[j]; shuffled[j] = tmp;
+    }
+    var picked = shuffled.slice(0, Math.min(notesPerTick, shuffled.length));
+
+    var noteCats = BUDDY_CAT_DEFS.filter(function(d) { return d.id !== 'length' && d.id !== 'timing' && buddyCatEnabled[d.id]; });
+    var timingEnabled = buddyCatEnabled['timing'];
+
+    picked.forEach(function(step) {
+      // Hard lock guard: skip this note if locked (defensive re-check after possible reflow)
+      if (isStepLocked(blob, step)) return;
+
+      // Shuffle non-length note categories for this note
+      var cats = noteCats.slice();
+      for (var i = cats.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var tmp = cats[i]; cats[i] = cats[j]; cats[j] = tmp;
+      }
+      var applied = 0;
+
+      // Timing: re-collect unlocked steps fresh so we never land on a locked step
+      if (timingEnabled && applied < changesPerNote && Math.random() * 100 < buddyCatChance['timing']) {
+        var unlockedNow = [];
+        for (var s = 0; s < len; s++) { if (!isStepLocked(blob, s)) unlockedNow.push(s); }
+        if (unlockedNow.length > 0) {
+          var tStep = unlockedNow[Math.floor(Math.random() * unlockedNow.length)];
+          if (buddyApplyTimingToStep(blob, len, tStep, buddyCatAmount['timing'])) {
+            len = blob[127] | 0;
+            changed = true;
+            applied++;
+          }
+        }
+      }
+
+      for (var ci = 0; ci < cats.length && applied < changesPerNote; ci++) {
+        // Re-check lock before each variable change in case reflow shifted things
+        if (isStepLocked(blob, step)) break;
+        var cat = cats[ci].id;
+        if (Math.random() * 100 >= buddyCatChance[cat]) continue;
+        var amt = buddyCatAmount[cat];
+        var ok  = false;
+        switch (cat) {
+          case 'pitch':   ok = buddyApplyPitchToStep(blob, step, amt);   break;
+          case 'octave':  ok = buddyApplyOctaveToStep(blob, step, amt);  break;
+          case 'accent':  ok = buddyApplyAccentToStep(blob, step, amt);  break;
+          case 'slide':   ok = buddyApplySlideToStep(blob, step, amt);   break;
+          case 'ratchet': ok = buddyApplyRatchetToStep(blob, step, amt); break;
+        }
+        if (ok) { changed = true; applied++; }
+      }
+    });
+
+    if (changed) {
+      document.getElementById('patLen').value = String(blob[127]);
+      pushHistory(activeGroup, activePat);
+      saveGroupsToLS();
+      renderGrid();
+      recomputeDirty();
+      if (liveEnabled && midiOut) scheduleLiveSend();
+      log('Play Buddy: tick', 'log-ack');
+    }
+  }
+
+  function buddyUpdateUI() {
+    var btn = document.getElementById('btnBuddyToggle');
+    var runLbl = document.getElementById('buddyRunLbl');
+    btn.textContent = buddyRunning ? 'Stop' : 'Start';
+    btn.classList.toggle('btn-primary', !buddyRunning);
+    runLbl.textContent = buddyRunning ? 'Running' : 'Off';
+    runLbl.classList.toggle('is-on', buddyRunning);
+    document.getElementById('btnBuddyRestore').disabled = !buddyBaseline;
+  }
+
+  document.getElementById('btnBuddyToggle').addEventListener('click', function() {
+    if (buddyRunning) {
+      buddyRunning = false;
+      buddyStepCount = 0;
+      buddyUpdateUI();
+      log('Play Buddy stopped', 'log-ack');
+    } else {
+      buddyBaseline  = cloneU8(activeBlob());
+      buddyBaselineG = activeGroup;
+      buddyBaselineP = activePat;
+      buddyStepCount = 0;
+      buddyRunning   = true;
+      buddyUpdateUI();
+      log('Play Buddy started (every ' + (parseInt(document.getElementById('buddyInterval').value, 10) || 8) + ' steps)', 'log-ack');
+    }
+  });
+
+  document.getElementById('btnBuddyRestore').addEventListener('click', function() {
+    if (!buddyBaseline) return;
+    var g = buddyBaselineG, p = buddyBaselineP;
+    groups[g][p].set(buddyBaseline);
+    if (g === activeGroup && p === activePat) {
+      document.getElementById('patLen').value = String(buddyBaseline[127]);
+      pushHistory(activeGroup, activePat);
+      saveGroupsToLS();
+      renderGrid();
+      recomputeDirty();
+      if (liveEnabled && midiOut) scheduleLiveSend();
+    }
+    log('Play Buddy: restored original G' + (g+1) + ' P' + (p+1), 'log-ack');
+  });
+
+  // Draggable number inputs
+  (function() {
+    function makeDraggable(id, min, max, fallback) {
+      var el = document.getElementById(id);
+      var dragStartY, dragStartVal, dragging = false;
+      el.addEventListener('pointerdown', function(e) {
+        if (e.button !== 0) return;
+        dragStartY   = e.clientY;
+        dragStartVal = parseInt(el.value, 10) || fallback;
+        dragging     = true;
+        el.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
+      el.addEventListener('pointermove', function(e) {
+        if (!dragging) return;
+        var v = Math.max(min, Math.min(max, dragStartVal + Math.round((dragStartY - e.clientY) / 4)));
+        if (parseInt(el.value, 10) !== v) { el.value = String(v); buddyStepCount = 0; }
+      });
+      el.addEventListener('pointerup',     function() { dragging = false; });
+      el.addEventListener('pointercancel', function() { dragging = false; });
+      el.addEventListener('change', function() {
+        var v = Math.max(min, Math.min(max, parseInt(this.value, 10) || fallback));
+        this.value = String(v);
+        buddyStepCount = 0;
+      });
+    }
+    makeDraggable('buddyInterval',    1, 64, 8);
+    makeDraggable('buddyNotesPerTick', 1, 64, 1);
+  })();
+
+  document.getElementById('buddyBar').addEventListener('click', function() {
+    var body = document.getElementById('buddyBody');
+    var open = body.classList.toggle('is-open');
+    this.classList.toggle('is-open', open);
+  });
 
   // ── Init ────────────────────────────────────────────────────────────
   refreshAllPills();
