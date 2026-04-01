@@ -6,14 +6,17 @@
 struct Engine;
 
 void midi_init(Engine *engine);
-/// Apply after EEPROM load / config menu: `ch` 0 = omni, 1–16 = listen; `clock_rx` = use MIDI transport clock.
-void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive);
+/// Apply after EEPROM load / config menu: `ch` 0 = omni, 1–16 = listen; `clock_rx` = use MIDI transport clock; `thru` = forward MIDI IN to MIDI OUT.
+void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive, bool midi_thru);
 /// Channel 1–16 for sequencer Note On/Off (omni listen → 1).
 uint8_t midi_sequencer_out_channel();
 /// Sets `midi_clock_pulse` true when a MIDI Clock byte was received (24 ppqn).
 void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pulse);
 /// Call once per 16th when `engine.Clock()` returned true while transport running.
 void midi_after_clock(Engine &engine, uint8_t transpose);
+/// Call when `engine.is_ratchet_retrigger()` returns true (sub-tick within a ratcheted step).
+/// Sends Note Off + Note On for the current note without advancing the step.
+void midi_ratchet_retrigger(Engine &engine, uint8_t transpose);
 /// DIN MIDI leader: clock pulses on `clocked` when transport runs and we are not synced to
 /// incoming MIDI Clock; optional Start/Stop with RUN edges.
 void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave,

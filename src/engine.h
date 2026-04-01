@@ -29,7 +29,8 @@ enum SequenceDirection : uint8_t {
   DIR_PINGPONG  = 2, ///< Bounce forward then backward
   DIR_RANDOM    = 3, ///< Each step jumps to a random position
   DIR_HALF_RAND = 4, ///< 50% chance of random step, else forward
-  DIR_COUNT     = 5,
+  DIR_BROWNIAN  = 5, ///< Random walk: each step moves ±1 from current position
+  DIR_COUNT     = 6,
 };
 
 enum OctaveState {
@@ -96,6 +97,22 @@ struct Sequence {
   /// Mirrors the web editor's STASH_COUNT_IDX = 125 convention.
   uint8_t get_stash_count() const { return reserved[21] < MAX_STEPS ? reserved[21] : 0; }
   void    set_stash_count(uint8_t n) { reserved[21] = (n < MAX_STEPS) ? n : uint8_t(MAX_STEPS - 1); }
+
+  /// Ratchet value for a step (0=1x, 1=2x, 2=3x, 3=4x).
+  /// Packed 2 bits/step in reserved[1..16] (bytes 105-120). Mirrors web RATCHET_BASE=105.
+  /// Only meaningful on NOTE steps without slide.
+  uint8_t get_ratchet_val(uint8_t step) const {
+    const uint8_t idx = step & (MAX_STEPS - 1);
+    const uint8_t b   = uint8_t(1 + (idx >> 2)); // reserved[1..16]
+    const uint8_t sh  = uint8_t((idx & 3u) << 1);
+    return (reserved[b] >> sh) & 0x03u;
+  }
+  void set_ratchet_val(uint8_t step, uint8_t val) {
+    const uint8_t idx = step & (MAX_STEPS - 1);
+    const uint8_t b   = uint8_t(1 + (idx >> 2));
+    const uint8_t sh  = uint8_t((idx & 3u) << 1);
+    reserved[b] = uint8_t((reserved[b] & ~(0x03u << sh)) | ((val & 0x03u) << sh));
+  }
 
   /// 1:1 model: pitch[time_pos] is this step's pitch.
   /// For TIE steps, walk backward to find the last NOTE step's pitch.
@@ -214,7 +231,7 @@ struct Sequence {
   /// next_dir: +1 = stepping forward next, -1 = stepping backward next.
   /// For random modes returns false (no defined next step).
   bool is_tied_dir(uint8_t dir, int8_t next_dir) const {
-    if (dir == DIR_RANDOM || dir == DIR_HALF_RAND) return false;
+    if (dir == DIR_RANDOM || dir == DIR_HALF_RAND || dir == DIR_BROWNIAN) return false;
     if (length == 0) return false;
     const uint8_t n = (next_dir >= 0)
       ? uint8_t((unsigned(time_pos) + 1u) % unsigned(length))
@@ -479,6 +496,12 @@ struct Sequence {
       if (random(2)) time_pos = int(random(length));
       else { ++time_pos %= length; }
       break;
+    case DIR_BROWNIAN: {
+      int8_t bdir = random(2) ? 1 : -1;
+      pp_dir = bdir; // pass actual walk direction back to Engine (reuses pp_dir field)
+      time_pos = int((unsigned(length) + unsigned(time_pos) + unsigned(bdir)) % unsigned(length));
+      break;
+    }
     default: // DIR_FORWARD
       ++time_pos %= length;
       break;
@@ -574,10 +597,13 @@ struct PersistentSettings {
   bool midi_clock_receive = true;
   /// Sequence playback direction (SequenceDirection enum).
   uint8_t sequence_direction = 0; // DIR_FORWARD
+  /// When true, MIDI IN messages are forwarded to MIDI OUT (software MIDI thru).
+  bool midi_thru = false;
 
   static constexpr int kEepromMidiChannel   = 16;
   static constexpr int kEepromMidiFlags     = 17;
   static constexpr int kEepromDirection     = 18;
+  static constexpr int kEepromMidiThru      = 19;
 
   void Load() { storage.get(0, signature); }
 
@@ -598,18 +624,21 @@ struct PersistentSettings {
   }
 
   void load_midi_from_storage() {
-    const uint8_t ch  = storage.read(kEepromMidiChannel);
-    const uint8_t fl  = storage.read(kEepromMidiFlags);
-    const uint8_t dir = storage.read(kEepromDirection);
+    const uint8_t ch   = storage.read(kEepromMidiChannel);
+    const uint8_t fl   = storage.read(kEepromMidiFlags);
+    const uint8_t dir  = storage.read(kEepromDirection);
+    const uint8_t thru = storage.read(kEepromMidiThru);
     midi_channel        = (ch <= 16) ? ch : 1;
     midi_clock_receive  = (fl <= 1)  ? (fl != 0) : true;
     sequence_direction  = (dir < uint8_t(DIR_COUNT)) ? dir : 0;
+    midi_thru           = (thru == 1);
   }
 
   void save_midi_to_storage() {
     storage.update(kEepromMidiChannel, midi_channel);
     storage.update(kEepromMidiFlags, midi_clock_receive ? 1 : 0);
     storage.update(kEepromDirection, sequence_direction);
+    storage.update(kEepromMidiThru, midi_thru ? 1 : 0);
   }
 };
 
@@ -724,6 +753,7 @@ struct Engine {
         pattern[i].Clear();
       GlobalSettings.midi_channel = 1;
       GlobalSettings.midi_clock_receive = true;
+      GlobalSettings.midi_thru = false;
       strcpy(GlobalSettings.signature, sig_pew);
       GlobalSettings.Save();
       GlobalSettings.save_midi_to_storage();
@@ -782,17 +812,17 @@ struct Engine {
         }
       }
     } else {
-      // Capture step_dir before AdvanceDirectional may flip pp_dir_ (ping-pong).
-      if (direction_ == DIR_REVERSE)        step_dir = -1;
-      else if (direction_ == DIR_PINGPONG)  step_dir = pp_dir_;
-      else                                  step_dir = 1; // random: doesn't matter
+      // Capture step_dir before AdvanceDirectional may flip pp_dir_ (ping-pong / brownian).
+      if (direction_ == DIR_REVERSE)                                 step_dir = -1;
+      else if (direction_ == DIR_PINGPONG || direction_ == DIR_BROWNIAN) step_dir = pp_dir_;
+      else                                                           step_dir = 1; // random: doesn't matter
 
       result = get_sequence().AdvanceDirectional(uint8_t(direction_), pp_dir_);
 
-      // After advance: pp_dir_ carries the outgoing direction for ping-pong.
-      if (direction_ == DIR_REVERSE)        next_step_dir = -1;
-      else if (direction_ == DIR_PINGPONG)  next_step_dir = pp_dir_;
-      else                                  next_step_dir = 1; // random: is_tied_dir returns false anyway
+      // After advance: pp_dir_ carries the outgoing direction for ping-pong / brownian.
+      if (direction_ == DIR_REVERSE)                                 next_step_dir = -1;
+      else if (direction_ == DIR_PINGPONG || direction_ == DIR_BROWNIAN) next_step_dir = pp_dir_;
+      else                                                           next_step_dir = 1; // random: is_tied_dir returns false anyway
 
       ++advance_count_;
       if (advance_count_ >= get_sequence().length) {
@@ -857,6 +887,12 @@ struct Engine {
     last_step_dir_ = 1;
   }
 
+  /// Ratchet distribution: ~50% none (1x), ~27% 2x, ~13% 3x, ~10% 4x.
+  static uint8_t random_ratchet_val() {
+    const uint8_t r = uint8_t(random(15));
+    return r < 7 ? 0 : r < 11 ? 1 : r < 13 ? 2 : 3;
+  }
+
   /// Randomize entire pattern: both time data and pitches (NORMAL_MODE).
   void RandomizeFullPattern() {
     Sequence &s = get_sequence();
@@ -873,15 +909,18 @@ struct Engine {
       prev = t;
     }
     normalize_pattern_times(s);
-    // Second pass: random pitches for NOTE steps
+    // Second pass: random pitches for NOTE steps; also randomize ratchets
     for (uint8_t i = 0; i < len; i++) {
       if (s.time(i) == 1) {
         const uint8_t pk  = uint8_t(random(PITCH_PACK_MAX + 1));
         const uint8_t acc = uint8_t(random(2)) ? 0x40 : 0;
         const uint8_t sl  = uint8_t(random(2)) ? 0x80 : 0;
         s.pitch[i] = pk | acc | sl;
+        // Ratchet: 0=1x (most common), 1=2x, 2=3x, 3=4x; skip if slide
+        s.set_ratchet_val(i, sl ? 0 : random_ratchet_val());
       } else {
         s.pitch[i] = PITCH_DEFAULT;
+        s.set_ratchet_val(i, 0);
       }
     }
     stale = true;
@@ -897,6 +936,7 @@ struct Engine {
         const uint8_t acc = uint8_t(random(2)) ? 0x40 : 0;
         const uint8_t sl  = uint8_t(random(2)) ? 0x80 : 0;
         s.pitch[i] = pk | acc | sl;
+        s.set_ratchet_val(i, sl ? 0 : random_ratchet_val());
       }
     }
     stale = true;
@@ -914,9 +954,26 @@ struct Engine {
       else              t = uint8_t(random(3));
       s.time_pos = i;
       s.SetTime(t);
+      // Clear ratchet on any step that is no longer a plain NOTE
+      if (t != 1) s.set_ratchet_val(i, 0);
       prev = t;
     }
     normalize_pattern_times(s);
+    stale = true;
+  }
+
+  /// Randomize ratchet values only — keeps all other data intact.
+  void RandomizeRatchetData() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; i++) {
+      if (s.time(i) == 1 && !(s.pitch[i] & 0x80)) {
+        // NOTE step without slide: randomize ratchet
+        s.set_ratchet_val(i, random_ratchet_val());
+      } else {
+        s.set_ratchet_val(i, 0);
+      }
+    }
     stale = true;
   }
 
@@ -963,7 +1020,27 @@ struct Engine {
   bool get_gate() const {
     if (resting) return false;
     if (slide_gate) return true;
-    return clk_count < 3;
+    const uint8_t r = get_sequence().get_ratchet_val(uint8_t(get_sequence().time_pos));
+    switch (r) {
+      case 1: return (uint8_t(clk_count) % 3u) == 0u; // 2x: clocks 0, 3
+      case 2: return (uint8_t(clk_count) % 2u) == 0u; // 3x: clocks 0, 2, 4
+      case 3: return clk_count != 2 && clk_count != 5; // 4x: clocks 0,1,3,4
+      default: return clk_count < 3;                   // 1x normal
+    }
+  }
+
+  /// Returns true when this MIDI clock tick is a ratchet retrigger within the current step
+  /// (i.e., not the step-advance clock 0, but a subsequent sub-note trigger).
+  /// Use this in the main loop alongside Clock() to fire midi_ratchet_retrigger().
+  bool is_ratchet_retrigger() const {
+    if (resting || slide_gate) return false;
+    const uint8_t r = get_sequence().get_ratchet_val(uint8_t(get_sequence().time_pos));
+    switch (r) {
+      case 1: return clk_count == 3;                               // 2x
+      case 2: return clk_count == 2 || clk_count == 4;            // 3x
+      case 3: return clk_count == 1 || clk_count == 3 || clk_count == 4; // 4x
+      default: return false;
+    }
   }
   bool get_accent() const {
     return !resting && get_sequence().get_accent();
