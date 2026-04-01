@@ -50,6 +50,10 @@ static bool s_metro_gate_pulse                  = false;
 static bool s_metro_is_downbeat                 = false;  // downbeat accent flag (every 8 steps)
 static uint8_t s_metro_pitch_cv                 = 0;      // final DAC pitch for metronome click
 static elapsedMillis s_metro_gate_timer;
+// Ratchet gate reset: force CV gate LOW for one loop iteration so the 303 envelope
+// re-triggers on the subsequent LOW→HIGH edge (needed when get_gate() stays HIGH across
+// a ratchet boundary, e.g. 4x clocks 0→1 and 3→4 which have no natural gate-off).
+static bool s_ratchet_gate_reset = false;
 
 // Direction mode (FN + PITCH_KEY)
 static bool s_dir_mode = false;
@@ -781,6 +785,7 @@ void loop() {
         }
       }
     } else if (engine.is_ratchet_retrigger()) {
+      s_ratchet_gate_reset = true;
       midi_ratchet_retrigger(engine, transpose);
     }
   }
@@ -917,7 +922,8 @@ void loop() {
     DAC::SetPitch(pitch_cv);
     DAC::SetSlide(engine.get_slide_dac());
     DAC::SetAccent(engine.get_accent() || (s_metro_gate_pulse && s_metro_is_downbeat));
-    DAC::SetGate(engine.get_gate() || s_metro_gate_pulse);
+    DAC::SetGate(s_ratchet_gate_reset ? false : (engine.get_gate() || s_metro_gate_pulse));
+    s_ratchet_gate_reset = false;
   } else {
     uint8_t pitch_cv = uint8_t(engine.get_pitch() + 4 + transpose);
     bool gate = midi_live_gate();
