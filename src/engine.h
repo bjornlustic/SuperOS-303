@@ -23,6 +23,15 @@ enum SequencerMode {
   TIME_MODE,
 };
 
+enum SequenceDirection : uint8_t {
+  DIR_FORWARD   = 0, ///< Normal forward playback
+  DIR_REVERSE   = 1, ///< Reverse (end→start)
+  DIR_PINGPONG  = 2, ///< Bounce forward then backward
+  DIR_RANDOM    = 3, ///< Each step jumps to a random position
+  DIR_HALF_RAND = 4, ///< 50% chance of random step, else forward
+  DIR_COUNT     = 5,
+};
+
 enum OctaveState {
   OCTAVE_DOWN,
   OCTAVE_ZERO,
@@ -77,6 +86,17 @@ struct Sequence {
     step_lock[idx >> 3] ^= uint8_t(1u << (idx & 7));
   }
 
+  /// Per-pattern direction stored in reserved[0] (byte 104 of the 128-byte blob).
+  uint8_t get_direction_stored() const { return reserved[0]; }
+  void    store_direction(uint8_t d)   { reserved[0] = (d < 5) ? d : 0; }
+
+  /// Pitch stash count stored in reserved[21] (byte 125).
+  /// The stash holds pitches displaced from NOTE steps when the NOTE count shrinks;
+  /// they live in pitch[length..length+stash_count-1] within the 64-byte pitch array.
+  /// Mirrors the web editor's STASH_COUNT_IDX = 125 convention.
+  uint8_t get_stash_count() const { return reserved[21] < MAX_STEPS ? reserved[21] : 0; }
+  void    set_stash_count(uint8_t n) { reserved[21] = (n < MAX_STEPS) ? n : uint8_t(MAX_STEPS - 1); }
+
   /// 1:1 model: pitch[time_pos] is this step's pitch.
   /// For TIE steps, walk backward to find the last NOTE step's pitch.
   const uint8_t get_pitch() const {
@@ -126,6 +146,7 @@ struct Sequence {
   /// TB-303 slide: slide is stored on the *source* pitch step;
   /// slide CV is on the *destination* pitch step. Ties after the source do not break the glide,
   /// but any *rest* (time 0) between source and destination cancels slide.
+  /// Forward-only version (used for display / edit, where step order is always linear).
   bool slide_from_prev() const {
     if (length <= 1) return false;
     if (time(time_pos) == 0) return false;
@@ -145,7 +166,62 @@ struct Sequence {
     }
     return false;
   }
-  /// Next time slot is a tie (extends previous note).
+  /// Direction-aware slide detection: checks if the step played just before the current
+  /// one had a slide flag set. step_dir is +1 if we moved forward to reach this step,
+  /// -1 if we moved backward (reverse / ping-pong-backward leg).
+  /// For random modes (DIR_RANDOM / DIR_HALF_RAND) there is no meaningful predecessor,
+  /// so always returns false.
+  bool slide_from_prev_dir(uint8_t dir, int8_t step_dir) const {
+    if (dir == DIR_RANDOM || dir == DIR_HALF_RAND) return false;
+    if (length <= 1) return false;
+    if (time(time_pos) == 0) return false;
+    if (first_step) return false;
+
+    // delta: modular offset that walks us toward the step that played just before.
+    // step_dir >= 0 (moved forward): previous is at lower index → subtract 1 (delta = length-1).
+    // step_dir <  0 (moved backward): previous is at higher index → add 1 (delta = 1).
+    const unsigned delta = (step_dir >= 0) ? (unsigned(length) - 1u) : 1u;
+    uint8_t tp = uint8_t((unsigned(time_pos) + delta) % unsigned(length));
+    for (uint8_t guard = 0; guard < length; ++guard) {
+      const uint8_t tt = time(tp);
+      if (tt == 0) return false; // rest breaks slide chain
+      if (tt == 1) return get_slide(tp);
+      // tie: keep walking in the same direction
+      tp = uint8_t((unsigned(tp) + delta) % unsigned(length));
+    }
+    return false;
+  }
+  /// Direction-aware pitch lookup for playback. For TIE steps the pitch is carried
+  /// from the last NOTE step in the play direction (same as slide walk direction).
+  /// step_dir: +1 = moving forward (TIE walks backward), -1 = moving backward (TIE walks forward).
+  uint8_t get_pitch_dir(int8_t step_dir) const {
+    if (time(time_pos) == 2) {
+      const unsigned delta = (step_dir >= 0) ? (unsigned(length) - 1u) : 1u;
+      for (uint8_t g = 1; g < length; ++g) {
+        const uint8_t tp = uint8_t((unsigned(time_pos) + delta * g) % unsigned(length));
+        if (time(tp) == 0) break; // rest cancels tie/slide chain
+        if (time(tp) == 1) {
+          return pitch_is_empty(tp) ? unpack_pitch_linear(PITCH_DEFAULT)
+                                    : unpack_pitch_linear(pitch[tp] & 0x3f);
+        }
+      }
+      return unpack_pitch_linear(PITCH_DEFAULT);
+    }
+    if (step_is_empty()) return unpack_pitch_linear(PITCH_DEFAULT);
+    return unpack_pitch_linear(pitch[pitch_pos] & 0x3f);
+  }
+  /// Direction-aware: is the NEXT step (in the given play direction) a TIE?
+  /// next_dir: +1 = stepping forward next, -1 = stepping backward next.
+  /// For random modes returns false (no defined next step).
+  bool is_tied_dir(uint8_t dir, int8_t next_dir) const {
+    if (dir == DIR_RANDOM || dir == DIR_HALF_RAND) return false;
+    if (length == 0) return false;
+    const uint8_t n = (next_dir >= 0)
+      ? uint8_t((unsigned(time_pos) + 1u) % unsigned(length))
+      : uint8_t((unsigned(time_pos) + unsigned(length) - 1u) % unsigned(length));
+    return time(n) == 2;
+  }
+  /// Next time slot is a tie (extends previous note) — forward-only, kept for edit paths.
   const bool is_tied() const {
     return (time_pos < length) && (time(time_pos + 1) == 2);
   }
@@ -192,6 +268,47 @@ struct Sequence {
     const uint8_t upper = time_pos & 1;
     uint8_t &data = time_data[time_pos >> 1];
     data = (~(0x0f << (4 * upper)) & data) | (t << (4 * upper));
+  }
+  /// After SetTime() at time_pos, reflow pitch data so NOTE steps keep sequential
+  /// pitches from the previous stream. Pass the time value at time_pos *before*
+  /// SetTime was called. No-op when the step stays NOTE or stays non-NOTE.
+  void reflow_pitches_after_time_change(uint8_t old_time) {
+    const uint8_t tp = uint8_t(time_pos & (MAX_STEPS - 1));
+    const uint8_t new_t = time(tp);
+    if ((old_time == 1) == (new_t == 1)) return; // NOTE↔NOTE or non-NOTE↔non-NOTE: no change
+    const uint8_t len = uint8_t(length);
+    // Collect pitch stream from the *old* set of NOTE steps (use old_time for tp).
+    uint8_t stream[MAX_STEPS];
+    uint8_t slen = 0;
+    for (uint8_t i = 0; i < len; ++i) {
+      const uint8_t t = (i == tp) ? old_time : time(i);
+      if (t == 1) stream[slen++] = pitch_is_empty(i) ? PITCH_DEFAULT : pitch[i];
+    }
+    // Append any previously stashed pitches so they re-enter the stream when
+    // new NOTE slots open up (matches web editor stash behaviour).
+    const uint8_t old_stash = get_stash_count();
+    for (uint8_t k = 0; k < old_stash && slen < MAX_STEPS; ++k) {
+      const uint8_t sb = pitch[len + k];
+      stream[slen++] = (sb == PITCH_EMPTY) ? PITCH_DEFAULT : sb;
+    }
+    // Count new NOTE steps; pad stream with defaults if growing.
+    uint8_t note_count = 0;
+    for (uint8_t i = 0; i < len; ++i) if (time(i) == 1) ++note_count;
+    while (slen < note_count) stream[slen++] = PITCH_DEFAULT;
+    // Excess pitches go to stash in pitch[len..len+excess-1] (clamped to fit).
+    uint8_t excess = (slen > note_count) ? uint8_t(slen - note_count) : 0;
+    const uint8_t max_stash = uint8_t(MAX_STEPS - len);
+    if (excess > max_stash) excess = max_stash;
+    // Redistribute: NOTE steps get pitches in order; TIE/REST slots cleared.
+    uint8_t ni = 0;
+    for (uint8_t i = 0; i < len; ++i) {
+      if (time(i) == 1) pitch[i] = stream[ni++];
+      else               pitch[i] = PITCH_EMPTY;
+    }
+    // Write displaced pitches into the stash area.
+    for (uint8_t k = 0; k < excess; ++k)
+      pitch[len + k] = stream[note_count + k];
+    set_stash_count(excess);
   }
   void SetPitch(uint8_t p, uint8_t flags) {
     pitch[pitch_pos] = (p & 0x3f) | (flags & 0xc0);
@@ -263,6 +380,7 @@ struct Sequence {
     }
     for (uint8_t i = 0; i < STEP_LOCK_BYTES; ++i)
       step_lock[i] = 0;
+    set_stash_count(0);
     length = 8;
   }
 
@@ -301,11 +419,14 @@ struct Sequence {
   }
 
   /// PITCH_MODE advance: jump to the next NOTE step, skipping REST and TIE.
-  /// If there are no other NOTE steps, stays on the current position.
+  /// If no other NOTE steps exist (all-REST pattern), falls back to linear +1
+  /// so notes can be entered into a freshly cleared pattern without getting stuck.
   void advance_pitch_to_next_note() {
     first_step = false;
     const uint8_t cur = uint8_t(pitch_pos & (MAX_STEPS - 1));
-    pitch_pos = int(next_note_step_idx(cur)); // returns cur if no other NOTE steps
+    const uint8_t nxt = next_note_step_idx(cur);
+    // nxt == cur means no other NOTE steps found; use linear advance as fallback
+    pitch_pos = int(nxt != cur ? nxt : uint8_t((unsigned(cur) + 1) % unsigned(length)));
     time_pos = pitch_pos;
   }
 
@@ -322,6 +443,47 @@ struct Sequence {
     first_step = false;
     ++time_pos %= length;
     pitch_pos = time_pos; // 1:1 mapping
+    return time(time_pos) != 0;
+  }
+
+  /// Direction-aware advance used by Engine for non-forward modes.
+  /// `pp_dir` is a persistent ±1 for ping-pong kept in Engine.
+  bool AdvanceDirectional(uint8_t dir, int8_t &pp_dir) {
+    if (reset) {
+      reset = false;
+      pitch_pos = 0;
+      time_pos = 0;
+      return time(0) != 0;
+    }
+    first_step = false;
+    switch (dir) {
+    case DIR_REVERSE:
+      if (time_pos <= 0) time_pos = int(length) - 1;
+      else               --time_pos;
+      break;
+    case DIR_PINGPONG: {
+      time_pos += pp_dir;
+      if (time_pos >= int(length)) {
+        pp_dir = -1;
+        time_pos = int(length) - 1; // retrigger last step so both endpoints play
+      } else if (time_pos < 0) {
+        pp_dir = 1;
+        time_pos = 0;               // retrigger step 0 so both endpoints play
+      }
+      break;
+    }
+    case DIR_RANDOM:
+      time_pos = int(random(length));
+      break;
+    case DIR_HALF_RAND:
+      if (random(2)) time_pos = int(random(length));
+      else { ++time_pos %= length; }
+      break;
+    default: // DIR_FORWARD
+      ++time_pos %= length;
+      break;
+    }
+    pitch_pos = time_pos;
     return time(time_pos) != 0;
   }
 
@@ -410,9 +572,12 @@ struct PersistentSettings {
   uint8_t midi_channel = 1;
   /// When false, MIDI Clock / Start / Stop are ignored (internal + DIN CLOCK jack only).
   bool midi_clock_receive = true;
+  /// Sequence playback direction (SequenceDirection enum).
+  uint8_t sequence_direction = 0; // DIR_FORWARD
 
-  static constexpr int kEepromMidiChannel = 16;
-  static constexpr int kEepromMidiFlags = 17;
+  static constexpr int kEepromMidiChannel   = 16;
+  static constexpr int kEepromMidiFlags     = 17;
+  static constexpr int kEepromDirection     = 18;
 
   void Load() { storage.get(0, signature); }
 
@@ -433,21 +598,18 @@ struct PersistentSettings {
   }
 
   void load_midi_from_storage() {
-    const uint8_t ch = storage.read(kEepromMidiChannel);
-    const uint8_t fl = storage.read(kEepromMidiFlags);
-    if (ch <= 16)
-      midi_channel = ch;
-    else
-      midi_channel = 1;
-    if (fl <= 1)
-      midi_clock_receive = (fl != 0);
-    else
-      midi_clock_receive = true;
+    const uint8_t ch  = storage.read(kEepromMidiChannel);
+    const uint8_t fl  = storage.read(kEepromMidiFlags);
+    const uint8_t dir = storage.read(kEepromDirection);
+    midi_channel        = (ch <= 16) ? ch : 1;
+    midi_clock_receive  = (fl <= 1)  ? (fl != 0) : true;
+    sequence_direction  = (dir < uint8_t(DIR_COUNT)) ? dir : 0;
   }
 
   void save_midi_to_storage() {
     storage.update(kEepromMidiChannel, midi_channel);
     storage.update(kEepromMidiFlags, midi_clock_receive ? 1 : 0);
+    storage.update(kEepromDirection, sequence_direction);
   }
 };
 
@@ -500,7 +662,16 @@ struct Engine {
   uint8_t next_p = 0; // queued pattern
                       // TODO: start & end for chains
 
-  SequencerMode mode_ = NORMAL_MODE;
+  SequencerMode      mode_      = NORMAL_MODE;
+  SequenceDirection  direction_ = DIR_FORWARD;
+  int8_t  pp_dir_        = 1;  ///< Ping-pong direction: +1 or -1
+  uint8_t advance_count_ = 0;  ///< Steps since last pattern boundary (non-forward modes)
+  /// Queued direction change (applied at next pattern wrap while clock is running).
+  SequenceDirection  next_direction_          = DIR_FORWARD;
+  bool               direction_change_pending_ = false;
+  /// Direction of the last step advance: +1 = moved forward, -1 = moved backward.
+  /// Used by slide_from_prev_dir and get_pitch_dir after Clock() to resolve pitch/slide.
+  int8_t last_step_dir_ = 1;
 
   int8_t clk_count = -1;
 
@@ -526,6 +697,9 @@ struct Engine {
         normalize_pattern_times(pattern[i]);
       }
       GlobalSettings.load_midi_from_storage();
+      // Load direction from the currently selected pattern (per-pattern direction)
+      direction_ = SequenceDirection(get_sequence().get_direction_stored());
+      if (uint8_t(direction_) >= uint8_t(DIR_COUNT)) direction_ = DIR_FORWARD;
 
       // Migrate v2 → v3 if needed
       if (needsMigration) {
@@ -574,28 +748,80 @@ struct Engine {
   void SyncAfterManualAdvance(bool) { step_start_us_ = micros(); }
 
   /// Slide CV: only during the *destination* note after a slid step (not during the slid note).
-  bool get_slide_dac() const { return get_sequence().slide_from_prev(); }
+  /// Uses last_step_dir_ so callers (midi_after_clock) get the correct directional result.
+  bool get_slide_dac() const {
+    return get_sequence().slide_from_prev_dir(uint8_t(direction_), last_step_dir_);
+  }
 
   // returns false for rests
   bool Advance() {
-    bool result = get_sequence().Advance();
-    // jump to next pattern at end of current one
-    if (0 == get_sequence().time_pos && next_p != p_select) {
-      p_select = next_p;
-      get_sequence().Reset();
+    bool result;
+    // Track the direction of movement for this step (used by slide/tie/pitch after the call).
+    int8_t step_dir     = 1; // direction we just moved: +1 = forward, -1 = backward
+    int8_t next_step_dir = 1; // direction of the *next* step (for is_tied_dir check)
+
+    if (direction_ == DIR_FORWARD) {
+      step_dir     = 1;
+      next_step_dir = 1;
       result = get_sequence().Advance();
+      // Apply queued direction change and/or pattern switch at wrap (time_pos == 0).
+      if (0 == get_sequence().time_pos) {
+        if (direction_change_pending_) {
+          direction_ = next_direction_;
+          direction_change_pending_ = false;
+          pp_dir_ = 1;
+        }
+        if (next_p != p_select) {
+          p_select = next_p;
+          get_sequence().Reset();
+          direction_ = SequenceDirection(get_sequence().get_direction_stored());
+          direction_change_pending_ = false; // new pattern's stored direction wins
+          pp_dir_ = 1; advance_count_ = 0;
+          result = get_sequence().Advance();
+          step_dir = next_step_dir = 1;
+        }
+      }
+    } else {
+      // Capture step_dir before AdvanceDirectional may flip pp_dir_ (ping-pong).
+      if (direction_ == DIR_REVERSE)        step_dir = -1;
+      else if (direction_ == DIR_PINGPONG)  step_dir = pp_dir_;
+      else                                  step_dir = 1; // random: doesn't matter
+
+      result = get_sequence().AdvanceDirectional(uint8_t(direction_), pp_dir_);
+
+      // After advance: pp_dir_ carries the outgoing direction for ping-pong.
+      if (direction_ == DIR_REVERSE)        next_step_dir = -1;
+      else if (direction_ == DIR_PINGPONG)  next_step_dir = pp_dir_;
+      else                                  next_step_dir = 1; // random: is_tied_dir returns false anyway
+
+      ++advance_count_;
+      if (advance_count_ >= get_sequence().length) {
+        advance_count_ = 0;
+        if (direction_change_pending_) {
+          direction_ = next_direction_;
+          direction_change_pending_ = false;
+          pp_dir_ = 1;
+        }
+        if (next_p != p_select) {
+          p_select = next_p;
+          get_sequence().Reset();
+          advance_count_ = 0;
+          direction_ = SequenceDirection(get_sequence().get_direction_stored());
+          direction_change_pending_ = false; // new pattern's stored direction wins
+          pp_dir_ = 1;
+        }
+      }
     }
+
+    last_step_dir_ = step_dir;
+
     if (result) {
-      // Gate overlap: source step (slide flag set) and steps leading into/through a
-      // slide hold gate open all 6 clocks for legato/portamento.
-      // Plain tie chains (no slide on the source note) allow the gate to close at
-      // clk_count==3 on the last TIE step so the following note retrigggers normally.
-      // is_tie() && slide_from_prev(): TIE step that belongs to a slide chain — stay open.
-      // is_tied(): current note is held into the next TIE — stay open.
-      // get_slide(): source note of a slide — stay open.
-      slide_gate = get_sequence().get_slide()
-                || get_sequence().is_tied()
-                || (get_sequence().is_tie() && get_sequence().slide_from_prev());
+      // Direction-aware slide_gate: hold gate when current step has slide flag,
+      // next step (in play direction) is a TIE, or current TIE was preceded by a slide.
+      const bool next_is_tie = get_sequence().is_tied_dir(uint8_t(direction_), next_step_dir);
+      const bool tie_slide   = get_sequence().is_tie() &&
+                               get_sequence().slide_from_prev_dir(uint8_t(direction_), step_dir);
+      slide_gate = get_sequence().get_slide() || next_is_tie || tie_slide;
     }
     resting = !result;
     return result;
@@ -615,18 +841,107 @@ struct Engine {
   }
 
   void Reset() {
+    // Apply any queued direction change immediately on stop/reset so the LED
+    // state and the actual direction_ stay in sync for the next run.
+    if (direction_change_pending_) {
+      direction_ = next_direction_;
+      direction_change_pending_ = false;
+    }
     get_sequence().Reset();
     clk_count = -1;
     slide_gate = false;
     resting = true;
     step_start_us_ = micros();
+    advance_count_ = 0;
+    pp_dir_ = 1;
+    last_step_dir_ = 1;
   }
 
-  void Generate() {
-    if (mode_ == PITCH_MODE)
-      get_sequence().RegenPitch();
-    else if (mode_ == TIME_MODE)
-      get_sequence().RegenTime();
+  /// Randomize entire pattern: both time data and pitches (NORMAL_MODE).
+  void RandomizeFullPattern() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    // First pass: random time data, no ties after rests, no leading tie
+    uint8_t prev = 1;
+    for (uint8_t i = 0; i < len; i++) {
+      uint8_t t;
+      if (i == 0)       t = uint8_t(random(2)) ? 1 : 0;  // note or rest
+      else if (prev==0) t = uint8_t(random(2)) ? 1 : 0;  // after rest: note or rest
+      else              t = uint8_t(random(3));            // note, tie, or rest
+      s.time_pos = i;
+      s.SetTime(t);
+      prev = t;
+    }
+    normalize_pattern_times(s);
+    // Second pass: random pitches for NOTE steps
+    for (uint8_t i = 0; i < len; i++) {
+      if (s.time(i) == 1) {
+        const uint8_t pk  = uint8_t(random(PITCH_PACK_MAX + 1));
+        const uint8_t acc = uint8_t(random(2)) ? 0x40 : 0;
+        const uint8_t sl  = uint8_t(random(2)) ? 0x80 : 0;
+        s.pitch[i] = pk | acc | sl;
+      } else {
+        s.pitch[i] = PITCH_DEFAULT;
+      }
+    }
+    stale = true;
+  }
+
+  /// Randomize pitches only — keeps time data intact (PITCH_MODE).
+  void RandomizePitchData() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; i++) {
+      if (s.time(i) == 1) {
+        const uint8_t pk  = uint8_t(random(PITCH_PACK_MAX + 1));
+        const uint8_t acc = uint8_t(random(2)) ? 0x40 : 0;
+        const uint8_t sl  = uint8_t(random(2)) ? 0x80 : 0;
+        s.pitch[i] = pk | acc | sl;
+      }
+    }
+    stale = true;
+  }
+
+  /// Randomize time data only — keeps pitches intact (TIME_MODE).
+  void RandomizeTimeData() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    uint8_t prev = 1;
+    for (uint8_t i = 0; i < len; i++) {
+      uint8_t t;
+      if (i == 0)       t = uint8_t(random(2)) ? 1 : 0;
+      else if (prev==0) t = uint8_t(random(2)) ? 1 : 0;
+      else              t = uint8_t(random(3));
+      s.time_pos = i;
+      s.SetTime(t);
+      prev = t;
+    }
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
+  // Direction accessors
+  /// Returns the "user-visible" direction: the pending one if a change is queued,
+  /// otherwise the active one. Used for LED display so the newly-selected direction
+  /// lights up immediately even if it hasn't taken effect yet.
+  SequenceDirection get_direction() const {
+    return direction_change_pending_ ? next_direction_ : direction_;
+  }
+  void SetDirection(SequenceDirection d) {
+    get_sequence().store_direction(uint8_t(d));
+    stale = true;
+    if (clk_count == -1) {
+      // Clock not running: apply immediately (no wrap boundary to wait for).
+      direction_ = d;
+      pp_dir_ = 1;
+      advance_count_ = 0;
+      direction_change_pending_ = false;
+    } else {
+      // Clock running: queue the change to take effect at the next pattern-cycle
+      // boundary, so the "1" (step 0 / downbeat) stays phase-locked to the clock.
+      next_direction_ = d;
+      direction_change_pending_ = true;
+    }
   }
 
   void ClearPattern(uint8_t idx) {
@@ -657,12 +972,12 @@ struct Engine {
     return get_sequence().get_semitone();
   }
   uint8_t get_pitch() const {
-    return get_sequence().get_pitch();
+    return get_sequence().get_pitch_dir(last_step_dir_);
   }
-  // MIDI note number: OCTAVE_DOWN C = 36 (C2). Uses get_pitch() so TIE steps with an
-  // empty pitch slot still resolve to the carried note (must match DAC / audition).
+  // MIDI note number: OCTAVE_DOWN C = 36 (C2). Uses get_pitch_dir() so TIE steps in
+  // any play direction resolve to the note that started the tie chain.
   uint8_t get_midi_note() const {
-    return uint8_t(36 + get_sequence().get_pitch());
+    return uint8_t(36 + get_sequence().get_pitch_dir(last_step_dir_));
   }
   bool get_slide() const {
     return get_sequence().get_slide();

@@ -128,6 +128,9 @@
     .btn-ghost { height: 30px; padding: 0 14px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; }
     .btn-ghost:hover { background: var(--black); color: var(--white); }
     .btn-ghost.is-connected { background: var(--black); color: var(--white); }
+    .dir-btn { height: 26px; padding: 0 10px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; }
+    .dir-btn:hover { background: var(--gray-2); }
+    .dir-btn.btn-primary { background: var(--black); color: var(--white); border-color: var(--black); }
 
     /* ── MIDI status ── */
     #midiStatus { font-size: 11px; font-weight: 600; color: var(--gray-3); letter-spacing: 0.02em; padding-left: 10px; }
@@ -339,6 +342,8 @@
     <div class="logo-sub">Pattern Editor</div>
   </header>
 
+  <div class="banner" id="downloadBanner"></div>
+
   <div class="banner" id="httpBanner">
     &#9632;&nbsp; Serve over HTTP for Web MIDI — run: python3 -m http.server 8080 --directory tools/web-pattern-edit
   </div>
@@ -410,11 +415,11 @@
       <div class="group-inner live-group-inner">
         <label class="live-toggle" id="liveToggleLabel" title="Live off — tap to push edits while the sequencer runs">
           <input type="checkbox" id="chkLive" />
-          <span>Push pattern to 303 while playing</span>
+          <span>Push web edits to 303 while playing</span>
         </label>
         <label class="live-toggle" id="reflectToggleLabel" title="Reflect 303 edits off — tap to mirror hardware knob writes into the web editor in real time">
           <input type="checkbox" id="chkReflect" />
-          <span>Reflect 303 edits live</span>
+          <span>Pull 303 edits to web editor while playing</span>
         </label>
       </div>
     </div>
@@ -439,12 +444,49 @@
     </div>
   </div>
 
+  <!-- Nudge -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Nudge</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnNudgePitchL">&#8592; Pitch</button>
+        <button class="btn" id="btnNudgePitchR">Pitch &#8594;</button>
+        <button class="btn" id="btnNudgeTimeL">&#8592; Time</button>
+        <button class="btn" id="btnNudgeTimeR">Time &#8594;</button>
+        <button class="btn" id="btnNudgeBothL">&#8592; Both</button>
+        <button class="btn" id="btnNudgeBothR">Both &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Randomize -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Randomize</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnRandPitch">Pitches</button>
+        <button class="btn" id="btnRandOctave">Octave</button>
+        <button class="btn" id="btnRandTime">Time</button>
+        <button class="btn" id="btnRandFlags">Accent / Slide</button>
+        <button class="btn" id="btnRandAll">All</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Sequencer grid -->
   <div class="seq-panel">
     <div class="seq-toolbar">
       <div class="seq-toolbar-steps">
         <span class="seq-toolbar-lbl">Steps</span>
         <input type="number" id="patLen" class="seq-pat-len" min="1" max="64" value="16" />
+      </div>
+      <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
+        <span class="seq-toolbar-lbl" style="margin-right:4px">Dir</span>
+        <button class="dir-btn btn-primary" data-dir="0" title="Forward">Fwd</button>
+        <button class="dir-btn" data-dir="1" title="Reverse">Rev</button>
+        <button class="dir-btn" data-dir="2" title="Ping-pong">Ping</button>
+        <button class="dir-btn" data-dir="3" title="Random">Rnd</button>
+        <button class="dir-btn" data-dir="4" title="Half-random">Half</button>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center">
         <label class="live-push-lbl" title="Unchecked: 303 octave row + buttons. Checked: one slider C0–C4.">
@@ -1471,8 +1513,22 @@
     inner.set(packed, 5);
     sendSysex(inner);
   }
+  var currentDirection = 0;
+  var kDirNames = ['Fwd', 'Rev', 'Ping', 'Rnd', 'Half'];
+
+  function setActiveDirection(dir) {
+    currentDirection = dir & 0x07;
+    var btns = document.querySelectorAll('.dir-btn');
+    btns.forEach(function(b, i) {
+      b.classList.toggle('btn-primary', i === currentDirection);
+    });
+  }
+
   function sendCfgRead()  { sendSysex(new Uint8Array([0x7d, 0x20])); }
-  function sendCfgWrite(ch, flags) { sendSysex(new Uint8Array([0x7d, 0x22, ch & 0x7f, flags & 0x7f])); }
+  function sendCfgWrite(ch, flags, dir) {
+    var d = (dir === undefined) ? currentDirection : (dir & 0x07);
+    sendSysex(new Uint8Array([0x7d, 0x22, ch & 0x7f, flags & 0x7f, d & 0x7f]));
+  }
 
   function scheduleLiveSend() {
     if (!liveEnabled || !midiOut) return;
@@ -1502,6 +1558,13 @@
       if (inBulk) {
         log('Pattern ' + (pat+1) + ' received (' + (17 - expectDump) + '/16)', 'log-syx');
         expectDump--;
+        if (expectDump === 0) {
+          var dlBanner = document.getElementById('downloadBanner');
+          dlBanner.textContent = '\u2714 All 16 patterns downloaded from 303';
+          dlBanner.classList.add('visible');
+          setTimeout(function() { dlBanner.classList.remove('visible'); }, 3000);
+          switchToPat(activePat);
+        }
       } else {
         log('Pattern ' + (pat+1) + ' received', 'log-syx');
       }
@@ -1573,13 +1636,57 @@
       return;
     }
 
+    if (cmd === 0x19 && bytes.length >= 5) {
+      if (!reflect303Enabled) return;
+      var rPat  = bytes[2] & 0x0f;
+      var rStep = bytes[3] & 0x3f;
+      var rLock = bytes[4] & 0x01;
+      var rBlob = groups[0][rPat];
+      var byteIdx = 96 + (rStep >> 3);
+      if (byteIdx < 104) {
+        if (rLock) rBlob[byteIdx] |= (1 << (rStep & 7));
+        else rBlob[byteIdx] &= ~(1 << (rStep & 7));
+      }
+      saveGroupsToLS();
+      if (activeGroup === 0 && rPat === activePat) renderGrid();
+      recomputeDirty();
+      if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
+      reflect303HistTimer = setTimeout(function() {
+        reflect303HistTimer = null;
+        pushHistory(0, rPat);
+        recomputeDirty();
+      }, 1200);
+      return;
+    }
+
+    if (cmd === 0x17 && bytes.length >= 3) {
+      setActiveDirection(bytes[2] & 0x07);
+      log('Direction: ' + (kDirNames[currentDirection] || currentDirection), 'log-ack');
+      return;
+    }
+
+    if (cmd === 0x18 && bytes.length >= 4) {
+      var newLen = bytes[3] & 0x7f;
+      if (newLen < 1) newLen = 1;
+      if (newLen > 64) newLen = 64;
+      var lPat = bytes[2] & 0x0f;
+      if (lPat < 16) groups[activeGroup][lPat][127] = newLen;
+      if (lPat === activePat) {
+        document.getElementById('patLen').value = String(newLen);
+        renderGrid();
+      }
+      log('Length update pat ' + (lPat+1) + ' \u2192 ' + newLen, 'log-ack');
+      return;
+    }
+
     if (cmd === 0x21 && bytes.length >= 4) {
       var ch = bytes[2], fl = bytes[3];
       document.getElementById('cfgMidiCh').value  = String(ch);
       document.getElementById('cfgMidiClk').value = String(fl & 1);
+      if (bytes.length >= 5) setActiveDirection(bytes[4] & 0x07);
       document.getElementById('configStatus').textContent = 'Synced';
       document.getElementById('cfgFeedback').textContent  = 'Loaded from 303';
-      log('Config read: ch=' + ch + ' clock_rx=' + (fl & 1), 'log-ack');
+      log('Config read: ch=' + ch + ' clock_rx=' + (fl & 1) + ' dir=' + (kDirNames[currentDirection] || currentDirection), 'log-ack');
       return;
     }
   }
@@ -1588,8 +1695,6 @@
   var lastStatus = 0, chanBuf = [];
   function dispatchChannel(status, b1, b2) {
     var type = status & 0xF0, ch = (status & 0x0F) + 1;
-    if (!document.getElementById('logBody').classList.contains('is-open'))
-      document.getElementById('logBar').click();
     if (type === 0x90 && b2 > 0)
       log('Note On  ch'+ch+'  '+midiNoteNameForLog(b1)+'  vel '+b2, 'log-note');
     else if (type === 0x80 || (type === 0x90 && b2 === 0))
@@ -1951,6 +2056,191 @@
     log('Cleared pattern \u2192 1 step (rest)', 'log-ack');
   };
 
+  // ── Randomize ──────────────────────────────────────────────────────
+  /** Returns true if the step-lock bit is set for step s (blob bytes 96–103). */
+  function isStepLocked(blob, s) {
+    return !!(blob[96 + (s >> 3)] & (1 << (s & 7)));
+  }
+  /**
+   * Apply random packed pitches (0–38, 3 TB-303 octaves) to all NOTE steps.
+   * Accent and slide flags on existing steps are preserved unless clearFlags is true.
+   */
+  function applyRandomPitches(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      if (getTime(blob, s) === 1) {
+        var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : 0;
+        blob[s] = (Math.floor(Math.random() * 39)) | flags; // 0..38 = 3 octaves
+      }
+    }
+  }
+  /**
+   * Randomly assign time values (note/rest/tie) across all steps, then normalize
+   * and reflow pitch bytes to keep the pitch stream intact.
+   */
+  function applyRandomTime(blob, len) {
+    var timesBefore = snapshotTimes(blob, len);
+    var pitchState = snapshotPitchState(blob, len);
+    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) { setTime(blob, s, timesBefore[s]); continue; }
+      var r = Math.random();
+      setTime(blob, s, r < 0.55 ? 1 : r < 0.80 ? 0 : 2); // ~55% note, ~25% rest, ~20% tie
+    }
+    normalizePatternTimes(blob, len);
+    reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+  }
+  /**
+   * Randomize octave button (down/norm/up/2×up) on each NOTE step,
+   * keeping the note letter and accent/slide flags unchanged.
+   */
+  function applyRandomOctave(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
+        var flags = blob[s] & 0xc0;
+        var p6 = blob[s] & 0x3f;
+        var key = p6 % 13;                        // note within octave (0-12)
+        var newOct = Math.floor(Math.random() * 4); // 0=down 1=norm 2=up 3=2xup
+        var newPacked = key + 13 * newOct;
+        if (newPacked > PITCH_MAX) newPacked = PITCH_MAX;
+        blob[s] = newPacked | flags;
+      }
+    }
+  }
+  /**
+   * Randomly set accent (~20% probability) and slide (~15% probability)
+   * flags on existing NOTE steps, preserving pitch.
+   */
+  function applyRandomFlags(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
+        var p6 = blob[s] & 0x3f;
+        blob[s] = p6 | (Math.random() < 0.20 ? 0x40 : 0) | (Math.random() < 0.15 ? 0x80 : 0);
+      }
+    }
+  }
+
+  document.getElementById('btnRandPitch').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomPitches(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized pitches', 'log-ack');
+  };
+  document.getElementById('btnRandOctave').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomOctave(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized octaves', 'log-ack');
+  };
+  document.getElementById('btnRandTime').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomTime(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized time', 'log-ack');
+  };
+  document.getElementById('btnRandFlags').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomFlags(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized accent/slide', 'log-ack');
+  };
+  document.getElementById('btnRandAll').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomTime(blob, len);
+    applyRandomPitches(blob, len);
+    applyRandomOctave(blob, len);
+    applyRandomFlags(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized all', 'log-ack');
+  };
+
+  // ── Nudge ──────────────────────────────────────────────────────────
+  /**
+   * Nudge the pattern by one step.
+   * mode: 'pitch' | 'time' | 'both'
+   * direction: +1 = forward (content shifts right, last step wraps to first)
+   *            -1 = backward (content shifts left, first step wraps to last)
+   * Locked steps are fixed anchors; unlocked steps rotate among themselves.
+   */
+  function nudgePattern(blob, len, mode, direction) {
+    if (len < 2) return;
+
+    if (mode === 'pitch') {
+      // Rotate pitch bytes only among unlocked NOTE steps; rhythm is unchanged.
+      var noteSteps = [];
+      for (var s = 0; s < len; s++) {
+        if (getTime(blob, s) === 1 && !getStepLock(blob, s)) noteSteps.push(s);
+      }
+      if (noteSteps.length < 2) return;
+      var pitches = noteSteps.map(function(s) { return blob[s]; });
+      if (direction > 0) pitches.unshift(pitches.pop());
+      else pitches.push(pitches.shift());
+      for (var i = 0; i < noteSteps.length; i++) blob[noteSteps[i]] = pitches[i];
+
+    } else if (mode === 'time') {
+      // Rotate time values (N/T/R) among unlocked steps; pitch stream stays intact via reflow.
+      var unlockedT = [];
+      for (var s = 0; s < len; s++) {
+        if (!getStepLock(blob, s)) unlockedT.push(s);
+      }
+      if (unlockedT.length < 2) return;
+      var timesBefore = snapshotTimes(blob, len);
+      var pitchState = snapshotPitchState(blob, len);
+      var times = unlockedT.map(function(s) { return getTime(blob, s); });
+      if (direction > 0) times.unshift(times.pop());
+      else times.push(times.shift());
+      for (var i = 0; i < unlockedT.length; i++) setTime(blob, unlockedT[i], times[i]);
+      normalizePatternTimes(blob, len);
+      reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+
+    } else { // 'both'
+      // Rotate time + pitch as a unit among unlocked steps.
+      var unlockedB = [];
+      for (var s = 0; s < len; s++) {
+        if (!getStepLock(blob, s)) unlockedB.push(s);
+      }
+      if (unlockedB.length < 2) return;
+      var pairs = unlockedB.map(function(s) { return { t: getTime(blob, s), p: blob[s] }; });
+      if (direction > 0) pairs.unshift(pairs.pop());
+      else pairs.push(pairs.shift());
+      for (var i = 0; i < unlockedB.length; i++) {
+        setTime(blob, unlockedB[i], pairs[i].t);
+        blob[unlockedB[i]] = pairs[i].p;
+      }
+      normalizePatternTimes(blob, len);
+      // Enforce 1:1 model: non-NOTE steps must have PITCH_EMPTY.
+      for (var s = 0; s < len; s++) {
+        if (getTime(blob, s) !== 1) blob[s] = 0xff;
+      }
+    }
+  }
+
+  function doNudge(mode, direction) {
+    var blob = activeBlob(), len = currentPatLen();
+    nudgePattern(blob, len, mode, direction);
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    var arrow = direction > 0 ? '\u2192' : '\u2190';
+    log('Nudge ' + mode + ' ' + arrow, 'log-ack');
+  }
+
+  document.getElementById('btnNudgePitchL').onclick = function() { doNudge('pitch', -1); };
+  document.getElementById('btnNudgePitchR').onclick = function() { doNudge('pitch', +1); };
+  document.getElementById('btnNudgeTimeL').onclick  = function() { doNudge('time',  -1); };
+  document.getElementById('btnNudgeTimeR').onclick  = function() { doNudge('time',  +1); };
+  document.getElementById('btnNudgeBothL').onclick  = function() { doNudge('both',  -1); };
+  document.getElementById('btnNudgeBothR').onclick  = function() { doNudge('both',  +1); };
+
   document.getElementById('btnSave303').onclick = function() {
     if (!midiOut) return;
     syncBlob();
@@ -2014,6 +2304,36 @@
     saveGroupsToLS();
     renderGrid(); recomputeDirty(); scheduleLiveSend();
   });
+
+  // ── patLen drag-to-scrub ───────────────────────────────────────────
+  (function() {
+    var el = document.getElementById('patLen');
+    var dragStartY = 0, dragStartVal = 0, dragging = false, moved = false;
+    el.style.cursor = 'ns-resize';
+    el.addEventListener('pointerdown', function(e) {
+      if (e.button !== 0) return;
+      dragStartY   = e.clientY;
+      dragStartVal = Math.min(MAX_STEPS, Math.max(1, Number(el.value) | 0));
+      dragging = true;
+      moved    = false;
+      el.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    el.addEventListener('pointermove', function(e) {
+      if (!dragging) return;
+      var delta = Math.round((dragStartY - e.clientY) / 4); // 4px per step
+      if (delta !== 0) moved = true;
+      var next = Math.min(MAX_STEPS, Math.max(1, dragStartVal + delta));
+      if (Number(el.value) !== next) {
+        el.value = String(next);
+        el.dispatchEvent(new Event('change'));
+      }
+    });
+    el.addEventListener('pointerup', function(e) {
+      dragging = false;
+      if (moved) e.preventDefault(); // suppress click-to-focus text cursor
+    });
+  })();
   // ── Config panel ───────────────────────────────────────────────────
   document.getElementById('btnCfgRead').onclick = function() {
     sendCfgRead();
@@ -2022,9 +2342,23 @@
   document.getElementById('btnCfgWrite').onclick = function() {
     var ch  = parseInt(document.getElementById('cfgMidiCh').value,  10);
     var clk = parseInt(document.getElementById('cfgMidiClk').value, 10);
-    sendCfgWrite(ch, clk);
-    log('\u2190 Set config: ch=' + ch + ' clock_rx=' + clk, 'log-syx');
+    sendCfgWrite(ch, clk, currentDirection);
+    log('\u2190 Set config: ch=' + ch + ' clock_rx=' + clk + ' dir=' + (kDirNames[currentDirection] || currentDirection), 'log-syx');
   };
+
+  // Direction buttons
+  document.querySelectorAll('.dir-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var dir = parseInt(btn.getAttribute('data-dir'), 10);
+      setActiveDirection(dir);
+      if (midiOut) {
+        var ch  = parseInt(document.getElementById('cfgMidiCh').value,  10);
+        var clk = parseInt(document.getElementById('cfgMidiClk').value, 10);
+        sendCfgWrite(ch, clk, dir);
+        log('\u2190 Direction: ' + (kDirNames[dir] || dir), 'log-syx');
+      }
+    });
+  });
 
   // ── MIDI connect ───────────────────────────────────────────────────
   document.getElementById('btnMidi').onclick = async function() {
@@ -2034,9 +2368,7 @@
       bindPorts(midiAccess);
       midiAccess.onstatechange = function() { bindPorts(midiAccess); };
       log('MIDI ready — Computer Out \u2192 303 MIDI In  |  303 MIDI Out \u2192 Computer In', 'log-ack');
-      if (!document.getElementById('logBody').classList.contains('is-open'))
-        document.getElementById('logBar').click();
-    } catch(e) { log('MIDI denied: ' + e, 'log-err'); document.getElementById('logBar').click(); }
+    } catch(e) { log('MIDI denied: ' + e, 'log-err'); }
   };
 
   document.getElementById('selOut').onchange =
