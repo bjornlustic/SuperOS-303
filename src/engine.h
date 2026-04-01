@@ -98,7 +98,7 @@ struct Sequence {
   uint8_t get_stash_count() const { return reserved[21] < MAX_STEPS ? reserved[21] : 0; }
   void    set_stash_count(uint8_t n) { reserved[21] = (n < MAX_STEPS) ? n : uint8_t(MAX_STEPS - 1); }
 
-  /// Ratchet value for a step (0=1x, 1=2x, 2=3x, 3=4x).
+  /// Ratchet value for a step (0=1x, 1=2x, 2=3x max).
   /// Packed 2 bits/step in reserved[1..16] (bytes 105-120). Mirrors web RATCHET_BASE=105.
   /// Only meaningful on NOTE steps without slide.
   uint8_t get_ratchet_val(uint8_t step) const {
@@ -851,7 +851,13 @@ struct Engine {
       const bool next_is_tie = get_sequence().is_tied_dir(uint8_t(direction_), next_step_dir);
       const bool tie_slide   = get_sequence().is_tie() &&
                                get_sequence().slide_from_prev_dir(uint8_t(direction_), step_dir);
-      slide_gate = get_sequence().get_slide() || next_is_tie || tie_slide;
+      // A REST immediately after a slide source cancels the slide — don't hold gate.
+      const uint8_t next_pos = uint8_t(
+          (unsigned(get_sequence().time_pos) +
+           (next_step_dir >= 0 ? 1u : unsigned(get_sequence().length) - 1u)) %
+          unsigned(get_sequence().length));
+      const bool next_is_rest = (get_sequence().time(next_pos) == 0);
+      slide_gate = (!next_is_rest && get_sequence().get_slide()) || next_is_tie || tie_slide;
     }
     resting = !result;
     return result;
@@ -887,10 +893,10 @@ struct Engine {
     last_step_dir_ = 1;
   }
 
-  /// Ratchet distribution: ~50% none (1x), ~27% 2x, ~13% 3x, ~10% 4x.
+  /// Ratchet distribution: ~50% none (1x), ~33% 2x, ~17% 3x.
   static uint8_t random_ratchet_val() {
-    const uint8_t r = uint8_t(random(15));
-    return r < 7 ? 0 : r < 11 ? 1 : r < 13 ? 2 : 3;
+    const uint8_t r = uint8_t(random(12));
+    return r < 6 ? 0 : r < 10 ? 1 : 2;
   }
 
   /// Randomize entire pattern: both time data and pitches (NORMAL_MODE).
@@ -1019,13 +1025,17 @@ struct Engine {
 
   bool get_gate() const {
     if (resting) return false;
-    if (slide_gate) return true;
+    // Slide destination: no ratchet — treat as 1x so the legato arrival plays normally.
+    if (get_slide_dac()) return clk_count < 3;
     const uint8_t r = get_sequence().get_ratchet_val(uint8_t(get_sequence().time_pos));
+    // Slide source with no ratchet: hold gate HIGH all 6 clocks to bridge into destination.
+    if (slide_gate && r == 0) return true;
+    // Slide source with ratchet: use ratchet pattern but pin clock 5 HIGH so the gate
+    // stays up through the step boundary and glides into the destination.
     switch (r) {
-      case 1: return (uint8_t(clk_count) % 3u) == 0u; // 2x: clocks 0, 3
-      case 2: return (uint8_t(clk_count) % 2u) == 0u; // 3x: clocks 0, 2, 4
-      case 3: return clk_count != 2 && clk_count != 5; // 4x: clocks 0,1,3,4
-      default: return clk_count < 3;                   // 1x normal
+      case 1: return (uint8_t(clk_count) % 3u) == 0u || (slide_gate && clk_count == 5); // 2x
+      case 2: return (uint8_t(clk_count) % 2u) == 0u || (slide_gate && clk_count == 5); // 3x
+      default: return clk_count < 3;                   // 1x normal (also handles any stale val >2)
     }
   }
 
@@ -1033,17 +1043,20 @@ struct Engine {
   /// (i.e., not the step-advance clock 0, but a subsequent sub-note trigger).
   /// Use this in the main loop alongside Clock() to fire midi_ratchet_retrigger().
   bool is_ratchet_retrigger() const {
-    if (resting || slide_gate) return false;
+    if (resting) return false;
+    // Slide destination: never ratchet (being slid into, no new envelope trigger expected).
+    if (get_slide_dac()) return false;
+    // slide_gate true = source note of a slide; ratcheting is allowed on source notes.
     const uint8_t r = get_sequence().get_ratchet_val(uint8_t(get_sequence().time_pos));
     switch (r) {
-      case 1: return clk_count == 3;                               // 2x
-      case 2: return clk_count == 2 || clk_count == 4;            // 3x
-      case 3: return clk_count == 1 || clk_count == 3 || clk_count == 4; // 4x
-      default: return false;
+      case 1: return clk_count == 3;                    // 2x
+      case 2: return clk_count == 2 || clk_count == 4; // 3x
+      default: return false;                            // 1x or any stale val >2
     }
   }
   bool get_accent() const {
-    return !resting && get_sequence().get_accent();
+    // Accent belongs to the source note; suppress on slide destination (no new envelope trigger).
+    return !resting && !get_slide_dac() && get_sequence().get_accent();
   }
   uint8_t get_semitone() const {
     return get_sequence().get_semitone();

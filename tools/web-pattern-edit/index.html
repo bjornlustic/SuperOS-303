@@ -617,7 +617,7 @@
   var MAX_STEPS    = 64;
   /** Extra note pitches when there are fewer NOTE steps than stored stream (303-style). */
   var STASH_COUNT_IDX = 125;
-  /** Ratchet data: 2 bits per step, 4 steps per byte, 16 bytes at reserved[1..16] = blob[105..120]. Values 0–3 = 1x–4x. */
+  /** Ratchet data: 2 bits per step, 4 steps per byte, 16 bytes at reserved[1..16] = blob[105..120]. Values 0–2 = 1x–3x (max). */
   var RATCHET_BASE = 105;
   var PITCH_MAX    = 12 + 13 * 3; // 51 (supports DOUBLE_UP octave)
   /** Full-range slider: linear semitones 0..48 (= unpack_pitch_linear), C0..C4 for natural notes at C boundaries. */
@@ -788,7 +788,7 @@
   }
 
   // Ratchet: 2 bits per step packed into blob[RATCHET_BASE..RATCHET_BASE+15].
-  // Value 0=1x, 1=2x, 2=3x, 3=4x. Only meaningful on NOTE steps without slide.
+  // Value 0=1x, 1=2x, 2=3x (max). Only meaningful on NOTE steps without slide.
   function getRatchet(blob, s) {
     var idx = s & (MAX_STEPS - 1);
     var b   = RATCHET_BASE + (idx >> 2);
@@ -1471,7 +1471,7 @@
       ratchetRow.className = 'step-ratchet';
       var curRatchet = getRatchet(blob, s);
       var ratchetDisabled = !noteStep || sl || locked;
-      [0, 1, 2, 3].forEach(function(rv) {
+      [0, 1, 2].forEach(function(rv) {
         var rb = document.createElement('button');
         rb.type = 'button';
         rb.className = 'r-btn' + (curRatchet === rv ? ' is-on' : '');
@@ -2277,7 +2277,7 @@
   }
   /**
    * Randomly assign ratchet values to unlocked NOTE steps without slide.
-   * Distribution: ~50% no ratchet (1x), ~27% 2x, ~13% 3x, ~10% 4x.
+   * Distribution: ~50% no ratchet (1x), ~33% 2x, ~17% 3x.
    * Clears ratchet on all other steps.
    */
   function applyRandomRatchets(blob, len) {
@@ -2286,7 +2286,7 @@
       var slide = blob[s] !== 0xff && (blob[s] & 0x80);
       if (getTime(blob, s) === 1 && !slide) {
         var r = Math.random();
-        var rv = r < 0.50 ? 0 : r < 0.77 ? 1 : r < 0.90 ? 2 : 3;
+        var rv = r < 0.50 ? 0 : r < 0.83 ? 1 : 2;
         setRatchet(blob, s, rv);
       } else {
         setRatchet(blob, s, 0);
@@ -2426,7 +2426,10 @@
     var len = blob[127] || 16;
     for (var s = 0; s < len; s++) {
       if (isStepLocked(blob, s) || getTime(blob, s) !== 1) continue;
-      blob[s] = snapPackedToScale(snap[s]);
+      if (snap[s] === 0xff) { blob[s] = 0xff; continue; }
+      // Preserve current accent/slide flags; only snap the pitch bits.
+      var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : (snap[s] & 0xc0);
+      blob[s] = linearToPacked(snapLinToScale(unpackLinear(snap[s] & 0x3f))) | flags;
     }
   }
 
@@ -2434,7 +2437,14 @@
     var snap = scaleLockSnaps[g][p];
     if (!snap) return;
     var blob = groups[g][p];
-    for (var i = 0; i < 64; i++) blob[i] = snap[i];
+    for (var i = 0; i < 64; i++) {
+      if (snap[i] === 0xff || blob[i] === 0xff) {
+        blob[i] = snap[i]; // PITCH_EMPTY state: restore as-is
+      } else {
+        // Restore pre-lock pitch bits only; keep current accent/slide flags.
+        blob[i] = (snap[i] & 0x3f) | (blob[i] & 0xc0);
+      }
+    }
     scaleLockSnaps[g][p] = null;
   }
 
