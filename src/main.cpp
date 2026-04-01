@@ -364,8 +364,6 @@ void ProcessDirectionMode() {
     Leds::Set(kDirLeds[d], active ? bool(clk_count & 4) : true);
     if (inputs[kDirKeys[d]].rising()) {
       engine.SetDirection(SequenceDirection(d));
-      GlobalSettings.sequence_direction = d;
-      GlobalSettings.save_midi_to_storage();
       midi_send_direction_update(d);
     }
   }

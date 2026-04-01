@@ -726,9 +726,7 @@ struct Engine {
         normalize_pattern_times(pattern[i]);
       }
       GlobalSettings.load_midi_from_storage();
-      // Load direction from the currently selected pattern (per-pattern direction)
-      direction_ = SequenceDirection(get_sequence().get_direction_stored());
-      if (uint8_t(direction_) >= uint8_t(DIR_COUNT)) direction_ = DIR_FORWARD;
+      direction_ = DIR_FORWARD;
 
       // Migrate v2 → v3 if needed
       if (needsMigration) {
@@ -804,8 +802,7 @@ struct Engine {
         if (next_p != p_select) {
           p_select = next_p;
           get_sequence().Reset();
-          direction_ = SequenceDirection(get_sequence().get_direction_stored());
-          direction_change_pending_ = false; // new pattern's stored direction wins
+          direction_change_pending_ = false;
           pp_dir_ = 1; advance_count_ = 0;
           result = get_sequence().Advance();
           step_dir = next_step_dir = 1;
@@ -828,16 +825,39 @@ struct Engine {
       if (advance_count_ >= get_sequence().length) {
         advance_count_ = 0;
         if (direction_change_pending_) {
+          const SequenceDirection old_dir = direction_;
           direction_ = next_direction_;
           direction_change_pending_ = false;
           pp_dir_ = 1;
+          // PINGPONG wraps at two different positions (step 0 on the backward leg,
+          // step length-1 on the forward leg), so time_pos is indeterminate when the
+          // direction change fires.  Force the pre-start position that the new
+          // direction expects so it always lands on the correct first step.
+          // REVERSE always wraps at step 0, which already aligns correctly, so
+          // no adjustment is needed there.
+          if (old_dir == DIR_PINGPONG) {
+            const int len = int(get_sequence().length);
+            if (direction_ == DIR_FORWARD) {
+              // Advance() does ++time_pos % length; pre-position at length-1 → step 0.
+              get_sequence().time_pos  = len - 1;
+              get_sequence().pitch_pos = len - 1;
+              get_sequence().first_step = true;
+            } else if (direction_ == DIR_REVERSE) {
+              // AdvanceDirectional(REVERSE): time_pos <= 0 → length-1; force 0.
+              get_sequence().time_pos  = 0;
+              get_sequence().pitch_pos = 0;
+              get_sequence().first_step = true;
+            } else {
+              // Switching to another non-forward mode: clean reset to step 0.
+              get_sequence().Reset();
+            }
+          }
         }
         if (next_p != p_select) {
           p_select = next_p;
           get_sequence().Reset();
           advance_count_ = 0;
-          direction_ = SequenceDirection(get_sequence().get_direction_stored());
-          direction_change_pending_ = false; // new pattern's stored direction wins
+          direction_change_pending_ = false;
           pp_dir_ = 1;
         }
       }
@@ -983,6 +1003,39 @@ struct Engine {
     stale = true;
   }
 
+  /// Randomize accent flags only (~20% probability) — keeps pitch, slide, and time intact.
+  void RandomizeAccentData() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; i++) {
+      if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+        if (random(5) == 0)  // ~20%
+          s.pitch[i] |=  0x40;
+        else
+          s.pitch[i] &= ~0x40;
+      }
+    }
+    stale = true;
+  }
+
+  /// Randomize slide flags only (~15% probability) — keeps pitch, accent, and time intact.
+  /// Clears ratchet on any step that gains a slide flag (slide and ratchet are mutually exclusive).
+  void RandomizeSlideData() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; i++) {
+      if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+        if (random(20) < 3) { // ~15%
+          s.pitch[i] |=  0x80;
+          s.set_ratchet_val(i, 0);
+        } else {
+          s.pitch[i] &= ~0x80;
+        }
+      }
+    }
+    stale = true;
+  }
+
   // Direction accessors
   /// Returns the "user-visible" direction: the pending one if a change is queued,
   /// otherwise the active one. Used for LED display so the newly-selected direction
@@ -991,7 +1044,6 @@ struct Engine {
     return direction_change_pending_ ? next_direction_ : direction_;
   }
   void SetDirection(SequenceDirection d) {
-    get_sequence().store_direction(uint8_t(d));
     stale = true;
     if (clk_count == -1) {
       // Clock not running: apply immediately (no wrap boundary to wait for).
@@ -1025,18 +1077,22 @@ struct Engine {
 
   bool get_gate() const {
     if (resting) return false;
-    // Slide destination: no ratchet — treat as 1x so the legato arrival plays normally.
-    if (get_slide_dac()) return clk_count < 3;
     const uint8_t r = get_sequence().get_ratchet_val(uint8_t(get_sequence().time_pos));
     // Slide source with no ratchet: hold gate HIGH all 6 clocks to bridge into destination.
+    // Must be checked before get_slide_dac() so that steps which are both a slide destination
+    // AND a slide source (consecutive slides, or tie steps in a slide chain) hold the gate
+    // rather than dropping it at clock 3.
     if (slide_gate && r == 0) return true;
     // Slide source with ratchet: use ratchet pattern but pin clock 5 HIGH so the gate
     // stays up through the step boundary and glides into the destination.
     switch (r) {
       case 1: return (uint8_t(clk_count) % 3u) == 0u || (slide_gate && clk_count == 5); // 2x
       case 2: return (uint8_t(clk_count) % 2u) == 0u || (slide_gate && clk_count == 5); // 3x
-      default: return clk_count < 3;                   // 1x normal (also handles any stale val >2)
+      default: break;                                  // r==0 (slide_gate false) falls through
     }
+    // Slide destination (not also a source): no ratchet — legato arrival plays normally.
+    if (get_slide_dac()) return clk_count < 3;
+    return clk_count < 3;                              // normal note
   }
 
   /// Returns true when this MIDI clock tick is a ratchet retrigger within the current step
