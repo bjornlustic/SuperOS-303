@@ -11,6 +11,7 @@
  *   13h  Host→303  Request all 16 patterns (303 sends sixteen 11h messages, queued).
  *   14h  303→Host  ACK/NAK: <status> 0=ok 1=bad_checksum 2=bad_pattern 3=blocked_clock
  *   15h  303→Host  Step position: <pat:0..15> <step:0..63>  (sent each 16th while running)
+ *   19h  303→Host  Step lock: <pat:0..15> <step:0..63> <locked:0|1>
  *
  * Config commands:
  *   20h  Host→303  Request config
@@ -195,9 +196,10 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     dump_try_advance();
     break;
   case 0x20: { // request config
-    const uint8_t fl = GlobalSettings.midi_clock_receive ? 1 : 0;
-    const uint8_t inner[4] = {0x7D, 0x21, GlobalSettings.midi_channel, fl};
-    tx_push_message(inner, 4);
+    const uint8_t fl  = GlobalSettings.midi_clock_receive ? 1 : 0;
+    const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
+    const uint8_t inner[5] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir};
+    tx_push_message(inner, 5);
     break;
   }
   case 0x22: { // set config
@@ -206,13 +208,19 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t fl = p[3];
     if (ch <= 16) GlobalSettings.midi_channel = ch;
     GlobalSettings.midi_clock_receive = (fl & 1) != 0;
+    if (n >= 5 && g_eng) {
+      const SequenceDirection d = static_cast<SequenceDirection>(p[4] & 0x07);
+      g_eng->SetDirection(d);
+      GlobalSettings.sequence_direction = static_cast<uint8_t>(d);
+    }
     GlobalSettings.save_midi_to_storage();
     midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive);
     send_ack(0);
     // Echo back new config
-    const uint8_t nfl = GlobalSettings.midi_clock_receive ? 1 : 0;
-    const uint8_t reply[4] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl};
-    tx_push_message(reply, 4);
+    const uint8_t nfl  = GlobalSettings.midi_clock_receive ? 1 : 0;
+    const uint8_t ndir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
+    const uint8_t reply[5] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl, ndir};
+    tx_push_message(reply, 5);
     break;
   }
   default:
@@ -360,14 +368,53 @@ void midi_audition_note_off() {
 
 // --- Step position broadcast (SysEx 0x15) ---------------------------------------
 void midi_send_step_position(uint8_t pat, uint8_t step) {
-  const uint8_t inner[4] = {0x7D, 0x15, pat & 0x0F, step & 0x3F};
+  const uint8_t inner[4] = {0x7D, 0x15, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F)};
   tx_push_message(inner, 4);
+}
+
+// --- Length update broadcast (SysEx 0x18) ----------------------------------------
+void midi_send_length_update(uint8_t pat, uint8_t len) {
+  const uint8_t inner[4] = {0x7D, 0x18, (uint8_t)(pat & 0x0F), (uint8_t)(len & 0x3F)};
+  tx_push_message(inner, 4);
+}
+
+// --- Direction update broadcast (SysEx 0x17) -------------------------------------
+void midi_send_direction_update(uint8_t direction) {
+  const uint8_t inner[3] = {0x7D, 0x17, (uint8_t)(direction & 0x07)};
+  tx_push_message(inner, 3);
+}
+
+// --- Metronome MIDI notes --------------------------------------------------------
+static uint8_t s_metro_note_on = 0;
+
+void midi_metronome_tick(bool first_beat) {
+  // E5 = MIDI 76 (accented downbeat), E6 = MIDI 88 (all other beats)
+  const uint8_t note = first_beat ? 76 : 88;
+  const uint8_t vel  = first_beat ? 127 : 80;
+  if (s_metro_note_on) {
+    MIDI.sendNoteOff(s_metro_note_on, 0, static_cast<byte>(out_ch()));
+  }
+  MIDI.sendNoteOn(note, vel, static_cast<byte>(out_ch()));
+  s_metro_note_on = note;
+}
+
+void midi_metronome_stop() {
+  if (s_metro_note_on) {
+    MIDI.sendNoteOff(s_metro_note_on, 0, static_cast<byte>(out_ch()));
+    s_metro_note_on = 0;
+  }
 }
 
 // --- Full pattern broadcast (SysEx 0x11) ----------------------------------------
 // Used after hardware edits that change the whole pattern (e.g. Clear).
 void midi_send_pattern_update(uint8_t pat) {
   enqueue_pattern_reply(pat & 0x0F);
+}
+
+// --- Step lock broadcast (SysEx 0x19) -------------------------------------------
+void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked) {
+  const uint8_t inner[5] = {0x7D, 0x19, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), locked ? 1u : 0u};
+  tx_push_message(inner, 5);
 }
 
 // --- Step edit broadcast (SysEx 0x16) -------------------------------------------

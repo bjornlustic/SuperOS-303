@@ -44,3 +44,20 @@ void midi_send_pattern_update(uint8_t pat);
 /// web editor can reflect 303 hardware edits in real time.
 /// Format: F0 7D 16 <pat:0-15> <step:0-63> <pitch_lo7> <pitch_hi1> <time_nibble> F7
 void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble);
+
+/// Broadcast pattern length change to host (SysEx 0x18).
+/// Format: F0 7D 18 <pat:0-15> <length:1-64> F7
+void midi_send_length_update(uint8_t pat, uint8_t len);
+
+/// Broadcast sequencer direction change to host (SysEx 0x17).
+/// Format: F0 7D 17 <direction:0-4> F7
+void midi_send_direction_update(uint8_t direction);
+
+/// Broadcast a single step-lock toggle to host (SysEx 0x19).
+/// Format: F0 7D 19 <pat:0-15> <step:0-63> <locked:0|1> F7
+void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
+
+/// Play a metronome tick note via MIDI (E3 on first beat of pattern, E4 otherwise).
+void midi_metronome_tick(bool first_beat);
+/// Stop the open metronome note (on mode exit / clock stop).
+void midi_metronome_stop();
