@@ -65,6 +65,16 @@ static bool    s_len_black_pressed = false;
 
 static Engine engine;
 
+// Pattern chain: while stopped, hold anchor key + tap adjacent keys to build a chain
+// (same bank, consecutive, max 4).  While playing, hold any chain key to loop that pattern.
+static uint8_t s_chain_pats[4]    = {0, 0, 0, 0};
+static uint8_t s_chain_len        = 0;
+static uint8_t s_chain_pos        = 0;
+static bool    s_chain_active     = false;
+static uint8_t s_chain_anchor_key = 0xff; // key index 0-7; 0xff = not building
+static uint8_t s_chain_bank       = 0;    // bank (0=A, 1=B) of the chain being built
+static bool    s_chain_hold_loop  = false;// true this frame when a chain key is held for looping
+
 // =============================================================================
 // Setup menu: hold FUNCTION + press CLEAR (TAP not held) → main menu.
 //   C → MIDI channel (C# + white keys 1–8, D# then 9–16; CLEAR → main).
@@ -447,36 +457,122 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
-  case NORMAL_MODE:
+  case NORMAL_MODE: {
+    const uint8_t bank = engine.get_patsel() >> 3;
+
+    // ── LEDs ──
     // flash LED for current pattern
     Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
-    // solid LED for queued pattern
-    if (engine.get_patsel() != engine.get_next())
-      Leds::Set(OutputIndex(engine.get_next() & 0x7), true);
-    Leds::Set(ACCENT_KEY_LED, !(engine.get_patsel() >> 3)); // A
-    Leds::Set(SLIDE_KEY_LED,   (engine.get_patsel() >> 3)); // B
+    // chain members (or queued pattern when no chain) shown solid
+    if (s_chain_active && s_chain_len > 1) {
+      for (uint8_t ci = 0; ci < s_chain_len; ++ci)
+        if (s_chain_pats[ci] != engine.get_patsel())
+          Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
+    } else if (s_chain_anchor_key != 0xff) {
+      // while building: show tentative chain solid
+      for (uint8_t ci = 0; ci < s_chain_len; ++ci)
+        Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
+    } else {
+      if (engine.get_patsel() != engine.get_next())
+        Leds::Set(OutputIndex(engine.get_next() & 0x7), true);
+    }
+    Leds::Set(ACCENT_KEY_LED, !bank); // A
+    Leds::Set(SLIDE_KEY_LED,   bank); // B
 
     if (clk_run && write_mode) {
       Leds::Set(OutputIndex(engine.get_time_pos() & 0x7), true);
       Leds::Set(OutputIndex(CSHARP_KEY_LED + (engine.get_time_pos() >> 3)), true);
     }
-    // Pattern select inputs
-    for (uint8_t i = 0; i < 8; ++i) {
-      if (inputs[i].rising()) {
-        const uint8_t patsel = (engine.get_patsel() >> 3) * 8 + i;
-        if (clear_mod) {
-          engine.ClearPattern(patsel);
-          pattern_cleared_flash_timer = 0;
-          midi_send_pattern_update(patsel);
-        } else
-          engine.SetPattern(patsel, !clk_run);
+
+    // ── Pattern select inputs ──
+    if (clk_run && s_chain_active && s_chain_len > 1) {
+      // Running in chain: detect hold-to-loop, key press clears chain
+      s_chain_hold_loop = false;
+      for (uint8_t ci = 0; ci < s_chain_len; ++ci) {
+        if (s_chain_pats[ci] == engine.get_patsel() &&
+            inputs[s_chain_pats[ci] & 0x7].held()) {
+          s_chain_hold_loop = true;
+          break;
+        }
+      }
+      for (uint8_t i = 0; i < 8; ++i) {
+        if (inputs[i].rising()) {
+          s_chain_active     = false;
+          s_chain_len        = 0;
+          s_chain_anchor_key = 0xff;
+          engine.SetPattern(bank * 8 + i, false);
+        }
+      }
+    } else if (!clk_run) {
+      // Stopped: chain building
+      if (s_chain_anchor_key == 0xff) {
+        // No anchor yet — first key press starts one
+        for (uint8_t i = 0; i < 8; ++i) {
+          if (inputs[i].rising()) {
+            if (clear_mod) {
+              engine.ClearPattern(bank * 8 + i);
+              pattern_cleared_flash_timer = 0;
+              midi_send_pattern_update(bank * 8 + i);
+            } else {
+              s_chain_anchor_key = i;
+              s_chain_bank       = bank;
+              s_chain_pats[0]    = bank * 8 + i;
+              s_chain_len        = 1;
+              s_chain_active     = false;
+              s_chain_hold_loop  = false;
+              engine.SetPattern(bank * 8 + i, true);
+            }
+            break;
+          }
+        }
+      } else {
+        // Anchor is held — watch for taps on other keys to extend chain
+        for (uint8_t i = 0; i < 8; ++i) {
+          if (i == s_chain_anchor_key) continue;
+          if (inputs[i].rising() && s_chain_bank == bank) {
+            uint8_t lo = (s_chain_anchor_key < i) ? s_chain_anchor_key : i;
+            uint8_t hi = (s_chain_anchor_key > i) ? s_chain_anchor_key : i;
+            if (hi - lo > 3) hi = lo + 3; // cap at 4 patterns
+            s_chain_len = hi - lo + 1;
+            for (uint8_t ci = 0; ci < s_chain_len; ++ci)
+              s_chain_pats[ci] = bank * 8 + lo + ci;
+          }
+        }
+        // Anchor released: commit chain if len > 1, else single-select
+        if (inputs[s_chain_anchor_key].falling()) {
+          if (s_chain_len > 1) {
+            s_chain_active = true;
+            s_chain_pos    = 0;
+            engine.SetPattern(s_chain_pats[0], true);
+          } else {
+            s_chain_active = false;
+          }
+          s_chain_anchor_key = 0xff;
+        }
+      }
+    } else {
+      // Running without chain: normal single-pattern select
+      for (uint8_t i = 0; i < 8; ++i) {
+        if (inputs[i].rising())
+          engine.SetPattern(bank * 8 + i, false);
       }
     }
-    if (inputs[ACCENT_KEY].rising())
+
+    // Bank switch — always available; clears any active chain
+    if (inputs[ACCENT_KEY].rising()) {
+      s_chain_active     = false;
+      s_chain_len        = 0;
+      s_chain_anchor_key = 0xff;
       engine.SetPattern(engine.get_patsel() % 8, !clk_run); // A
-    if (inputs[SLIDE_KEY].rising())
+    }
+    if (inputs[SLIDE_KEY].rising()) {
+      s_chain_active     = false;
+      s_chain_len        = 0;
+      s_chain_anchor_key = 0xff;
       engine.SetPattern(engine.get_patsel() % 8 + 8, !clk_run); // B
+    }
     break;
+  }
   }
 
   const bool pat_clr_flash = pattern_cleared_flash_timer < PATTERN_CLEARED_FLASH_MS;
@@ -651,6 +747,19 @@ void loop() {
     } else {
       ProcessDefault(write_mode, clear_mod, clk_run);
     }
+  }
+
+  // ── Pattern chain advance ──
+  // Keep the next chain pattern queued; on hold-loop, re-queue current.
+  if (s_chain_active && s_chain_len > 1 && clk_run) {
+    const uint8_t cur = engine.get_patsel();
+    for (uint8_t ci = 0; ci < s_chain_len; ++ci) {
+      if (s_chain_pats[ci] == cur) { s_chain_pos = ci; break; }
+    }
+    const uint8_t next_ci = s_chain_hold_loop
+      ? s_chain_pos
+      : (s_chain_pos + 1) % s_chain_len;
+    engine.SetPattern(s_chain_pats[next_ci]);
   }
 
   // show all pressed buttons

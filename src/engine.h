@@ -1083,11 +1083,12 @@ struct Engine {
 
   bool get_gate() const {
     if (resting) return false;
+    // Slide destination: never ratchet — gate arrives via held CV from source.
+    // Check before ratchet logic so a destination with a ratchet value set doesn't fire.
+    // Steps that are both a destination AND a source hold the gate all 6 clocks.
+    if (get_slide_dac()) return slide_gate ? true : (clk_count < 3);
     const uint8_t r = get_sequence().get_ratchet_val(uint8_t(get_sequence().time_pos));
     // Slide source with no ratchet: hold gate HIGH all 6 clocks to bridge into destination.
-    // Must be checked before get_slide_dac() so that steps which are both a slide destination
-    // AND a slide source (consecutive slides, or tie steps in a slide chain) hold the gate
-    // rather than dropping it at clock 3.
     if (slide_gate && r == 0) return true;
     // Slide source with ratchet: use ratchet pattern but pin clock 5 HIGH so the gate
     // stays up through the step boundary and glides into the destination.
@@ -1096,8 +1097,6 @@ struct Engine {
       case 2: return (uint8_t(clk_count) % 2u) == 0u || (slide_gate && clk_count == 5); // 3x
       default: break;                                  // r==0 (slide_gate false) falls through
     }
-    // Slide destination (not also a source): no ratchet — legato arrival plays normally.
-    if (get_slide_dac()) return clk_count < 3;
     return clk_count < 3;                              // normal note
   }
 

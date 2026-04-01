@@ -170,6 +170,7 @@
     .pat-pill.is-playing.is-active { animation: pill-blink-inv 0.5s steps(1) infinite; }
     .pat-pill.is-copied { box-shadow: inset 0 0 0 2px var(--red); color: var(--black); font-weight: 900; }
     .pat-pill.is-copied.is-active { box-shadow: inset 0 0 0 2px var(--red); }
+    .pat-pill.is-chained:not(.is-playing):not(.is-active) { background: var(--gray-2); outline: 2px solid var(--black); outline-offset: -2px; color: var(--black); font-weight: 700; }
     @keyframes pill-blink     { 0%,100%{background:var(--white)} 50%{background:var(--gray-2)} }
     @keyframes pill-blink-inv { 0%,100%{background:var(--black)} 50%{background:var(--gray-4)} }
 
@@ -1177,6 +1178,10 @@
   var playingPat  = -1;  // hardware-reported playing pattern (0-15), -1 = unknown
   var playingStep = -1;  // hardware-reported playing step
   var queuedPat   = -1;  // pattern queued for next play (sent via PC)
+  var patChain      = [];   // active chain: array of 2-4 pattern indices (same bank, consecutive)
+  var chainDragging = false;
+  var chainDragMoved = false;
+  var chainAnchor   = -1;   // pattern index where drag started
   var clipboard   = null;
   /** Last pattern copied (for pill highlight). */
   var copiedFrom  = null; // { g, p } or null
@@ -1217,7 +1222,10 @@
       var btn = document.createElement('button');
       btn.className = 'pat-pill';
       btn.dataset.pat = p;
-      btn.addEventListener('click', function() { pillClick(p); });
+      btn.addEventListener('pointerdown', function(e) {
+        chainAnchor = p; chainDragMoved = false; chainDragging = true;
+        e.preventDefault();
+      });
       pillsAEl.appendChild(btn);
     })(pi);
   }
@@ -1226,13 +1234,57 @@
       var btn = document.createElement('button');
       btn.className = 'pat-pill';
       btn.dataset.pat = p;
-      btn.addEventListener('click', function() { pillClick(p); });
+      btn.addEventListener('pointerdown', function(e) {
+        chainAnchor = p; chainDragMoved = false; chainDragging = true;
+        e.preventDefault();
+      });
       pillsBEl.appendChild(btn);
     })(pi);
   }
 
+  // ── Chain drag: document-level pointer handlers ──────────────────────
+  function chainBuild(a, b) {
+    if ((a < 8) !== (b < 8)) return [a]; // different banks: no chain
+    var lo = Math.min(a, b), hi = Math.min(Math.max(a, b), lo + 3);
+    var arr = [];
+    for (var i = lo; i <= hi; i++) arr.push(i);
+    return arr;
+  }
+
+  document.addEventListener('pointermove', function(e) {
+    if (!chainDragging) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    while (el && !el.classList.contains('pat-pill')) el = el.parentElement;
+    if (!el) return;
+    var hoverPat = parseInt(el.dataset.pat, 10);
+    if (isNaN(hoverPat) || hoverPat === chainAnchor) return;
+    var newChain = chainBuild(chainAnchor, hoverPat);
+    if (newChain.length > 1 &&
+        (newChain.length !== patChain.length || newChain[0] !== patChain[0] || newChain[newChain.length-1] !== patChain[patChain.length-1])) {
+      chainDragMoved = true;
+      patChain = newChain;
+      refreshAllPills();
+    }
+  });
+
+  document.addEventListener('pointerup', function() {
+    if (!chainDragging) return;
+    chainDragging = false;
+    if (chainDragMoved && patChain.length > 1) {
+      // Activate chain, switch to first pattern
+      switchToPat(patChain[0]);
+      if (midiOut) { sendProgramChange(patChain[0]); queuedPat = patChain[0]; }
+    } else {
+      // Simple click — clear chain and act normally
+      patChain = [];
+      pillClick(chainAnchor);
+    }
+    refreshAllPills();
+  });
+
   function pillClick(p) {
     var wasActive = (p === activePat && /* same group */ true);
+    patChain = []; // single click clears any chain
     switchToPat(p);
     // If clock is running, queue this pattern (Program Change to hardware)
     // Hardware will switch at end of current pattern
@@ -1277,6 +1329,7 @@
       pill.classList.toggle('is-dirty',    isDirty(activeGroup, p));
       pill.classList.toggle('is-playing',  p === playingPat);
       pill.classList.toggle('is-queued',   p === queuedPat && p !== activePat && p !== playingPat);
+      pill.classList.toggle('is-chained',  patChain.indexOf(p) !== -1);
       pill.classList.toggle('is-copied',   copiedFrom && copiedFrom.g === activeGroup && copiedFrom.p === p);
       pill.textContent = String(p + 1);
     });
@@ -1725,6 +1778,15 @@
     if (pat !== playingPat) {
       playingPat = pat;
       if (pat === queuedPat) queuedPat = -1;
+      // Chain advance: keep next chain pattern queued
+      if (patChain.length > 1) {
+        var ci = patChain.indexOf(pat);
+        if (ci !== -1) {
+          var nextPat = patChain[(ci + 1) % patChain.length];
+          sendProgramChange(nextPat);
+          queuedPat = nextPat;
+        }
+      }
       refreshAllPills();
     }
     playingStep = step;
