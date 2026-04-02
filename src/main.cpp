@@ -477,8 +477,10 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
   case TIME_MODE:
     if (clk_run) {
       PrintTime();
-      Leds::Set(OutputIndex(engine.get_time_pos() & 0x7), true);
-      Leds::Set(OutputIndex(CSHARP_KEY_LED + (engine.get_time_pos() >> 3)), true);
+      { const uint8_t tp = engine.get_time_pos();
+        Leds::Set(OutputIndex(tp & 0x7), true);
+        Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
+        if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4); }
     }
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
@@ -508,8 +510,10 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     Leds::Set(SLIDE_KEY_LED,   bank); // B
 
     if (clk_run && write_mode) {
-      Leds::Set(OutputIndex(engine.get_time_pos() & 0x7), true);
-      Leds::Set(OutputIndex(CSHARP_KEY_LED + (engine.get_time_pos() >> 3)), true);
+      const uint8_t tp = engine.get_time_pos();
+      Leds::Set(OutputIndex(tp & 0x7), true);
+      Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
+      if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4);
     }
 
     // ── Pattern select inputs ──
