@@ -64,3 +64,14 @@ void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
 void midi_metronome_tick(bool first_beat);
 /// Stop the open metronome note (on mode exit / clock stop).
 void midi_metronome_stop();
+
+/// Broadcast current chain state to host (SysEx 0x1A).
+/// active_len=0 means no chain active. Patterns at indices >= their respective lengths are ignored.
+/// Format: F0 7D 1A <active_len:0-4> <a0> <a1> <a2> <a3> <queued_len:0-4> <q0> <q1> <q2> <q3> F7
+void midi_send_chain_state(uint8_t active_len, const uint8_t *active_pats,
+                            uint8_t queued_len, const uint8_t *queued_pats);
+
+/// Poll for chain state received from the host via SysEx 0x1A.
+/// Returns true and fills out parameters if a new chain state arrived since last call.
+bool midi_get_received_chain(uint8_t *out_active_len, uint8_t out_active_pats[4],
+                              uint8_t *out_queued_len, uint8_t out_queued_pats[4]);
