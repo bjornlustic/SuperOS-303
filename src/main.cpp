@@ -73,7 +73,13 @@ static uint8_t s_chain_pos        = 0;
 static bool    s_chain_active     = false;
 static uint8_t s_chain_anchor_key = 0xff; // key index 0-7; 0xff = not building
 static uint8_t s_chain_bank       = 0;    // bank (0=A, 1=B) of the chain being built
-static bool    s_chain_hold_loop  = false;// true this frame when a chain key is held for looping
+static bool     s_chain_hold_loop    = false; // true this frame: loop current pattern
+static uint8_t  s_chain_queued[4]    = {0, 0, 0, 0};
+static uint8_t  s_chain_queue_len    = 0;     // ≥1 = pattern(s) waiting to activate
+static uint8_t  s_chain_hold_key     = 0xff;  // key being tracked for tap/hold
+static uint32_t s_chain_hold_ms      = 0;     // millis() when hold key was pressed
+static bool     s_chain_hold_crossed = false; // hold threshold crossed
+static const uint16_t CHAIN_HOLD_MS  = 300;   // tap vs. hold threshold (ms)
 
 // =============================================================================
 // Setup menu: hold FUNCTION + press CLEAR (TAP not held) → main menu.
@@ -203,8 +209,8 @@ static uint8_t resolve_octave() {
 // Returns the MIDI note number (36-108) written this call, or 0 if nothing was written.
 uint8_t input_pitch(bool mod = false, bool clk_run = false) {
   if (clk_run && engine.is_step_locked()) return 0;
-  engine.get_sequence().ensure_pitch_edit_entry();
   if (mod) {
+    engine.get_sequence().ensure_pitch_edit_entry();
     // TIE and REST steps cannot be edited — only NOTE steps carry pitch/accent/slide/octave.
     if (engine.get_sequence().get_time() != 1) return 0;
     bool flag_changed = false;
@@ -218,6 +224,8 @@ uint8_t input_pitch(bool mod = false, bool clk_run = false) {
           engine.get_sequence().pitch[pp],
           engine.get_sequence().get_time());
     }
+  } else {
+    engine.get_sequence().ensure_pitch_write_entry();
   }
   // Higher matrix indices first: high C before low C to avoid crosstalk ghosts.
   for (int pi = int(ARRAY_SIZE(pitched_keys)) - 1; pi >= 0; --pi) {
@@ -236,16 +244,21 @@ uint8_t input_pitch(bool mod = false, bool clk_run = false) {
         const uint8_t oct   = resolve_octave();
         const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
                               (inputs[SLIDE_KEY].held()   << 7);
-        // Write current step, notify web editor, capture MIDI note, then advance.
+        const uint8_t pp = uint8_t(engine.get_sequence().pitch_pos & (MAX_STEPS - 1));
+        // Write pitch into this step's slot without touching time data.
+        // REST/TIE steps hold their pitch for when they later become NOTE steps.
         engine.SetPitch(i + 13 * oct, flags);
-        {
-          const uint8_t pp = uint8_t(engine.get_sequence().pitch_pos & (MAX_STEPS - 1));
-          midi_send_step_update(engine.get_patsel(), pp,
-              engine.get_sequence().pitch[pp],
-              engine.get_sequence().get_time());
-        }
-        const uint8_t written_note = uint8_t(engine.get_midi_note()); // before advance
-        engine.get_sequence().advance_pitch_to_next_note();
+        midi_send_step_update(engine.get_patsel(), pp,
+            engine.get_sequence().pitch[pp],
+            engine.get_sequence().get_time());
+        // Compute audition note directly from packed pitch — engine.get_midi_note()
+        // returns PITCH_DEFAULT for REST/TIE steps, not what was just written.
+        const uint8_t written_note = uint8_t(36 + unpack_pitch_linear(uint8_t(i + 13 * oct)));
+        // Linear advance through all steps (not just NOTE steps).
+        const uint8_t len = engine.get_length();
+        engine.get_sequence().first_step = false;
+        engine.get_sequence().pitch_pos = int((unsigned(pp) + 1u) % unsigned(len));
+        engine.get_sequence().time_pos   = engine.get_sequence().pitch_pos;
         return written_note;
       }
     }
@@ -332,22 +345,21 @@ void setup() {
 // Edit-mode LED feedback — current step pitch / time / flags
 // =============================================================================
 void PrintPitch() {
-  // Only light LEDs on NOTE steps — TIE and REST steps are invisible in pitch mode.
-  if (engine.get_sequence().get_time() != 1) return;
-  const uint8_t semitone = engine.get_semitone();
-  if (semitone != PITCH_EMPTY) {
-    const Sequence &s = engine.get_sequence();
-    const uint8_t note_k = s.get_note_key_index();
-    Leds::Set(pitch_leds[note_k], true);
-
+  // Show pitch data for all step types so the user can see what is stored at each position.
+  // Accent/slide LEDs are only lit for NOTE steps (they don't apply to REST/TIE).
+  const Sequence &s = engine.get_sequence();
+  const uint8_t pp = uint8_t(s.pitch_pos & (MAX_STEPS - 1));
+  if (s.pitch_is_empty(pp)) return;
+  const uint8_t note_k = s.get_note_key_index();
+  Leds::Set(pitch_leds[note_k], true);
+  const uint8_t ladder = s.get_octave();
+  Leds::Set(DOWN_KEY_LED, ladder == OCTAVE_DOWN || ladder == OCTAVE_DOUBLE_UP);
+  const bool redundant_up = note_k == PITCH_KEY_HIGH_C && s.get_octave_button() == 1;
+  Leds::Set(UP_KEY_LED, ladder > OCTAVE_ZERO && !redundant_up);
+  if (s.get_time() == 1) {
+    // Accent and slide flags are only meaningful on NOTE steps.
     Leds::Set(ACCENT_KEY_LED, s.get_accent() != 0);
     Leds::Set(SLIDE_KEY_LED,  s.get_slide());
-    const uint8_t ladder = s.get_octave();
-    Leds::Set(DOWN_KEY_LED,
-              ladder == OCTAVE_DOWN || ladder == OCTAVE_DOUBLE_UP);
-    const bool redundant_up =
-        note_k == PITCH_KEY_HIGH_C && s.get_octave_button() == 1;
-    Leds::Set(UP_KEY_LED, ladder > OCTAVE_ZERO && !redundant_up);
   }
 }
 void PrintTime() {
@@ -461,21 +473,25 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     const uint8_t bank = engine.get_patsel() >> 3;
 
     // ── LEDs ──
-    // flash LED for current pattern
-    Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
-    // chain members (or queued pattern when no chain) shown solid
+    // Set solid LEDs first, then flash current playing on top so it always blinks.
+    // Show all queued patterns (chain or single) solid while waiting to activate.
+    for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
+      Leds::Set(OutputIndex(s_chain_queued[ci] & 0x7), true);
     if (s_chain_active && s_chain_len > 1) {
+      // Active chain: all members solid (current playing overridden below)
       for (uint8_t ci = 0; ci < s_chain_len; ++ci)
-        if (s_chain_pats[ci] != engine.get_patsel())
-          Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
+        Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
     } else if (s_chain_anchor_key != 0xff) {
-      // while building: show tentative chain solid
+      // Building chain (stopped): tentative chain solid
       for (uint8_t ci = 0; ci < s_chain_len; ++ci)
         Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
     } else {
+      // No chain: show queued pattern solid
       if (engine.get_patsel() != engine.get_next())
         Leds::Set(OutputIndex(engine.get_next() & 0x7), true);
     }
+    // Current playing always flashes on top of everything
+    Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
     Leds::Set(ACCENT_KEY_LED, !bank); // A
     Leds::Set(SLIDE_KEY_LED,   bank); // B
 
@@ -486,27 +502,75 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
 
     // ── Pattern select inputs ──
     if (clk_run && s_chain_active && s_chain_len > 1) {
-      // Running in chain: detect hold-to-loop, key press clears chain
-      s_chain_hold_loop = false;
-      for (uint8_t ci = 0; ci < s_chain_len; ++ci) {
-        if (s_chain_pats[ci] == engine.get_patsel() &&
-            inputs[s_chain_pats[ci] & 0x7].held()) {
-          s_chain_hold_loop = true;
-          break;
+      // Running in chain:
+      //   new key pressed while another key is already held → queue new chain
+      //   single key tap (quick press+release)              → queue single pattern
+      //   single key hold (> CHAIN_HOLD_MS)                → loop current pattern
+      const uint32_t now = (uint32_t)millis();
+
+      // 1. Detect hold+new-key: any rising key with another key already held
+      bool chain_built = false;
+      if (s_chain_queue_len == 0) { // don't overwrite an existing queue
+        for (uint8_t ni = 0; ni < 8 && !chain_built; ++ni) {
+          if (!inputs[ni].rising()) continue;
+          for (uint8_t hi2 = 0; hi2 < 8; ++hi2) {
+            if (hi2 == ni || !inputs[hi2].read()) continue;
+            const uint8_t lo2 = (hi2 < ni) ? hi2 : ni;
+            uint8_t       ht  = (hi2 > ni) ? hi2 : ni;
+            if (ht - lo2 > 3) ht = lo2 + 3;
+            s_chain_queue_len = ht - lo2 + 1;
+            for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
+              s_chain_queued[ci] = bank * 8 + lo2 + ci;
+            s_chain_hold_key     = 0xff; // cancel any pending tap
+            s_chain_hold_crossed = false;
+            chain_built = true;
+            break;
+          }
         }
       }
-      for (uint8_t i = 0; i < 8; ++i) {
-        if (inputs[i].rising()) {
-          s_chain_active     = false;
-          s_chain_len        = 0;
-          s_chain_anchor_key = 0xff;
-          engine.SetPattern(bank * 8 + i, false);
+
+      // 2. Track single key for tap/hold (only when pressed alone)
+      if (!chain_built) {
+        if (s_chain_hold_key == 0xff) {
+          for (uint8_t i = 0; i < 8; ++i) {
+            if (!inputs[i].rising()) continue;
+            bool other = false;
+            for (uint8_t j = 0; j < 8; ++j)
+              if (j != i && inputs[j].read()) { other = true; break; }
+            if (!other) {
+              s_chain_hold_key     = i;
+              s_chain_hold_ms      = now;
+              s_chain_hold_crossed = false;
+            }
+            break;
+          }
+        }
+
+        // Update hold threshold
+        if (s_chain_hold_key != 0xff && !s_chain_hold_crossed &&
+            (now - s_chain_hold_ms) >= CHAIN_HOLD_MS)
+          s_chain_hold_crossed = true;
+
+        // Hold key released
+        if (s_chain_hold_key != 0xff && inputs[s_chain_hold_key].falling()) {
+          if (!s_chain_hold_crossed) {
+            // Tap: queue single pattern — chain finishes current then goes to it
+            s_chain_queue_len = 1;
+            s_chain_queued[0] = bank * 8 + s_chain_hold_key;
+          }
+          // else hold released: continue chain normally
+          s_chain_hold_key     = 0xff;
+          s_chain_hold_crossed = false;
         }
       }
+
+      // Hold-to-loop: threshold crossed, pure single-key hold
+      s_chain_hold_loop = (s_chain_hold_key != 0xff && s_chain_hold_crossed);
+
     } else if (!clk_run) {
       // Stopped: chain building
+      s_chain_hold_key = 0xff; // clear stale running state
       if (s_chain_anchor_key == 0xff) {
-        // No anchor yet — first key press starts one
         for (uint8_t i = 0; i < 8; ++i) {
           if (inputs[i].rising()) {
             if (clear_mod) {
@@ -526,19 +590,17 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
           }
         }
       } else {
-        // Anchor is held — watch for taps on other keys to extend chain
         for (uint8_t i = 0; i < 8; ++i) {
           if (i == s_chain_anchor_key) continue;
           if (inputs[i].rising() && s_chain_bank == bank) {
             uint8_t lo = (s_chain_anchor_key < i) ? s_chain_anchor_key : i;
             uint8_t hi = (s_chain_anchor_key > i) ? s_chain_anchor_key : i;
-            if (hi - lo > 3) hi = lo + 3; // cap at 4 patterns
+            if (hi - lo > 3) hi = lo + 3;
             s_chain_len = hi - lo + 1;
             for (uint8_t ci = 0; ci < s_chain_len; ++ci)
               s_chain_pats[ci] = bank * 8 + lo + ci;
           }
         }
-        // Anchor released: commit chain if len > 1, else single-select
         if (inputs[s_chain_anchor_key].falling()) {
           if (s_chain_len > 1) {
             s_chain_active = true;
@@ -552,23 +614,25 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       }
     } else {
       // Running without chain: normal single-pattern select
+      s_chain_hold_key  = 0xff;
+      s_chain_hold_loop = false;
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].rising())
           engine.SetPattern(bank * 8 + i, false);
       }
     }
 
-    // Bank switch — always available; clears any active chain
+    // Bank switch — always clears chain
     if (inputs[ACCENT_KEY].rising()) {
-      s_chain_active     = false;
-      s_chain_len        = 0;
-      s_chain_anchor_key = 0xff;
+      s_chain_active     = false; s_chain_len       = 0;
+      s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
+      s_chain_hold_key   = 0xff;
       engine.SetPattern(engine.get_patsel() % 8, !clk_run); // A
     }
     if (inputs[SLIDE_KEY].rising()) {
-      s_chain_active     = false;
-      s_chain_len        = 0;
-      s_chain_anchor_key = 0xff;
+      s_chain_active     = false; s_chain_len       = 0;
+      s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
+      s_chain_hold_key   = 0xff;
       engine.SetPattern(engine.get_patsel() % 8 + 8, !clk_run); // B
     }
     break;
@@ -750,16 +814,41 @@ void loop() {
   }
 
   // ── Pattern chain advance ──
-  // Keep the next chain pattern queued; on hold-loop, re-queue current.
   if (s_chain_active && s_chain_len > 1 && clk_run) {
     const uint8_t cur = engine.get_patsel();
-    for (uint8_t ci = 0; ci < s_chain_len; ++ci) {
-      if (s_chain_pats[ci] == cur) { s_chain_pos = ci; break; }
+
+    // Activate queued item when its first pattern starts playing
+    if (s_chain_queue_len > 0 && cur == s_chain_queued[0]) {
+      if (s_chain_queue_len > 1) {
+        // Promote full queued chain
+        for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
+          s_chain_pats[ci] = s_chain_queued[ci];
+        s_chain_len = s_chain_queue_len;
+        s_chain_pos = 0;
+      } else {
+        // Single pattern: deactivate chain, just play this pattern
+        s_chain_active = false;
+        s_chain_len    = 0;
+      }
+      s_chain_queue_len = 0;
     }
-    const uint8_t next_ci = s_chain_hold_loop
-      ? s_chain_pos
-      : (s_chain_pos + 1) % s_chain_len;
-    engine.SetPattern(s_chain_pats[next_ci]);
+
+    if (s_chain_active && s_chain_len > 1) {
+      // Update position in active chain
+      for (uint8_t ci = 0; ci < s_chain_len; ++ci)
+        if (s_chain_pats[ci] == cur) { s_chain_pos = ci; break; }
+
+      // Queue next: hold-loop > queued chain > advance
+      uint8_t next_pat;
+      if (s_chain_hold_loop) {
+        next_pat = cur;
+      } else if (s_chain_queue_len > 0) {
+        next_pat = s_chain_queued[0];
+      } else {
+        next_pat = s_chain_pats[(s_chain_pos + 1) % s_chain_len];
+      }
+      engine.SetPattern(next_pat);
+    }
   }
 
   // show all pressed buttons
@@ -827,11 +916,30 @@ void loop() {
           s_metro_tap_held_this_beat = false;
           s_metro_prev_note          = false;
           s_metro_has_activity       = false;
-          // Instantly clear all time data to REST so user starts fresh
+          // Collect all NOTE pitches + existing stash into stash area, then
+          // clear time and pitch so new taps start from a clean slate while
+          // preserving pitch content for NOTE steps recorded during tap-write.
           Sequence &seq = engine.get_sequence();
           const uint8_t len = engine.get_length();
-          for (uint8_t i = 0; i < len; ++i)
+          const uint8_t max_stash = uint8_t(MAX_STEPS - len);
+          uint8_t stash_buf[MAX_STEPS];
+          uint8_t stash_n = 0;
+          for (uint8_t i = 0; i < len && stash_n < max_stash; ++i) {
+            if (seq.time(i) == 1 && !seq.pitch_is_empty(i))
+              stash_buf[stash_n++] = seq.pitch[i];
+          }
+          const uint8_t old_stash = seq.get_stash_count();
+          for (uint8_t k = 0; k < old_stash && stash_n < max_stash; ++k) {
+            const uint8_t sb = seq.pitch[len + k];
+            stash_buf[stash_n++] = (sb == PITCH_EMPTY) ? PITCH_DEFAULT : sb;
+          }
+          for (uint8_t i = 0; i < len; ++i) {
             sequence_set_time_at(seq, i, 0);
+            seq.pitch[i] = PITCH_EMPTY;
+          }
+          for (uint8_t k = 0; k < stash_n; ++k)
+            seq.pitch[len + k] = stash_buf[k];
+          seq.set_stash_count(stash_n);
           engine.stale = true;
           midi_send_pattern_update(engine.get_patsel());
         }
@@ -872,7 +980,26 @@ void loop() {
         s_metro_prev_note = (tval != 0);
         s_metro_tap_held_this_beat          = false;
         s_metro_tap_released_since_last_beat = false;
-        sequence_set_time_at(engine.get_sequence(), write_step, tval);
+        Sequence &wseq = engine.get_sequence();
+        sequence_set_time_at(wseq, write_step, tval);
+        if (tval == 1) {
+          // NOTE step: pull pitch from stash if this slot is empty
+          if (wseq.pitch_is_empty(write_step)) {
+            const uint8_t sc = wseq.get_stash_count();
+            if (sc > 0) {
+              wseq.pitch[write_step] = wseq.pitch[len + 0];
+              for (uint8_t k = 1; k < sc; ++k)
+                wseq.pitch[len + k - 1] = wseq.pitch[len + k];
+              wseq.pitch[len + sc - 1] = PITCH_EMPTY;
+              wseq.set_stash_count(sc - 1);
+            } else {
+              wseq.pitch[write_step] = PITCH_DEFAULT;
+            }
+          }
+        } else {
+          // TIE or REST: slot must be empty
+          wseq.pitch[write_step] = PITCH_EMPTY;
+        }
         engine.stale = true;
         midi_send_step_update(engine.get_patsel(), write_step,
             engine.get_sequence().pitch[write_step], tval);
@@ -918,8 +1045,8 @@ void loop() {
       if (write_mode) {
         if (!clk_run) {
           if (engine.get_mode() == PITCH_MODE) {
-            engine.get_sequence().ensure_pitch_edit_entry();
-            // Audition current NOTE step; advance to next note happens on TAP falling.
+            engine.get_sequence().ensure_pitch_write_entry();
+            // Audition current step if it's a NOTE; advance happens on TAP falling.
             if (engine.get_sequence().get_time() == 1) {
               uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
               if (mn > 127) mn = 127;
@@ -952,12 +1079,14 @@ void loop() {
     if (inputs[TAP_NEXT].falling()) {
       s_tap_pitch_preview_gate = false;
       midi_audition_note_off(); // close any open audition note
-      // PITCH_MODE write: advance on release (so user sees current note while held),
-      // and exit to NORMAL_MODE when we've looped back to the first note.
+      // PITCH_MODE write: advance linearly on release, exit after full loop.
       if (!clk_run && write_mode && engine.get_mode() == PITCH_MODE) {
-        const uint8_t first_note = engine.get_sequence().first_note_idx();
-        engine.get_sequence().advance_pitch_to_next_note();
-        if (!wrap_edit && uint8_t(engine.get_sequence().pitch_pos) == first_note)
+        const uint8_t len = engine.get_length();
+        engine.get_sequence().first_step = false;
+        engine.get_sequence().pitch_pos =
+            int((unsigned(engine.get_sequence().pitch_pos) + 1u) % unsigned(len));
+        engine.get_sequence().time_pos = engine.get_sequence().pitch_pos;
+        if (!wrap_edit && engine.get_sequence().pitch_pos == 0)
           engine.SetMode(NORMAL_MODE, true);
       }
       if (!wrap_edit && !clk_run && engine.get_mode() == TIME_MODE &&
@@ -1001,11 +1130,11 @@ void loop() {
         s_tap_pitch_preview_gate = false;
         midi_audition_note_off();
       }
-      // Exit PITCH_MODE only after a full loop back to the first NOTE step.
+      // Exit PITCH_MODE after a full linear loop through all steps (back to step 0).
       // first_step is true until the first write+advance, preventing false exit on entry.
       if (!clk_run
           && !engine.get_sequence().first_step
-          && uint8_t(engine.get_sequence().pitch_pos) == engine.get_sequence().first_note_idx())
+          && engine.get_sequence().pitch_pos == 0)
         engine.SetMode(NORMAL_MODE, true);
     }
     // If mode exited while a write-preview gate was latched, release it on key-up.

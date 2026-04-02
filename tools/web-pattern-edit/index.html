@@ -170,9 +170,31 @@
     .pat-pill.is-playing.is-active { animation: pill-blink-inv 0.5s steps(1) infinite; }
     .pat-pill.is-copied { box-shadow: inset 0 0 0 2px var(--red); color: var(--black); font-weight: 900; }
     .pat-pill.is-copied.is-active { box-shadow: inset 0 0 0 2px var(--red); }
+
+    /* Edit Live toggle */
+    .edit-live-btn {
+      flex: 0 0 auto; margin-left: auto; padding: 0 14px; min-height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      border: none; border-left: var(--rule-sm);
+      background: var(--white); color: var(--gray-4);
+      font-family: var(--font); font-size: 9px; font-weight: 900;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      cursor: pointer; user-select: none; white-space: nowrap;
+      transition: background 0.08s, color 0.08s;
+    }
+    .edit-live-btn:hover:not(.is-on) { background: var(--gray-1); color: var(--black); }
+    .edit-live-btn.is-on { background: var(--black); color: var(--white); }
     .pat-pill.is-chained:not(.is-playing):not(.is-active) { background: var(--gray-2); outline: 2px solid var(--black); outline-offset: -2px; color: var(--black); font-weight: 700; }
+    .pat-pill.is-queued-chain:not(.is-playing):not(.is-active):not(.is-chained) { outline: 2px dashed var(--black); outline-offset: -2px; color: var(--black); }
+    .pat-pill.is-drag-chain:not(.is-playing):not(.is-active):not(.is-chained):not(.is-queued-chain) { background: var(--gray-1); outline: 2px dotted var(--black); outline-offset: -2px; color: var(--black); opacity: 0.75; }
     @keyframes pill-blink     { 0%,100%{background:var(--white)} 50%{background:var(--gray-2)} }
     @keyframes pill-blink-inv { 0%,100%{background:var(--black)} 50%{background:var(--gray-4)} }
+    .pat-pill-badge {
+      position: absolute; bottom: 1px; right: 2px;
+      font-size: 6px; font-weight: 900; line-height: 1;
+      opacity: 0.55; pointer-events: none;
+    }
+    .pat-pill.is-active .pat-pill-badge { opacity: 0.7; }
 
     /* ── Sequencer panel ── */
     .seq-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
@@ -457,6 +479,7 @@
     <div class="pat-pills" id="pillsA"></div>
     <div class="bank-label bank-label-sep">Bank B</div>
     <div class="pat-pills" id="pillsB"></div>
+    <button class="edit-live-btn" id="btnEditLive" title="Edit a pattern without changing what&#39;s playing">Edit Live</button>
   </div>
 
   <!-- Live + Edits + clipboard (above step grid) -->
@@ -893,11 +916,15 @@
   function pitchByteOr13(r) {
     return (r === 0xff || r === undefined) ? 13 : (r & 0xff);
   }
+  // Build pitch stream from slots that were NOTE *or* had user-written pitch data.
+  // This ensures pitches entered via PITCH_MODE write survive the first TIME_MODE reflow.
   function buildPitchStreamFromState(state, timesBefore, len) {
     var stream = [];
     for (var i = 0; i < len; i++) {
-      if (timesBefore[i] !== 1) continue;
-      stream.push(pitchByteOr13(state.step[i]));
+      var wasNote = (timesBefore[i] === 1);
+      var hasPitch = (state.step[i] !== 0xff && state.step[i] !== undefined);
+      if (wasNote || hasPitch)
+        stream.push(hasPitch ? pitchByteOr13(state.step[i]) : 13);
     }
     for (var k = 0; k < state.stash.length; k++)
       stream.push(pitchByteOr13(state.stash[k]));
@@ -908,12 +935,12 @@
     if (stashCount > maxS) stashCount = maxS;
     return stashCount;
   }
-  /// After R/N/T change: NOTE steps get sequential pitches from stream; extras go to stash; R/T cleared (0xff).
+  // Sequential redistribution with stash: NOTE steps get pitches in order from the stream;
+  // excess pitches go to stash tail; non-NOTE slots are cleared to 0xff.
   function reflowPitchesAfterTimeChange(blob, len, timesBefore, state) {
     var stream = buildPitchStreamFromState(state, timesBefore, len);
     var newNoteCount = 0;
     for (var i = 0; i < len; i++) if (getTime(blob, i) === 1) newNoteCount++;
-
     if (newNoteCount === 0) {
       var sc0 = clampStashToBlob(blob, len, stream.length);
       setStashCount(blob, sc0);
@@ -922,24 +949,18 @@
       for (var z = 0; z < len; z++) blob[z] = 0xff;
       return;
     }
-
     while (stream.length < newNoteCount) stream.push(13);
-
     var excess = stream.length - newNoteCount;
     var stashCount = clampStashToBlob(blob, len, excess);
     if (newNoteCount + stashCount < stream.length)
       stream = stream.slice(0, newNoteCount + stashCount);
-
     var notePos = [];
     for (var j = 0; j < len; j++) if (getTime(blob, j) === 1) notePos.push(j);
-
     for (var n = 0; n < notePos.length; n++)
       blob[notePos[n]] = clampPackedByte(stream[n] & 0xff);
-
     setStashCount(blob, stashCount);
     for (var t = 0; t < stashCount; t++)
       blob[len + t] = clampPackedByte(stream[newNoteCount + t] & 0xff);
-
     for (var s = 0; s < len; s++) {
       if (getTime(blob, s) !== 1) blob[s] = 0xff;
     }
@@ -1173,15 +1194,20 @@
   initCommitIdx();
 
   // ── Active state ───────────────────────────────────────────────────
-  var activeGroup = 0;   // 0-3
-  var activePat   = 0;   // 0-15 within the group
-  var playingPat  = -1;  // hardware-reported playing pattern (0-15), -1 = unknown
+  var activeGroup  = 0;   // 0-3
+  var activePat    = 0;   // 0-15 within the group
+  var playingPat   = -1;  // hardware-reported playing pattern (0-15), -1 = unknown
+  var editLiveMode = false; // when true: display a pattern without changing what plays
   var playingStep = -1;  // hardware-reported playing step
   var queuedPat   = -1;  // pattern queued for next play (sent via PC)
-  var patChain      = [];   // active chain: array of 2-4 pattern indices (same bank, consecutive)
-  var chainDragging = false;
+  var patChain       = [];    // active chain (2-4 patterns)
+  var queuedChain    = [];    // chain waiting to activate after current finishes
+  var dragChain      = [];    // preview chain being built during pointer drag
+  var chainDragging  = false;
   var chainDragMoved = false;
-  var chainAnchor   = -1;   // pattern index where drag started
+  var chainAnchor    = -1;    // pattern index where pointer went down
+  var chainHoldTimer = null;
+  var chainHoldActive = false; // true = hold threshold crossed, currently looping
   var clipboard   = null;
   /** Last pattern copied (for pill highlight). */
   var copiedFrom  = null; // { g, p } or null
@@ -1224,6 +1250,17 @@
       btn.dataset.pat = p;
       btn.addEventListener('pointerdown', function(e) {
         chainAnchor = p; chainDragMoved = false; chainDragging = true;
+        chainHoldActive = false; dragChain = [p];
+        clearTimeout(chainHoldTimer); chainHoldTimer = null;
+        if (patChain.length > 0 || queuedChain.length > 0) {
+          chainHoldTimer = setTimeout(function() {
+            if (chainDragging && !chainDragMoved) {
+              chainHoldActive = true;
+              if (midiOut) { sendProgramChange(p); queuedPat = p; }
+              refreshAllPills();
+            }
+          }, 400);
+        }
         e.preventDefault();
       });
       pillsAEl.appendChild(btn);
@@ -1236,6 +1273,17 @@
       btn.dataset.pat = p;
       btn.addEventListener('pointerdown', function(e) {
         chainAnchor = p; chainDragMoved = false; chainDragging = true;
+        chainHoldActive = false; dragChain = [p];
+        clearTimeout(chainHoldTimer); chainHoldTimer = null;
+        if (patChain.length > 0 || queuedChain.length > 0) {
+          chainHoldTimer = setTimeout(function() {
+            if (chainDragging && !chainDragMoved) {
+              chainHoldActive = true;
+              if (midiOut) { sendProgramChange(p); queuedPat = p; }
+              refreshAllPills();
+            }
+          }, 400);
+        }
         e.preventDefault();
       });
       pillsBEl.appendChild(btn);
@@ -1258,11 +1306,12 @@
     if (!el) return;
     var hoverPat = parseInt(el.dataset.pat, 10);
     if (isNaN(hoverPat) || hoverPat === chainAnchor) return;
-    var newChain = chainBuild(chainAnchor, hoverPat);
-    if (newChain.length > 1 &&
-        (newChain.length !== patChain.length || newChain[0] !== patChain[0] || newChain[newChain.length-1] !== patChain[patChain.length-1])) {
+    var newDrag = chainBuild(chainAnchor, hoverPat);
+    if (newDrag.length > 1 &&
+        (newDrag.length !== dragChain.length || newDrag[0] !== dragChain[0] ||
+         newDrag[newDrag.length-1] !== dragChain[dragChain.length-1])) {
       chainDragMoved = true;
-      patChain = newChain;
+      dragChain = newDrag;
       refreshAllPills();
     }
   });
@@ -1270,21 +1319,59 @@
   document.addEventListener('pointerup', function() {
     if (!chainDragging) return;
     chainDragging = false;
-    if (chainDragMoved && patChain.length > 1) {
-      // Activate chain, switch to first pattern
-      switchToPat(patChain[0]);
-      if (midiOut) { sendProgramChange(patChain[0]); queuedPat = patChain[0]; }
+    clearTimeout(chainHoldTimer); chainHoldTimer = null;
+    var wasDrag = chainDragMoved;
+    var drag    = dragChain.slice();
+    dragChain   = [];
+    chainDragMoved = false;
+
+    if (chainHoldActive) {
+      // Released from hold-to-loop: resume chain advance
+      chainHoldActive = false;
+      if (patChain.length > 1 && midiOut) {
+        var ci = patChain.indexOf(playingPat);
+        if (ci === -1) ci = 0;
+        var nextPat = patChain[(ci + 1) % patChain.length];
+        sendProgramChange(nextPat);
+        queuedPat = nextPat;
+      }
+    } else if (wasDrag && drag.length > 1) {
+      if (patChain.length > 0) {
+        // Already in chain: queue the new chain to play after current
+        queuedChain = drag;
+        if (midiOut) { sendProgramChange(queuedChain[0]); queuedPat = queuedChain[0]; }
+      } else {
+        // Not in chain: activate immediately
+        patChain    = drag;
+        queuedChain = [];
+        switchToPat(patChain[0]);
+        if (midiOut) { sendProgramChange(patChain[0]); queuedPat = patChain[0]; }
+      }
     } else {
-      // Simple click — clear chain and act normally
-      patChain = [];
-      pillClick(chainAnchor);
+      // Tap
+      if (patChain.length > 0) {
+        // In chain: send PC and keep chain display until hardware switches to new pattern
+        queuedChain = [];
+        switchToPat(chainAnchor); // update editor to the tapped pattern
+        if (midiOut) { sendProgramChange(chainAnchor); queuedPat = chainAnchor; }
+        // patChain stays alive — updatePlayingStep clears it when hardware leaves chain
+      } else {
+        queuedChain = [];
+        pillClick(chainAnchor);
+      }
     }
     refreshAllPills();
   });
 
   function pillClick(p) {
+    if (editLiveMode) {
+      // Edit Live: only switch the display, never touch the playing pattern or chain
+      switchToPat(p);
+      return;
+    }
     var wasActive = (p === activePat && /* same group */ true);
-    patChain = []; // single click clears any chain
+    patChain    = []; // single click clears any chain
+    queuedChain = [];
     switchToPat(p);
     // If clock is running, queue this pattern (Program Change to hardware)
     // Hardware will switch at end of current pattern
@@ -1327,11 +1414,20 @@
       var p = parseInt(pill.dataset.pat, 10);
       pill.classList.toggle('is-active',   p === activePat);
       pill.classList.toggle('is-dirty',    isDirty(activeGroup, p));
-      pill.classList.toggle('is-playing',  p === playingPat);
-      pill.classList.toggle('is-queued',   p === queuedPat && p !== activePat && p !== playingPat);
-      pill.classList.toggle('is-chained',  patChain.indexOf(p) !== -1);
-      pill.classList.toggle('is-copied',   copiedFrom && copiedFrom.g === activeGroup && copiedFrom.p === p);
-      pill.textContent = String(p + 1);
+      var inActive = patChain.indexOf(p) !== -1;
+      var inQueued = queuedChain.indexOf(p) !== -1;
+      var inDrag   = dragChain.indexOf(p) !== -1;
+      pill.classList.toggle('is-playing',      p === playingPat);
+      pill.classList.toggle('is-queued',       p === queuedPat && p !== activePat && p !== playingPat && !inActive && !inQueued);
+      pill.classList.toggle('is-chained',      inActive);
+      pill.classList.toggle('is-queued-chain', inQueued && !inActive);
+      pill.classList.toggle('is-drag-chain',   inDrag && !inActive && !inQueued);
+      pill.classList.toggle('is-copied',       copiedFrom && copiedFrom.g === activeGroup && copiedFrom.p === p);
+      var blob = groups[activeGroup][p];
+      var patLen = blob[127] || 16;
+      var patEmpty = true;
+      for (var s = 0; s < patLen; s++) { if (getTime(blob, s) !== 0) { patEmpty = false; break; } }
+      pill.innerHTML = String(p + 1) + '<span class="pat-pill-badge">' + (patEmpty ? 'E' : patLen) + '</span>';
     });
   }
 
@@ -1759,26 +1855,28 @@
 
   // ── Playing step update (SysEx 0x15) ──────────────────────────────
   function updatePlayingStep(pat, step) {
-    // Only show in grid if displaying group 1 (the hardware group)
-    if (activeGroup === 0 && pat === activePat) {
-      var old = document.querySelector('.step-card.is-playing-step');
-      if (old) old.classList.remove('is-playing-step');
-      var cards = document.querySelectorAll('.step-card');
-      for (var i = 0; i < cards.length; i++) {
-        if (parseInt(cards[i].dataset.s, 10) === step) {
-          cards[i].classList.add('is-playing-step');
-          // Re-trigger animation
-          cards[i].querySelector('.step-play-dot').style.animation = 'none';
-          void cards[i].querySelector('.step-play-dot').offsetWidth;
-          cards[i].querySelector('.step-play-dot').style.animation = '';
-          break;
-        }
-      }
-    }
     if (pat !== playingPat) {
       playingPat = pat;
       if (pat === queuedPat) queuedPat = -1;
-      // Chain advance: keep next chain pattern queued
+
+      // Promote queued chain when its first pattern starts playing
+      if (queuedChain.length > 1 && pat === queuedChain[0]) {
+        patChain    = queuedChain.slice();
+        queuedChain = [];
+      }
+
+      // If hardware has moved outside the active chain, deactivate it
+      if (patChain.length > 1 && patChain.indexOf(pat) === -1) {
+        patChain    = [];
+        queuedChain = [];
+      }
+
+      // Auto-follow chain: switch editor grid to the playing pattern
+      if (patChain.length > 1 && activeGroup === 0 && !editLiveMode) {
+        switchToPat(pat);
+      }
+
+      // Chain advance: keep next pattern queued
       if (patChain.length > 1) {
         var ci = patChain.indexOf(pat);
         if (ci !== -1) {
@@ -1790,6 +1888,21 @@
       refreshAllPills();
     }
     playingStep = step;
+    // Show playing-step dot in grid if the active pattern is the one playing
+    if (activeGroup === 0 && pat === activePat) {
+      var old = document.querySelector('.step-card.is-playing-step');
+      if (old) old.classList.remove('is-playing-step');
+      var cards = document.querySelectorAll('.step-card');
+      for (var i = 0; i < cards.length; i++) {
+        if (parseInt(cards[i].dataset.s, 10) === step) {
+          cards[i].classList.add('is-playing-step');
+          cards[i].querySelector('.step-play-dot').style.animation = 'none';
+          void cards[i].querySelector('.step-play-dot').offsetWidth;
+          cards[i].querySelector('.step-play-dot').style.animation = '';
+          break;
+        }
+      }
+    }
     if (buddyRunning) {
       buddyStepCount++;
       var buddyTarget = parseInt(document.getElementById('buddyInterval').value, 10) || 8;
@@ -2293,6 +2406,15 @@
       ev.target.value = '';
     };
     reader.readAsText(file);
+  };
+
+  // ── Edit Live ──────────────────────────────────────────────────────
+  document.getElementById('btnEditLive').onclick = function() {
+    editLiveMode = !editLiveMode;
+    this.classList.toggle('is-on', editLiveMode);
+    if (!editLiveMode && playingPat >= 0 && activeGroup === 0) {
+      switchToPat(playingPat);
+    }
   };
 
   // ── Copy / paste ───────────────────────────────────────────────────

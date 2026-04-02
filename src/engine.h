@@ -289,40 +289,52 @@ struct Sequence {
   /// After SetTime() at time_pos, reflow pitch data so NOTE steps keep sequential
   /// pitches from the previous stream. Pass the time value at time_pos *before*
   /// SetTime was called. No-op when the step stays NOTE or stays non-NOTE.
+  /// Stream includes non-NOTE slots with user-written pitch data so pitches written
+  /// via PITCH_MODE survive the first TIME_MODE reflow.
   void reflow_pitches_after_time_change(uint8_t old_time) {
     const uint8_t tp = uint8_t(time_pos & (MAX_STEPS - 1));
     const uint8_t new_t = time(tp);
-    if ((old_time == 1) == (new_t == 1)) return; // NOTE↔NOTE or non-NOTE↔non-NOTE: no change
+    if ((old_time == 1) == (new_t == 1)) return; // NOTE↔NOTE or non↔non: nothing to do
+
     const uint8_t len = uint8_t(length);
-    // Collect pitch stream from the *old* set of NOTE steps (use old_time for tp).
+
+    // Build pitch stream from: slots that were NOTE *or* had user-written pitch data,
+    // treating the changed step with its old time type (before SetTime).
     uint8_t stream[MAX_STEPS];
     uint8_t slen = 0;
     for (uint8_t i = 0; i < len; ++i) {
-      const uint8_t t = (i == tp) ? old_time : time(i);
-      if (t == 1) stream[slen++] = pitch_is_empty(i) ? PITCH_DEFAULT : pitch[i];
+      const uint8_t t_i = (i == tp) ? old_time : time(i);
+      const bool was_note = (t_i == 1);
+      const bool has_data = !pitch_is_empty(i);
+      if (was_note || has_data)
+        stream[slen++] = has_data ? pitch[i] : PITCH_DEFAULT;
     }
-    // Append any previously stashed pitches so they re-enter the stream when
-    // new NOTE slots open up (matches web editor stash behaviour).
+    // Append stash tail.
     const uint8_t old_stash = get_stash_count();
     for (uint8_t k = 0; k < old_stash && slen < MAX_STEPS; ++k) {
       const uint8_t sb = pitch[len + k];
       stream[slen++] = (sb == PITCH_EMPTY) ? PITCH_DEFAULT : sb;
     }
-    // Count new NOTE steps; pad stream with defaults if growing.
+
+    // Count new NOTE steps.
     uint8_t note_count = 0;
     for (uint8_t i = 0; i < len; ++i) if (time(i) == 1) ++note_count;
-    while (slen < note_count) stream[slen++] = PITCH_DEFAULT;
-    // Excess pitches go to stash in pitch[len..len+excess-1] (clamped to fit).
+
+    // Ensure stream has enough pitches for all new NOTE slots.
+    while (slen < note_count && slen < MAX_STEPS) stream[slen++] = PITCH_DEFAULT;
+
+    // Excess beyond note_count goes to stash (capped by available tail space).
     uint8_t excess = (slen > note_count) ? uint8_t(slen - note_count) : 0;
     const uint8_t max_stash = uint8_t(MAX_STEPS - len);
     if (excess > max_stash) excess = max_stash;
-    // Redistribute: NOTE steps get pitches in order; TIE/REST slots cleared.
+
+    // Redistribute: NOTE slots get sequential pitches; non-NOTE slots cleared.
     uint8_t ni = 0;
     for (uint8_t i = 0; i < len; ++i) {
       if (time(i) == 1) pitch[i] = stream[ni++];
       else               pitch[i] = PITCH_EMPTY;
     }
-    // Write displaced pitches into the stash area.
+    // Write stash tail.
     for (uint8_t k = 0; k < excess; ++k)
       pitch[len + k] = stream[note_count + k];
     set_stash_count(excess);
@@ -397,6 +409,9 @@ struct Sequence {
     }
     for (uint8_t i = 0; i < STEP_LOCK_BYTES; ++i)
       step_lock[i] = 0;
+    // Clear ratchet data stored in reserved[1..16] (2 bits/step, 64 steps).
+    for (uint8_t i = 1; i <= 16; ++i)
+      reserved[i] = 0;
     set_stash_count(0);
     length = 8;
   }
@@ -425,13 +440,22 @@ struct Sequence {
     return from;
   }
 
-  /// PITCH_MODE entry: clear reset flag and land on the first NOTE step.
+  /// PITCH_MODE edit entry (TAP held): clear reset flag and land on first NOTE step.
   /// If no NOTE steps exist, defaults to step 0 (caller handles display guard).
   void ensure_pitch_edit_entry() {
     if (reset) {
       reset = false;
       pitch_pos = int(first_note_idx()); // first NOTE step, or 0 if none
       time_pos = pitch_pos;
+    }
+  }
+  /// PITCH_MODE write entry: clear reset flag and start at step 0 so all steps
+  /// (not just existing NOTE steps) are reachable for pitch entry.
+  void ensure_pitch_write_entry() {
+    if (reset) {
+      reset = false;
+      pitch_pos = 0;
+      time_pos = 0;
     }
   }
 
