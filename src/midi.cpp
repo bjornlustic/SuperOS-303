@@ -45,19 +45,24 @@ static Engine *g_eng = nullptr;
 static bool g_clk_run = false;
 static uint8_t s_in_channel = 0; // 0 = omni
 static bool s_midi_clock_rx = true;
+static bool s_midi_thru = false;
 
 static uint8_t out_ch() {
   return s_in_channel == 0 ? 1 : s_in_channel;
 }
 
-void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive) {
+void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive, bool midi_thru) {
   s_in_channel = midi_in_channel_0_omni_16 <= 16 ? midi_in_channel_0_omni_16 : 1;
   s_midi_clock_rx = midi_clock_receive;
+  s_midi_thru = midi_thru;
   if (s_in_channel == 0)
     MIDI.begin(MIDI_CHANNEL_OMNI);
   else
     MIDI.begin(s_in_channel);
-  MIDI.turnThruOff();
+  if (s_midi_thru)
+    MIDI.turnThruOn();
+  else
+    MIDI.turnThruOff();
 }
 
 uint8_t midi_sequencer_out_channel() { return out_ch(); }
@@ -154,6 +159,44 @@ static void send_ack(uint8_t status) {
   tx_push_message(inner, 3);
 }
 
+// --- Chain state RX (from web via SysEx 0x1A) -----------------------------------
+static bool    s_rx_chain_pending     = false;
+static uint8_t s_rx_chain_active_len  = 0;
+static uint8_t s_rx_chain_active_pats[4] = {};
+static uint8_t s_rx_chain_queued_len  = 0;
+static uint8_t s_rx_chain_queued_pats[4] = {};
+
+void midi_send_chain_state(uint8_t active_len, const uint8_t *active_pats,
+                            uint8_t queued_len, const uint8_t *queued_pats) {
+  uint8_t inner[12];
+  inner[0] = 0x7D; inner[1] = 0x1A;
+  inner[2] = active_len & 0x07;
+  for (uint8_t i = 0; i < 4; ++i)
+    inner[3 + i] = (active_pats && i < active_len) ? (active_pats[i] & 0x0F) : 0;
+  inner[7] = queued_len & 0x07;
+  for (uint8_t i = 0; i < 4; ++i)
+    inner[8 + i] = (queued_pats && i < queued_len) ? (queued_pats[i] & 0x0F) : 0;
+  tx_push_message(inner, 12);
+}
+
+bool midi_get_received_chain(uint8_t *out_active_len, uint8_t out_active_pats[4],
+                              uint8_t *out_queued_len, uint8_t out_queued_pats[4]) {
+  if (!s_rx_chain_pending) return false;
+  s_rx_chain_pending = false;
+  if (s_rx_chain_active_len == 0xff) {
+    // Sentinel: config request asked us to re-broadcast current state.
+    // Signal main.cpp with active_len=0xff so it just calls emit_chain_state().
+    *out_active_len = 0xff;
+    *out_queued_len = 0;
+    return true;
+  }
+  *out_active_len = s_rx_chain_active_len;
+  for (uint8_t i = 0; i < 4; ++i) out_active_pats[i] = s_rx_chain_active_pats[i];
+  *out_queued_len = s_rx_chain_queued_len;
+  for (uint8_t i = 0; i < 4; ++i) out_queued_pats[i] = s_rx_chain_queued_pats[i];
+  return true;
+}
+
 // --- Sequential dump after 0x13 -------------------------------------------------
 static bool s_dump_active = false;
 static uint8_t s_dump_next = 0;
@@ -195,11 +238,78 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     s_dump_active = true;
     dump_try_advance();
     break;
+  case 0x16: { // host → 303: set single step (pitch + time)
+    if (n < 7 || !g_eng) return;
+    const uint8_t pat  = p[2] & 0x0F;
+    const uint8_t step = p[3] & 0x3F;
+    const uint8_t pitchByte = static_cast<uint8_t>((p[4] & 0x7F) | ((p[5] & 0x01) << 7));
+    const uint8_t timeNib   = p[6] & 0x0F;
+    Sequence &seq = g_eng->pattern[pat];
+    if (step >= seq.length) return;
+    seq.pitch[step] = pitchByte;
+    // Write time nibble at arbitrary index
+    uint8_t &td = seq.time_data[step >> 1];
+    const uint8_t shift = 4 * (step & 1);
+    td = (td & ~(0x0F << shift)) | (timeNib << shift);
+    g_eng->stale = true;
+    break;
+  }
+  case 0x18: { // host → 303: set pattern length
+    if (n < 4 || !g_eng) return;
+    const uint8_t pat = p[2] & 0x0F;
+    const uint8_t len = p[3] & 0x7F;
+    if (len < 1 || len > MAX_STEPS) return;
+    g_eng->pattern[pat].length = len;
+    g_eng->stale = true;
+    break;
+  }
+  case 0x19: { // host → 303: set step lock
+    if (n < 5 || !g_eng) return;
+    const uint8_t pat    = p[2] & 0x0F;
+    const uint8_t step   = p[3] & 0x3F;
+    const bool    locked = (p[4] & 0x01) != 0;
+    Sequence &seq = g_eng->pattern[pat];
+    if (step >= MAX_STEPS) return;
+    const uint8_t mask = uint8_t(1u << (step & 7));
+    if (locked)
+      seq.step_lock[step >> 3] |= mask;
+    else
+      seq.step_lock[step >> 3] &= ~mask;
+    g_eng->stale = true;
+    break;
+  }
+  case 0x1B: { // host → 303: set step ratchet value
+    if (n < 5 || !g_eng) return;
+    const uint8_t pat  = p[2] & 0x0F;
+    const uint8_t step = p[3] & 0x3F;
+    const uint8_t val  = p[4] & 0x03;
+    Sequence &seq = g_eng->pattern[pat];
+    if (step >= MAX_STEPS) return;
+    seq.set_ratchet_val(step, val);
+    g_eng->stale = true;
+    break;
+  }
+  case 0x1A: { // set chain state from host
+    if (n < 12) return;
+    s_rx_chain_active_len = p[2] & 0x07;
+    if (s_rx_chain_active_len > 4) s_rx_chain_active_len = 4;
+    for (uint8_t i = 0; i < 4; ++i)
+      s_rx_chain_active_pats[i] = p[3 + i] & 0x0F;
+    s_rx_chain_queued_len = p[7] & 0x07;
+    if (s_rx_chain_queued_len > 4) s_rx_chain_queued_len = 4;
+    for (uint8_t i = 0; i < 4; ++i)
+      s_rx_chain_queued_pats[i] = p[8 + i] & 0x0F;
+    s_rx_chain_pending = true;
+    break;
+  }
   case 0x20: { // request config
-    const uint8_t fl  = GlobalSettings.midi_clock_receive ? 1 : 0;
+    const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
+                                              (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
     const uint8_t inner[5] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir};
     tx_push_message(inner, 5);
+    s_rx_chain_pending = true; // signal main.cpp to re-broadcast chain state
+    s_rx_chain_active_len = 0xff; // sentinel: "just re-emit current state"
     break;
   }
   case 0x22: { // set config
@@ -208,16 +318,18 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t fl = p[3];
     if (ch <= 16) GlobalSettings.midi_channel = ch;
     GlobalSettings.midi_clock_receive = (fl & 1) != 0;
+    GlobalSettings.midi_thru          = (fl & 2) != 0;
     if (n >= 5 && g_eng) {
       const SequenceDirection d = static_cast<SequenceDirection>(p[4] & 0x07);
       g_eng->SetDirection(d);
       GlobalSettings.sequence_direction = static_cast<uint8_t>(d);
     }
     GlobalSettings.save_midi_to_storage();
-    midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive);
+    midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
     send_ack(0);
     // Echo back new config
-    const uint8_t nfl  = GlobalSettings.midi_clock_receive ? 1 : 0;
+    const uint8_t nfl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
+                                               (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t ndir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
     const uint8_t reply[5] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl, ndir};
     tx_push_message(reply, 5);
@@ -288,20 +400,25 @@ static void note_on_cb(byte ch, byte pitch, byte vel) {
 
     live_stack_push(static_cast<uint8_t>(pitch), static_cast<uint8_t>(vel));
 
-    if (was_playing && prev_note != static_cast<uint8_t>(pitch)) {
-      // Legato: slide from previous note — Note On new BEFORE Note Off old.
-      MIDI.sendNoteOn(pitch, vel, ch);
-      MIDI.sendNoteOff(prev_note, 0, ch);
-      s_live_slide = true;
+    if (!s_midi_thru) {
+      if (was_playing && prev_note != static_cast<uint8_t>(pitch)) {
+        // Legato: slide from previous note — Note On new BEFORE Note Off old.
+        MIDI.sendNoteOn(pitch, vel, ch);
+        MIDI.sendNoteOff(prev_note, 0, ch);
+        s_live_slide = true;
+      } else {
+        MIDI.sendNoteOn(pitch, vel, ch);
+        s_live_slide = false;
+      }
     } else {
-      MIDI.sendNoteOn(pitch, vel, ch);
-      s_live_slide = false;
+      // Thru: note already forwarded by library; just update slide state.
+      s_live_slide = (was_playing && prev_note != static_cast<uint8_t>(pitch));
     }
 
     s_live_accent = (vel >= 100);
     s_live_gate   = true;
     s_live_note   = static_cast<uint8_t>(pitch);
-  } else {
+  } else if (!s_midi_thru) {
     MIDI.sendNoteOn(pitch, vel, ch);
   }
 
@@ -322,23 +439,25 @@ static void note_off_cb(byte ch, byte pitch, byte vel) {
       const uint8_t back_note = s_note_stack[s_note_stack_depth - 1];
       const uint8_t back_vel  = s_note_stack_vel[s_note_stack_depth - 1];
       MIDI.sendNoteOn(back_note, back_vel, ch);
-      MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
+      if (!s_midi_thru)
+        MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
       s_live_note  = back_note;
       s_live_slide = true;
       s_live_gate  = true;
       if (g_eng)
         g_eng->midi_apply_note_on(back_note, back_vel);
     } else {
-      // Always send Note Off — covers normal release, notes pressed during clock-run,
-      // and duplicate Note Off for already-slid notes (harmless to receiving synth).
-      MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
+      // When thru is off, explicitly send Note Off (covers normal release and
+      // duplicate Note Off for already-slid notes, harmless to receiving synth).
+      if (!s_midi_thru)
+        MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
       if (was_top) {
         s_live_gate  = false;
         s_live_slide = false;
         s_live_note  = 0;
       }
     }
-  } else {
+  } else if (!s_midi_thru) {
     MIDI.sendNoteOff(pitch, 0, ch);
   }
 }
@@ -446,7 +565,7 @@ void midi_init(Engine *engine) {
 static uint8_t s_seq_note = 0;
 static bool s_seq_note_on = false;
 
-void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pulse) {
+void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses) {
   g_eng = &engine;
   if (clk_run && !g_clk_run) {
     // Transitioning to running: discard any held live notes.
@@ -456,7 +575,7 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pu
     s_live_note  = 0;
   }
   g_clk_run = clk_run;
-  midi_clock_pulse = false;
+  midi_clock_pulses = 0;
 
   if (!s_midi_clock_rx) midi_clk = false;
 
@@ -469,7 +588,7 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pu
     const midi::MidiType t = MIDI.getType();
     switch (t) {
     case midi::MidiType::Clock:
-      if (s_midi_clock_rx) midi_clock_pulse = true;
+      if (s_midi_clock_rx) ++midi_clock_pulses;
       break;
     case midi::MidiType::Start:
       if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); }
@@ -533,4 +652,15 @@ void midi_after_clock(Engine &engine, uint8_t transpose) {
     s_seq_note = static_cast<uint8_t>(n);
     s_seq_note_on = true;
   }
+}
+
+void midi_ratchet_retrigger(Engine &engine, uint8_t transpose) {
+  if (!s_seq_note_on || engine.resting) return;
+  const byte och = static_cast<byte>(out_ch());
+  uint16_t n = static_cast<uint16_t>(engine.get_midi_note()) + transpose;
+  if (n > 127) n = 127;
+  const uint8_t vel = engine.get_accent() ? 127 : 80;
+  MIDI.sendNoteOff(s_seq_note, 0, och);
+  MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
+  s_seq_note = static_cast<uint8_t>(n);
 }

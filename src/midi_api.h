@@ -6,14 +6,19 @@
 struct Engine;
 
 void midi_init(Engine *engine);
-/// Apply after EEPROM load / config menu: `ch` 0 = omni, 1–16 = listen; `clock_rx` = use MIDI transport clock.
-void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive);
+/// Apply after EEPROM load / config menu: `ch` 0 = omni, 1–16 = listen; `clock_rx` = use MIDI transport clock; `thru` = forward MIDI IN to MIDI OUT.
+void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive, bool midi_thru);
 /// Channel 1–16 for sequencer Note On/Off (omni listen → 1).
 uint8_t midi_sequencer_out_channel();
-/// Sets `midi_clock_pulse` true when a MIDI Clock byte was received (24 ppqn).
-void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pulse);
+/// Increments `midi_clock_pulses` for each MIDI Clock byte received (24 ppqn).
+/// Using a counter instead of a boolean ensures no clock ticks are lost when
+/// multiple clocks arrive during a single poll (e.g. while parsing a long SysEx).
+void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses);
 /// Call once per 16th when `engine.Clock()` returned true while transport running.
 void midi_after_clock(Engine &engine, uint8_t transpose);
+/// Call when `engine.is_ratchet_retrigger()` returns true (sub-tick within a ratcheted step).
+/// Sends Note Off + Note On for the current note without advancing the step.
+void midi_ratchet_retrigger(Engine &engine, uint8_t transpose);
 /// DIN MIDI leader: clock pulses on `clocked` when transport runs and we are not synced to
 /// incoming MIDI Clock; optional Start/Stop with RUN edges.
 void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave,
@@ -61,3 +66,14 @@ void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
 void midi_metronome_tick(bool first_beat);
 /// Stop the open metronome note (on mode exit / clock stop).
 void midi_metronome_stop();
+
+/// Broadcast current chain state to host (SysEx 0x1A).
+/// active_len=0 means no chain active. Patterns at indices >= their respective lengths are ignored.
+/// Format: F0 7D 1A <active_len:0-4> <a0> <a1> <a2> <a3> <queued_len:0-4> <q0> <q1> <q2> <q3> F7
+void midi_send_chain_state(uint8_t active_len, const uint8_t *active_pats,
+                            uint8_t queued_len, const uint8_t *queued_pats);
+
+/// Poll for chain state received from the host via SysEx 0x1A.
+/// Returns true and fills out parameters if a new chain state arrived since last call.
+bool midi_get_received_chain(uint8_t *out_active_len, uint8_t out_active_pats[4],
+                              uint8_t *out_queued_len, uint8_t out_queued_pats[4]);
