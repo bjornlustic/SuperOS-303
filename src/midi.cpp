@@ -678,12 +678,12 @@ void midi_after_clock(Engine &engine, uint8_t transpose) {
         MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
       }
       s_seq_note = static_cast<uint8_t>(n);
-    } else if (!engine.slide_gate) {
-      // Same note, no tie/slide — retrigger so each step is a distinct note.
+    } else if (!engine.slide_gate && !engine.get_slide_dac()) {
+      // Same note, not a tie or slide destination — retrigger for distinct attack.
       MIDI.sendNoteOff(s_seq_note, 0, och);
       MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
     }
-    // else: tie/slide continuation — hold the note on as-is
+    // else: tie or slide continuation — hold the note on as-is
     return;
   }
 
