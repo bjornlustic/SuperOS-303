@@ -726,12 +726,19 @@ void loop() {
   const bool clk_run =
       inputs[RUN].held() || (midi_clk && GlobalSettings.midi_clock_receive);
 
-  bool clocked = false;
-  bool midi_clock_pulse = false;
-  midi_poll(engine, clk_run, midi_clk, midi_clock_pulse);
-  if (midi_clock_pulse) clocked = true;
+  uint8_t midi_clock_pulses = 0;
+  midi_poll(engine, clk_run, midi_clk, midi_clock_pulses);
 
-  if (!midi_clk) clocked = inputs[CLOCK].rising();
+  // Determine how many clock ticks to process this iteration.
+  // MIDI clock: may be >1 if multiple 0xF8 bytes arrived during a single poll
+  // (e.g. interleaved with a long SysEx). DIN sync: always 0 or 1.
+  uint8_t clock_ticks = 0;
+  if (midi_clock_pulses > 0) {
+    clock_ticks = midi_clock_pulses;
+  } else if (!midi_clk) {
+    clock_ticks = inputs[CLOCK].rising() ? 1 : 0;
+  }
+  const bool clocked = (clock_ticks > 0);
 
   // Save pattern data when exiting write mode or stopping clock
   if ((inputs[WRITE_MODE].falling() && !clk_run) ||
@@ -1026,74 +1033,79 @@ void loop() {
     }
   }
 
-  if (clocked) ++clk_count %= 24;
-
   midi_leader_transport(clocked, clk_run, midi_clk,
                         inputs[RUN].rising(), inputs[RUN].falling());
 
-  if (clocked && clk_run) {
-    if (engine.Clock()) {
-      midi_after_clock(engine, transpose);
-      // Broadcast current step to web editor (SysEx 0x15)
-      midi_send_step_position(engine.get_patsel(), engine.get_time_pos());
-      // Metronome tap-write: record time data for the step that just played
-      if (s_metronome_active) {
-        const uint8_t len = engine.get_length();
-        const uint8_t write_step =
-            uint8_t((engine.get_time_pos() + len - 1) % len);
-        // Use current held() state at the beat boundary (not accumulated).
-        // This correctly handles: long hold then release before boundary → REST,
-        // and fast re-press (released + new press this beat) → NOTE (not TIE).
-        const bool tap_now   = inputs[TAP_NEXT].held();
-        const bool tap_broke = s_metro_tap_released_since_last_beat;
-        const uint8_t tval = tap_now
-            ? uint8_t((s_metro_prev_note && !tap_broke) ? 2 : 1)  // TIE only if continuous hold
-            : 0;                                                     // not held at boundary: REST
-        if (tval != 0) s_metro_has_activity = true;
-        s_metro_prev_note = (tval != 0);
-        s_metro_tap_held_this_beat          = false;
-        s_metro_tap_released_since_last_beat = false;
-        Sequence &wseq = engine.get_sequence();
-        sequence_set_time_at(wseq, write_step, tval);
-        if (tval == 1) {
-          // NOTE step: pull pitch from stash if this slot is empty
-          if (wseq.pitch_is_empty(write_step)) {
-            const uint8_t sc = wseq.get_stash_count();
-            if (sc > 0) {
-              wseq.pitch[write_step] = wseq.pitch[len + 0];
-              for (uint8_t k = 1; k < sc; ++k)
-                wseq.pitch[len + k - 1] = wseq.pitch[len + k];
-              wseq.pitch[len + sc - 1] = PITCH_EMPTY;
-              wseq.set_stash_count(sc - 1);
-            } else {
-              wseq.pitch[write_step] = PITCH_DEFAULT;
+  // Process every accumulated clock tick so none are lost.  Normally clock_ticks
+  // is 0 or 1, but when a long SysEx arrives on the same DIN MIDI port as the
+  // clock, multiple 0xF8 bytes can pile up inside a single midi_poll() call.
+  for (uint8_t ct = 0; ct < clock_ticks; ++ct) {
+    ++clk_count %= 24;
+
+    if (clk_run) {
+      if (engine.Clock()) {
+        midi_after_clock(engine, transpose);
+        // Broadcast current step to web editor (SysEx 0x15)
+        midi_send_step_position(engine.get_patsel(), engine.get_time_pos());
+        // Metronome tap-write: record time data for the step that just played
+        if (s_metronome_active) {
+          const uint8_t len = engine.get_length();
+          const uint8_t write_step =
+              uint8_t((engine.get_time_pos() + len - 1) % len);
+          // Use current held() state at the beat boundary (not accumulated).
+          // This correctly handles: long hold then release before boundary → REST,
+          // and fast re-press (released + new press this beat) → NOTE (not TIE).
+          const bool tap_now   = inputs[TAP_NEXT].held();
+          const bool tap_broke = s_metro_tap_released_since_last_beat;
+          const uint8_t tval = tap_now
+              ? uint8_t((s_metro_prev_note && !tap_broke) ? 2 : 1)  // TIE only if continuous hold
+              : 0;                                                     // not held at boundary: REST
+          if (tval != 0) s_metro_has_activity = true;
+          s_metro_prev_note = (tval != 0);
+          s_metro_tap_held_this_beat          = false;
+          s_metro_tap_released_since_last_beat = false;
+          Sequence &wseq = engine.get_sequence();
+          sequence_set_time_at(wseq, write_step, tval);
+          if (tval == 1) {
+            // NOTE step: pull pitch from stash if this slot is empty
+            if (wseq.pitch_is_empty(write_step)) {
+              const uint8_t sc = wseq.get_stash_count();
+              if (sc > 0) {
+                wseq.pitch[write_step] = wseq.pitch[len + 0];
+                for (uint8_t k = 1; k < sc; ++k)
+                  wseq.pitch[len + k - 1] = wseq.pitch[len + k];
+                wseq.pitch[len + sc - 1] = PITCH_EMPTY;
+                wseq.set_stash_count(sc - 1);
+              } else {
+                wseq.pitch[write_step] = PITCH_DEFAULT;
+              }
             }
+          } else {
+            // TIE or REST: slot must be empty
+            wseq.pitch[write_step] = PITCH_EMPTY;
           }
-        } else {
-          // TIE or REST: slot must be empty
-          wseq.pitch[write_step] = PITCH_EMPTY;
+          engine.stale = true;
+          midi_send_step_update(engine.get_patsel(), write_step,
+              engine.get_sequence().pitch[write_step], tval);
+          // Hardware gate pulse so the 303 clicks on every beat
+          s_metro_gate_pulse = true;
+          s_metro_gate_timer = 0;
+          // Downbeat every 8 steps: accent + E3 (DAC 44); offbeats: E4 (DAC 56).
+          // Fixed hardware values — not affected by performance transpose.
+          const bool is_beat_zero = (engine.get_time_pos() % 8 == 0);
+          s_metro_is_downbeat = is_beat_zero;
+          s_metro_pitch_cv = is_beat_zero ? 44 : 56;  // E3/E4 in standard 303 DAC range
+          midi_metronome_tick(is_beat_zero);
+          // Exit at pattern wrap (step 0) if any TAP activity occurred this pass
+          if (engine.get_time_pos() == 0 && s_metro_has_activity) {
+            s_metronome_active = false;
+            midi_metronome_stop();
+          }
         }
-        engine.stale = true;
-        midi_send_step_update(engine.get_patsel(), write_step,
-            engine.get_sequence().pitch[write_step], tval);
-        // Hardware gate pulse so the 303 clicks on every beat
-        s_metro_gate_pulse = true;
-        s_metro_gate_timer = 0;
-        // Downbeat every 8 steps: accent + E3 (DAC 44); offbeats: E4 (DAC 56).
-        // Fixed hardware values — not affected by performance transpose.
-        const bool is_beat_zero = (engine.get_time_pos() % 8 == 0);
-        s_metro_is_downbeat = is_beat_zero;
-        s_metro_pitch_cv = is_beat_zero ? 32 : 44;  // E3/E4 in standard 303 DAC range
-        midi_metronome_tick(is_beat_zero);
-        // Exit at pattern wrap (step 0) if any TAP activity occurred this pass
-        if (engine.get_time_pos() == 0 && s_metro_has_activity) {
-          s_metronome_active = false;
-          midi_metronome_stop();
-        }
+      } else if (engine.is_ratchet_retrigger()) {
+        s_ratchet_gate_reset = true;
+        midi_ratchet_retrigger(engine, transpose);
       }
-    } else if (engine.is_ratchet_retrigger()) {
-      s_ratchet_gate_reset = true;
-      midi_ratchet_retrigger(engine, transpose);
     }
   }
 

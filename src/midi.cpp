@@ -238,6 +238,46 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     s_dump_active = true;
     dump_try_advance();
     break;
+  case 0x16: { // host → 303: set single step (pitch + time)
+    if (n < 7 || !g_eng) return;
+    const uint8_t pat  = p[2] & 0x0F;
+    const uint8_t step = p[3] & 0x3F;
+    const uint8_t pitchByte = static_cast<uint8_t>((p[4] & 0x7F) | ((p[5] & 0x01) << 7));
+    const uint8_t timeNib   = p[6] & 0x0F;
+    Sequence &seq = g_eng->pattern[pat];
+    if (step >= seq.length) return;
+    seq.pitch[step] = pitchByte;
+    // Write time nibble at arbitrary index
+    uint8_t &td = seq.time_data[step >> 1];
+    const uint8_t shift = 4 * (step & 1);
+    td = (td & ~(0x0F << shift)) | (timeNib << shift);
+    g_eng->stale = true;
+    break;
+  }
+  case 0x18: { // host → 303: set pattern length
+    if (n < 4 || !g_eng) return;
+    const uint8_t pat = p[2] & 0x0F;
+    const uint8_t len = p[3] & 0x7F;
+    if (len < 1 || len > MAX_STEPS) return;
+    g_eng->pattern[pat].length = len;
+    g_eng->stale = true;
+    break;
+  }
+  case 0x19: { // host → 303: set step lock
+    if (n < 5 || !g_eng) return;
+    const uint8_t pat    = p[2] & 0x0F;
+    const uint8_t step   = p[3] & 0x3F;
+    const bool    locked = (p[4] & 0x01) != 0;
+    Sequence &seq = g_eng->pattern[pat];
+    if (step >= MAX_STEPS) return;
+    const uint8_t mask = uint8_t(1u << (step & 7));
+    if (locked)
+      seq.step_lock[step >> 3] |= mask;
+    else
+      seq.step_lock[step >> 3] &= ~mask;
+    g_eng->stale = true;
+    break;
+  }
   case 0x1A: { // set chain state from host
     if (n < 12) return;
     s_rx_chain_active_len = p[2] & 0x07;
@@ -514,7 +554,7 @@ void midi_init(Engine *engine) {
 static uint8_t s_seq_note = 0;
 static bool s_seq_note_on = false;
 
-void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pulse) {
+void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses) {
   g_eng = &engine;
   if (clk_run && !g_clk_run) {
     // Transitioning to running: discard any held live notes.
@@ -524,7 +564,7 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pu
     s_live_note  = 0;
   }
   g_clk_run = clk_run;
-  midi_clock_pulse = false;
+  midi_clock_pulses = 0;
 
   if (!s_midi_clock_rx) midi_clk = false;
 
@@ -537,7 +577,7 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pu
     const midi::MidiType t = MIDI.getType();
     switch (t) {
     case midi::MidiType::Clock:
-      if (s_midi_clock_rx) midi_clock_pulse = true;
+      if (s_midi_clock_rx) ++midi_clock_pulses;
       break;
     case midi::MidiType::Start:
       if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); }
