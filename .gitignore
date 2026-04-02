@@ -9,6 +9,9 @@
 docs/
 release/
 
+# Web editor (local only; not in git history)
+tools/web-pattern-edit/
+
 # macOS
 .DS_Store
 
