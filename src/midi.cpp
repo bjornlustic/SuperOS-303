@@ -278,6 +278,17 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     g_eng->stale = true;
     break;
   }
+  case 0x1B: { // host → 303: set step ratchet value
+    if (n < 5 || !g_eng) return;
+    const uint8_t pat  = p[2] & 0x0F;
+    const uint8_t step = p[3] & 0x3F;
+    const uint8_t val  = p[4] & 0x03;
+    Sequence &seq = g_eng->pattern[pat];
+    if (step >= MAX_STEPS) return;
+    seq.set_ratchet_val(step, val);
+    g_eng->stale = true;
+    break;
+  }
   case 0x1A: { // set chain state from host
     if (n < 12) return;
     s_rx_chain_active_len = p[2] & 0x07;
