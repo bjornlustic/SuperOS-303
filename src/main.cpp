@@ -726,8 +726,11 @@ void loop() {
   const bool clk_run =
       inputs[RUN].held() || (midi_clk && GlobalSettings.midi_clock_receive);
 
+  const bool prev_midi_clk = midi_clk;
   uint8_t midi_clock_pulses = 0;
   midi_poll(engine, clk_run, midi_clk, midi_clock_pulses);
+  // Detect MIDI clock Start rising edge (midi_clk just became true this frame).
+  const bool midi_clk_rose = (!prev_midi_clk && midi_clk && GlobalSettings.midi_clock_receive);
 
   // Determine how many clock ticks to process this iteration.
   // MIDI clock: may be >1 if multiple 0xF8 bytes arrived during a single poll
@@ -784,9 +787,10 @@ void loop() {
     }
   }
 
-  if (inputs[RUN].rising()) {
-    engine.Reset();
-    // If a chain is active, restart it from the first pattern and discard any queued chain.
+  if (inputs[RUN].rising() || midi_clk_rose) {
+    // midi_poll already called engine.Reset() on MIDI Start; only reset for hardware button.
+    if (!midi_clk_rose) engine.Reset();
+    // Restart chain from first pattern on every start (hardware or MIDI clock).
     if (s_chain_active && s_chain_len > 1) {
       s_chain_pos       = 0;
       s_chain_queue_len = 0;
@@ -1273,6 +1277,13 @@ void loop() {
   if (inputs[RUN].falling() && !midi_clk) {
     DAC::SetGate(false);
     engine.Reset();
+    // Reset chain to first pattern on stop so next start begins at chain[0].
+    if (s_chain_active && s_chain_len > 1) {
+      s_chain_pos       = 0;
+      s_chain_queue_len = 0;
+      engine.SetPattern(s_chain_pats[0], true);
+      emit_chain_state();
+    }
     midi_send_step_position(engine.get_patsel(), 0);
   }
 
