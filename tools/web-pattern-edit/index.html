@@ -1969,6 +1969,9 @@
   function sendStepLockUpdate(pat, step, locked) {
     sendSysex(new Uint8Array([0x7d, 0x19, pat & 0x0f, step & 0x3f, locked ? 1 : 0]));
   }
+  function sendRatchetUpdate(pat, step, val) {
+    sendSysex(new Uint8Array([0x7d, 0x1b, pat & 0x0f, step & 0x3f, val & 0x03]));
+  }
 
   /** Send per-step deltas to the 303 by diffing current blob against lastSentBlob. */
   function sendDelta(pat, blob) {
@@ -1987,6 +1990,14 @@
       var prevLock = lastSentBlob ? getStepLock(lastSentBlob, i) : false;
       if (curLock !== prevLock) {
         sendStepLockUpdate(pat, i, curLock);
+      }
+    }
+    // Send ratchet changes
+    for (var i = 0; i < len; i++) {
+      var curRat  = getRatchet(blob, i);
+      var prevRat = lastSentBlob ? getRatchet(lastSentBlob, i) : 0;
+      if (curRat !== prevRat) {
+        sendRatchetUpdate(pat, i, curRat);
       }
     }
     // Send length change
