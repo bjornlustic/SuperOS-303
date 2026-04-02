@@ -10,8 +10,10 @@ void midi_init(Engine *engine);
 void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive, bool midi_thru);
 /// Channel 1–16 for sequencer Note On/Off (omni listen → 1).
 uint8_t midi_sequencer_out_channel();
-/// Sets `midi_clock_pulse` true when a MIDI Clock byte was received (24 ppqn).
-void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, bool &midi_clock_pulse);
+/// Increments `midi_clock_pulses` for each MIDI Clock byte received (24 ppqn).
+/// Using a counter instead of a boolean ensures no clock ticks are lost when
+/// multiple clocks arrive during a single poll (e.g. while parsing a long SysEx).
+void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses);
 /// Call once per 16th when `engine.Clock()` returned true while transport running.
 void midi_after_clock(Engine &engine, uint8_t transpose);
 /// Call when `engine.is_ratchet_retrigger()` returns true (sub-tick within a ratcheted step).
