@@ -73,13 +73,21 @@ static uint8_t s_chain_pos        = 0;
 static bool    s_chain_active     = false;
 static uint8_t s_chain_anchor_key = 0xff; // key index 0-7; 0xff = not building
 static uint8_t s_chain_bank       = 0;    // bank (0=A, 1=B) of the chain being built
-static bool     s_chain_hold_loop    = false; // true this frame: loop current pattern
+static bool     s_chain_hold_loop       = false; // true this frame: loop when target reached
+static uint8_t  s_chain_hold_target_pat = 0xff;  // actual pattern to loop (0xff = any/none)
 static uint8_t  s_chain_queued[4]    = {0, 0, 0, 0};
 static uint8_t  s_chain_queue_len    = 0;     // ≥1 = pattern(s) waiting to activate
 static uint8_t  s_chain_hold_key     = 0xff;  // key being tracked for tap/hold
 static uint32_t s_chain_hold_ms      = 0;     // millis() when hold key was pressed
 static bool     s_chain_hold_crossed = false; // hold threshold crossed
 static const uint16_t CHAIN_HOLD_MS  = 300;   // tap vs. hold threshold (ms)
+
+// Broadcast current chain state to web editor (SysEx 0x1A).
+static void emit_chain_state() {
+  midi_send_chain_state(
+    s_chain_active ? s_chain_len : 0, s_chain_pats,
+    s_chain_queue_len, s_chain_queued);
+}
 
 // =============================================================================
 // Setup menu: hold FUNCTION + press CLEAR (TAP not held) → main menu.
@@ -498,31 +506,46 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     }
 
     // ── Pattern select inputs ──
-    if (clk_run && s_chain_active && s_chain_len > 1) {
-      // Running in chain:
-      //   new key pressed while another key is already held → queue new chain
-      //   single key tap (quick press+release)              → queue single pattern
-      //   single key hold (> CHAIN_HOLD_MS)                → loop current pattern
+    if (clk_run) {
+      // Running: chain building always available (whether or not a chain is currently active).
+      //   two keys pressed simultaneously / hold+tap → build or queue a chain
+      //   single key tap (quick press+release)       → queue single pattern (or chain pattern)
+      //   single key hold (> CHAIN_HOLD_MS)          → loop that pattern when chain reaches it
       const uint32_t now = (uint32_t)millis();
 
-      // 1. Detect hold+new-key: any rising key with another key already held
+      // 1. Detect hold+new-key: any rising key with another key already held → build chain
       bool chain_built = false;
-      if (s_chain_queue_len == 0) { // don't overwrite an existing queue
-        for (uint8_t ni = 0; ni < 8 && !chain_built; ++ni) {
-          if (!inputs[ni].rising()) continue;
-          for (uint8_t hi2 = 0; hi2 < 8; ++hi2) {
-            if (hi2 == ni || !inputs[hi2].read()) continue;
-            const uint8_t lo2 = (hi2 < ni) ? hi2 : ni;
-            uint8_t       ht  = (hi2 > ni) ? hi2 : ni;
-            if (ht - lo2 > 3) ht = lo2 + 3;
-            s_chain_queue_len = ht - lo2 + 1;
-            for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
-              s_chain_queued[ci] = bank * 8 + lo2 + ci;
-            s_chain_hold_key     = 0xff; // cancel any pending tap
-            s_chain_hold_crossed = false;
-            chain_built = true;
-            break;
+      for (uint8_t ni = 0; ni < 8 && !chain_built; ++ni) {
+        if (!inputs[ni].rising()) continue;
+        for (uint8_t hi2 = 0; hi2 < 8; ++hi2) {
+          if (hi2 == ni || !inputs[hi2].read()) continue;
+          const uint8_t lo2 = (hi2 < ni) ? hi2 : ni;
+          uint8_t       ht  = (hi2 > ni) ? hi2 : ni;
+          if (ht - lo2 > 3) ht = lo2 + 3;
+          const uint8_t new_len = ht - lo2 + 1;
+          s_chain_hold_key     = 0xff; // cancel any pending tap
+          s_chain_hold_crossed = false;
+          s_chain_hold_target_pat = 0xff;
+          if (s_chain_active && s_chain_len > 1) {
+            // Already in chain: queue the new chain; current chain must finish first
+            if (s_chain_queue_len == 0) { // don't overwrite an existing queue
+              s_chain_queue_len = new_len;
+              for (uint8_t ci = 0; ci < new_len; ++ci)
+                s_chain_queued[ci] = bank * 8 + lo2 + ci;
+            }
+          } else {
+            // Not in chain: activate new chain immediately.
+            // Set pos to len-1 so the chain advance queues pats[0] as next.
+            s_chain_active = true;
+            s_chain_len    = new_len;
+            for (uint8_t ci = 0; ci < new_len; ++ci)
+              s_chain_pats[ci] = bank * 8 + lo2 + ci;
+            s_chain_pos       = new_len - 1;
+            s_chain_queue_len = 0;
           }
+          emit_chain_state();
+          chain_built = true;
+          break;
         }
       }
 
@@ -545,23 +568,33 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
 
         // Update hold threshold
         if (s_chain_hold_key != 0xff && !s_chain_hold_crossed &&
-            (now - s_chain_hold_ms) >= CHAIN_HOLD_MS)
-          s_chain_hold_crossed = true;
+            (now - s_chain_hold_ms) >= CHAIN_HOLD_MS) {
+          s_chain_hold_crossed    = true;
+          s_chain_hold_target_pat = bank * 8 + s_chain_hold_key; // loop this when reached
+        }
 
         // Hold key released
         if (s_chain_hold_key != 0xff && inputs[s_chain_hold_key].falling()) {
           if (!s_chain_hold_crossed) {
-            // Tap: queue single pattern — chain finishes current then goes to it
-            s_chain_queue_len = 1;
-            s_chain_queued[0] = bank * 8 + s_chain_hold_key;
+            // Tap: queue single pattern
+            if (s_chain_active && s_chain_len > 1) {
+              // In chain: queue as single → deactivates chain when reached
+              s_chain_queue_len = 1;
+              s_chain_queued[0] = bank * 8 + s_chain_hold_key;
+            } else {
+              // Not in chain: direct pattern switch
+              engine.SetPattern(bank * 8 + s_chain_hold_key, false);
+            }
+            emit_chain_state();
           }
-          // else hold released: continue chain normally
-          s_chain_hold_key     = 0xff;
-          s_chain_hold_crossed = false;
+          // else hold released: chain continues advancing (hold_loop cleared below)
+          s_chain_hold_key        = 0xff;
+          s_chain_hold_crossed    = false;
+          s_chain_hold_target_pat = 0xff;
         }
       }
 
-      // Hold-to-loop: threshold crossed, pure single-key hold
+      // Hold-to-loop: only active while key still held past threshold
       s_chain_hold_loop = (s_chain_hold_key != 0xff && s_chain_hold_crossed);
 
     } else if (!clk_run) {
@@ -607,15 +640,8 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
             s_chain_active = false;
           }
           s_chain_anchor_key = 0xff;
+          emit_chain_state();
         }
-      }
-    } else {
-      // Running without chain: normal single-pattern select
-      s_chain_hold_key  = 0xff;
-      s_chain_hold_loop = false;
-      for (uint8_t i = 0; i < 8; ++i) {
-        if (inputs[i].rising())
-          engine.SetPattern(bank * 8 + i, false);
       }
     }
 
@@ -623,14 +649,16 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     if (inputs[ACCENT_KEY].rising()) {
       s_chain_active     = false; s_chain_len       = 0;
       s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
-      s_chain_hold_key   = 0xff;
+      s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
       engine.SetPattern(engine.get_patsel() % 8, !clk_run); // A
+      emit_chain_state();
     }
     if (inputs[SLIDE_KEY].rising()) {
       s_chain_active     = false; s_chain_len       = 0;
       s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
-      s_chain_hold_key   = 0xff;
+      s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
       engine.SetPattern(engine.get_patsel() % 8 + 8, !clk_run); // B
+      emit_chain_state();
     }
     break;
   }
@@ -716,6 +744,39 @@ void loop() {
     s_len_black_pressed = false;
   }
 
+  // Apply chain state received from web editor (SysEx 0x1A), or re-broadcast on config request
+  {
+    uint8_t rx_al, rx_ap[4], rx_ql, rx_qp[4];
+    if (midi_get_received_chain(&rx_al, rx_ap, &rx_ql, rx_qp)) {
+      if (rx_al == 0xff) {
+        // Config request sentinel: just re-broadcast current chain state, no change
+        emit_chain_state();
+      } else {
+        // Apply new chain state from web
+        if (rx_al > 1) {
+          s_chain_active = true;
+          s_chain_len    = rx_al;
+          for (uint8_t ci = 0; ci < rx_al; ++ci) s_chain_pats[ci] = rx_ap[ci];
+          s_chain_pos    = s_chain_len - 1; // chain advance will queue pats[0] next
+        } else if (rx_al == 1) {
+          s_chain_active = false;
+          s_chain_len    = 1;
+          s_chain_pats[0] = rx_ap[0];
+          engine.SetPattern(rx_ap[0], !clk_run);
+        } else {
+          s_chain_active = false;
+          s_chain_len    = 0;
+        }
+        s_chain_queue_len = rx_ql;
+        for (uint8_t ci = 0; ci < rx_ql; ++ci) s_chain_queued[ci] = rx_qp[ci];
+        s_chain_anchor_key      = 0xff;
+        s_chain_hold_key        = 0xff;
+        s_chain_hold_loop       = false;
+        s_chain_hold_target_pat = 0xff;
+      }
+    }
+  }
+
   if (inputs[RUN].rising()) {
     engine.Reset();
     // If a chain is active, restart it from the first pattern and discard any queued chain.
@@ -724,6 +785,7 @@ void loop() {
       s_chain_queue_len = 0;
       engine.SetPattern(s_chain_pats[0], true);
     }
+    emit_chain_state();
   }
 
   // -=-=- Process inputs and set LEDs -=-=-
@@ -821,6 +883,7 @@ void loop() {
   // ── Pattern chain advance ──
   if (s_chain_active && s_chain_len > 1 && clk_run) {
     const uint8_t cur = engine.get_patsel();
+    bool chain_state_changed = false;
 
     // Activate queued item when its first pattern starts playing
     if (s_chain_queue_len > 0 && cur == s_chain_queued[0]) {
@@ -835,7 +898,8 @@ void loop() {
         s_chain_active = false;
         s_chain_len    = 0;
       }
-      s_chain_queue_len = 0;
+      s_chain_queue_len    = 0;
+      chain_state_changed  = true;
     }
 
     if (s_chain_active && s_chain_len > 1) {
@@ -843,18 +907,21 @@ void loop() {
       for (uint8_t ci = 0; ci < s_chain_len; ++ci)
         if (s_chain_pats[ci] == cur) { s_chain_pos = ci; break; }
 
-      // Queue next: hold-loop > queued chain (only after current chain completes) > advance
+      // Queue next: hold-loop (only when chain reaches held pattern) > queued chain > advance
       uint8_t next_pat;
-      if (s_chain_hold_loop) {
+      if (s_chain_hold_loop && (s_chain_hold_target_pat == 0xff || cur == s_chain_hold_target_pat)) {
+        // Loop: either any pattern (legacy) or specifically the held one
         next_pat = cur;
       } else if (s_chain_queue_len > 0 && s_chain_pos == s_chain_len - 1) {
-        // At the last pattern of the current chain: now hand off to the queued chain
+        // At the last pattern of the current chain: hand off to the queued chain
         next_pat = s_chain_queued[0];
       } else {
         next_pat = s_chain_pats[(s_chain_pos + 1) % s_chain_len];
       }
       engine.SetPattern(next_pat);
     }
+
+    if (chain_state_changed) emit_chain_state();
   }
 
   // show all pressed buttons
