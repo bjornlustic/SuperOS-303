@@ -1009,6 +1009,10 @@ void loop() {
       s_display_group = new_group;
       s_group_debounce_val = new_group;
       s_group_debounce_count = GROUP_DEBOUNCE_FRAMES;
+      if (new_group != engine.get_group()) {
+        engine.SetGroup(new_group);
+        midi_send_group_update(new_group);
+      }
     } else if (new_group != s_display_group) {
       if (new_group == s_group_debounce_val) {
         s_group_debounce_count++;
