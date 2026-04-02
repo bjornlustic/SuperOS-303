@@ -58,6 +58,10 @@ void midi_send_length_update(uint8_t pat, uint8_t len);
 /// Format: F0 7D 17 <direction:0-4> F7
 void midi_send_direction_update(uint8_t direction);
 
+/// Broadcast pattern group change to host (SysEx 0x1C).
+/// Format: F0 7D 1C <group:0-3> F7
+void midi_send_group_update(uint8_t group);
+
 /// Broadcast a single step-lock toggle to host (SysEx 0x19).
 /// Format: F0 7D 19 <pat:0-15> <step:0-63> <locked:0|1> F7
 void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);

@@ -26,6 +26,8 @@ static uint8_t transpose = 12; // range is 0 to 47; 0 = no transpose
 static PinState inputs[INPUT_COUNT];
 
 static uint8_t tracknum = 0;
+static uint8_t s_prev_tracknum = 0xff; // 0xff = not yet initialized
+static uint8_t s_display_group = 0;    // group shown by dial (may differ from playing group when running)
 static bool step_counter = false;
 static bool midi_clk = false;
 static bool wrap_edit = false;
@@ -476,27 +478,25 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
 
   case NORMAL_MODE: {
     const uint8_t bank = engine.get_patsel() >> 3;
+    const bool browsing_other_group = clk_run && (s_display_group != engine.get_group());
 
     // ── LEDs ──
-    // Set solid LEDs first, then flash current playing on top so it always blinks.
-    // Show all queued patterns (chain or single) solid while waiting to activate.
-    for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
-      Leds::Set(OutputIndex(s_chain_queued[ci] & 0x7), true);
-    if (s_chain_active && s_chain_len > 1) {
-      // Active chain: all members solid (current playing overridden below)
-      for (uint8_t ci = 0; ci < s_chain_len; ++ci)
-        Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
-    } else if (s_chain_anchor_key != 0xff) {
-      // Building chain (stopped): tentative chain solid
-      for (uint8_t ci = 0; ci < s_chain_len; ++ci)
-        Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
-    } else {
-      // No chain: show queued pattern solid
-      if (engine.get_patsel() != engine.get_next())
-        Leds::Set(OutputIndex(engine.get_next() & 0x7), true);
+    // Suppress pattern LEDs when browsing a different group while running.
+    if (!browsing_other_group) {
+      for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
+        Leds::Set(OutputIndex(s_chain_queued[ci] & 0x7), true);
+      if (s_chain_active && s_chain_len > 1) {
+        for (uint8_t ci = 0; ci < s_chain_len; ++ci)
+          Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
+      } else if (s_chain_anchor_key != 0xff) {
+        for (uint8_t ci = 0; ci < s_chain_len; ++ci)
+          Leds::Set(OutputIndex(s_chain_pats[ci] & 0x7), true);
+      } else {
+        if (engine.get_patsel() != engine.get_next())
+          Leds::Set(OutputIndex(engine.get_next() & 0x7), true);
+      }
+      Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
     }
-    // Current playing always flashes on top of everything
-    Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
     Leds::Set(ACCENT_KEY_LED, !bank); // A
     Leds::Set(SLIDE_KEY_LED,   bank); // B
 
@@ -506,7 +506,21 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     }
 
     // ── Pattern select inputs ──
-    if (clk_run) {
+    if (clk_run && browsing_other_group) {
+      // Running in a different group: key press switches groups and selects pattern
+      for (uint8_t i = 0; i < 8; ++i) {
+        if (inputs[i].rising()) {
+          engine.SetGroup(s_display_group);
+          midi_send_group_update(s_display_group);
+          for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
+            midi_send_pattern_update(_pi);
+          engine.SetPattern(bank * 8 + i, false);
+          emit_chain_state();
+          break;
+        }
+      }
+    }
+    if (clk_run && !browsing_other_group) {
       // Running: chain building always available (whether or not a chain is currently active).
       //   two keys pressed simultaneously / hold+tap → build or queue a chain
       //   single key tap (quick press+release)       → queue single pattern (or chain pattern)
@@ -747,6 +761,13 @@ void loop() {
   if ((inputs[WRITE_MODE].falling() && !clk_run) ||
       (inputs[RUN].falling() && !midi_clk)) {
     engine.Save();
+    // On clock stop: if browsing a different group, switch to it
+    if (inputs[RUN].falling() && !midi_clk && s_display_group != engine.get_group()) {
+      engine.SetGroup(s_display_group);
+      midi_send_group_update(s_display_group);
+      for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
+        midi_send_pattern_update(_pi);
+    }
   }
   // Reset length editor state when write mode is released
   if (inputs[WRITE_MODE].falling()) {
@@ -964,6 +985,23 @@ void loop() {
   tracknum = uint8_t(inputs[TRACK_BIT0].held()
            | (inputs[TRACK_BIT1].held() << 1)
            | (inputs[TRACK_BIT2].held() << 2));
+
+  // Pattern group dial (positions 1-2=group0, 3-4=group1, 5-6=group2, 7=group3)
+  if (!inputs[TRACK_SEL].held()) {
+    const uint8_t new_group = uint8_t(tracknum <= 1 ? 0 : tracknum <= 3 ? 1 : tracknum <= 5 ? 2 : 3);
+    if (s_prev_tracknum == 0xff) s_display_group = new_group; // init on first loop
+    if (new_group != s_display_group) {
+      s_display_group = new_group;
+      if (!clk_run) {
+        engine.SetGroup(new_group);
+        midi_send_group_update(new_group);
+        // Broadcast all 16 patterns for the new group to web editor
+        for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
+          midi_send_pattern_update(_pi);
+      }
+    }
+    s_prev_tracknum = tracknum;
+  }
 
   if (inputs[FUNCTION_KEY].rising()) {
     if (s_dir_mode) {

@@ -503,6 +503,12 @@ void midi_send_direction_update(uint8_t direction) {
   tx_push_message(inner, 3);
 }
 
+// --- Group update broadcast (SysEx 0x1C) -----------------------------------------
+void midi_send_group_update(uint8_t group) {
+  const uint8_t inner[3] = {0x7D, 0x1C, (uint8_t)(group & 0x03)};
+  tx_push_message(inner, 3);
+}
+
 // --- Metronome MIDI notes --------------------------------------------------------
 static uint8_t s_metro_note_on = 0;
 
