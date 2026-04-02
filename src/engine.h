@@ -616,11 +616,7 @@ inline void normalize_pattern_times(Sequence &s) {
 static constexpr int SETTINGS_SIZE = 128;
 static constexpr int PATTERN_SIZE = MAX_STEPS * 2; // in-RAM / SysEx blob size (128 bytes)
 
-// Bump version when pattern EEPROM layout/meaning changes.
-const char *const sig_pew_v2 = "PewPewPew!!2"; // v2: sequential pitch slots
-const char *const sig_pew_v3 = "PewPewPew!!3"; // v3: 1:1 pitch/time, 64-step
-const char *const sig_pew_v4 = "PewPewPew!!4"; // v4: 1:1 pitch/time, 16-step groups
-const char *const sig_pew    = "PewPewPew!!5"; // v5: groups 0-2=16-step, group 3=64-step
+const char *const sig_pew = "PewPewPew!!5"; // v5: groups 0-2=16-step, group 3=64-step
 
 extern EEPROMClass storage;
 
@@ -645,15 +641,10 @@ struct PersistentSettings {
   void Save() { storage.put(0, signature); }
 
   bool Validate() const {
-    if (strncmp(signature, sig_pew,    12) == 0) return true; // v5: current
-    if (strncmp(signature, sig_pew_v4, 12) == 0) return true; // v4: needs migration
-    if (strncmp(signature, sig_pew_v3, 12) == 0) return true; // v3: needs migration
+    if (strncmp(signature, sig_pew, 12) == 0) return true;
     strcpy((char *)signature, sig_pew);
     return false;
   }
-
-  bool IsV3() const { return strncmp(signature, sig_pew_v3, 12) == 0; }
-  bool IsV4() const { return strncmp(signature, sig_pew_v4, 12) == 0; }
 
   void load_midi_from_storage() {
     const uint8_t ch   = storage.read(kEepromMidiChannel);
@@ -730,105 +721,6 @@ inline void ReadPattern(Sequence &seq, int idx, int group) {
   seq.length = compact[31];
 }
 
-// Migrate v3 (128-byte patterns, single group) -> v4 (32-byte compact, 4 groups).
-// Reads old layout from EEPROM using raw byte offsets; writes compact format.
-// Processes patterns 0-15 in order (safe: new offsets never overlap unread old data).
-inline void migrate_v3_to_v4() {
-  uint8_t buf[128];
-  // Init groups 1-3 as blank first (may overlap old offsets above pattern 0)
-  // Actually, old pattern p was at SETTINGS_SIZE + p*128, new is at SETTINGS_SIZE + p*32.
-  // For p=0..15: new end <= 128 + 15*32 + 31 = 607 < old start of p=1 (256). Safe to process in order.
-  uint8_t blank[EEPROM_PATTERN_SIZE];
-  memset(blank, 0, sizeof(blank));
-  for (uint8_t i = 0; i < 16; ++i) blank[i] = PITCH_EMPTY;
-  blank[31] = 8;
-
-  for (uint8_t p = 0; p < NUM_PATTERNS; ++p) {
-    // Read old 128-byte blob from v3 location
-    int old_off = SETTINGS_SIZE + p * 128;
-    for (uint8_t i = 0; i < 128; ++i)
-      buf[i] = storage.read(old_off + i);
-
-    uint8_t compact[EEPROM_PATTERN_SIZE];
-    memcpy(compact,      buf,       16); // pitch[0..15]
-    memcpy(compact + 16, buf + 64,   8); // time_data[0..7]
-    memcpy(compact + 24, buf + 96,   2); // step_lock[0..1]
-    memcpy(compact + 26, buf + 105,  4); // ratchets (reserved[1..4])
-    uint8_t dir   = buf[104] & 0x07;
-    uint8_t stash = (buf[125] < MAX_USER_STEPS) ? buf[125] : 0;
-    compact[30] = dir | uint8_t(stash << 3);
-    uint8_t L = buf[127];
-    compact[31] = (L >= 1 && L <= MAX_USER_STEPS) ? L : 8;
-
-    // Write to group 0 location
-    int new_off = SETTINGS_SIZE + p * EEPROM_PATTERN_SIZE;
-    for (uint8_t i = 0; i < EEPROM_PATTERN_SIZE; ++i)
-      storage.update(new_off + i, compact[i]);
-  }
-  // Initialize groups 1-3 with blank patterns
-  for (uint8_t g = 1; g < NUM_GROUPS; ++g) {
-    for (uint8_t p = 0; p < NUM_PATTERNS; ++p) {
-      int off = SETTINGS_SIZE + (g * NUM_PATTERNS + p) * EEPROM_PATTERN_SIZE;
-      for (uint8_t i = 0; i < EEPROM_PATTERN_SIZE; ++i)
-        storage.update(off + i, blank[i]);
-    }
-  }
-  strcpy(GlobalSettings.signature, sig_pew_v4);
-  GlobalSettings.Save();
-}
-
-// Migrate v4 (all groups compact 32-byte) -> v5 (groups 0-2 compact, group 3 full 128-byte).
-// Group 3 patterns expand from compact at old offset to full blob at G4_EEPROM_BASE.
-// Process p=15..0 so later patterns are relocated before earlier ones overlap them.
-inline void migrate_v4_to_v5() {
-  uint8_t compact[EEPROM_PATTERN_SIZE];
-  for (int8_t p = NUM_PATTERNS - 1; p >= 0; --p) {
-    int old_off = SETTINGS_SIZE + (3 * NUM_PATTERNS + p) * EEPROM_PATTERN_SIZE;
-    for (uint8_t i = 0; i < EEPROM_PATTERN_SIZE; ++i)
-      compact[i] = storage.read(old_off + i);
-    // Expand compact -> full 128-byte blob
-    uint8_t blob[EEPROM_G4_PATTERN_SIZE];
-    memset(blob,      PITCH_EMPTY, 64); // pitch[0..63]
-    memset(blob + 64, 0,           64); // time+lock+reserved+length
-    memcpy(blob,       compact,      16); // pitch[0..15]
-    memcpy(blob + 64,  compact + 16,  8); // time_data[0..7]
-    memcpy(blob + 96,  compact + 24,  2); // step_lock[0..1]
-    memcpy(blob + 105, compact + 26,  4); // ratchets (reserved[1..4])
-    blob[104] = compact[30] & 0x07;        // direction in reserved[0]
-    blob[125] = (compact[30] >> 3) & 0x1F; // stash_count in reserved[21]
-    uint8_t L = compact[31];
-    blob[127] = (L >= 1 && L <= MAX_USER_STEPS) ? L : 8;
-    int new_off = G4_EEPROM_BASE + p * EEPROM_G4_PATTERN_SIZE;
-    for (uint8_t i = 0; i < EEPROM_G4_PATTERN_SIZE; ++i)
-      storage.update(new_off + i, blob[i]);
-  }
-  strcpy(GlobalSettings.signature, sig_pew);
-  GlobalSettings.Save();
-}
-
-/// Migrate a pattern from v2 (sequential pitch slots by NOTE event) to v3 (1:1 pitch/time).
-/// Reads note pitches in order from the old array, assigns them to NOTE time positions.
-/// TIE and REST positions get PITCH_DEFAULT (preserved but not played).
-inline void migrate_pattern_v2_to_v3(Sequence &s) {
-  uint8_t old_pitch[MAX_STEPS];
-  memcpy(old_pitch, s.pitch, MAX_STEPS);
-
-  // Fill all positions with PITCH_DEFAULT first
-  for (uint8_t i = 0; i < MAX_STEPS; ++i)
-    s.pitch[i] = PITCH_DEFAULT;
-
-  uint8_t note_idx = 0;
-  for (uint8_t i = 0; i < s.length; ++i) {
-    const uint8_t t = s.time(i);
-    if (t == 1) {
-      // NOTE step: pull the next sequential pitch from old array
-      if (note_idx < MAX_STEPS && old_pitch[note_idx] != PITCH_EMPTY)
-        s.pitch[i] = old_pitch[note_idx];
-      ++note_idx;
-    }
-    // TIE / REST: leave PITCH_DEFAULT — pitch is preserved but not played
-  }
-}
 
 // =============================================================================
 // Engine — patterns + clock + gate
@@ -895,9 +787,6 @@ struct Engine {
   void Load() {
     GlobalSettings.Load();
     bool valid = GlobalSettings.Validate();
-
-    if (valid && GlobalSettings.IsV3()) migrate_v3_to_v4();
-    if (GlobalSettings.IsV4()) migrate_v4_to_v5();
 
     if (valid) {
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {

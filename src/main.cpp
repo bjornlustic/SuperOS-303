@@ -470,7 +470,13 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                const bool &clk_run) {
   switch (engine.get_mode()) {
   case PITCH_MODE:
-    if (clk_run) PrintPitch(); // live pitch chase while sequencer runs; TAP overlay handles stopped clock
+    if (clk_run) {
+      PrintPitch();
+      const uint8_t tp = engine.get_time_pos();
+      Leds::Set(OutputIndex(tp & 0x7), true);
+      Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
+      if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4);
+    }
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
