@@ -6,6 +6,7 @@
  *   "PewPewPew!!2" — original: pitch slots packed sequentially by NOTE event
  *   "PewPewPew!!3" — 1:1 pitch/time model, 64-step, 16 patterns
  *   "PewPewPew!!4" — 1:1 pitch/time model, 16-step max, 4 groups x 16 patterns (32 bytes/pattern)
+ *   "PewPewPew!!5" — groups 0-2: 16-step max (32 bytes/pattern); group 3: 64-step max (128 bytes/pattern)
  */
 
 #pragma once
@@ -19,7 +20,11 @@ static constexpr int MAX_STEPS = 64;
 static constexpr int MAX_USER_STEPS = 16;
 static constexpr int NUM_GROUPS = 4;
 static constexpr int NUM_PATTERNS = 16;
-static constexpr int EEPROM_PATTERN_SIZE = 32; // compact EEPROM bytes per pattern (supports 4 groups in 4KB)
+static constexpr int EEPROM_PATTERN_SIZE = 32; // compact EEPROM bytes per pattern (groups 0-2)
+// Groups 0-2 use 32-byte compact; group 3 uses full 128-byte blob at a separate EEPROM base.
+static constexpr int EEPROM_G4_PATTERN_SIZE = 128; // = PATTERN_SIZE, defined after
+static constexpr int G4_EEPROM_BASE = 128 + (NUM_GROUPS - 1) * NUM_PATTERNS * EEPROM_PATTERN_SIZE; // 1664
+static constexpr uint8_t max_steps_for_group(uint8_t g) { return g == 3 ? uint8_t(MAX_STEPS) : MAX_USER_STEPS; }
 
 enum SequencerMode {
   NORMAL_MODE,
@@ -353,7 +358,7 @@ struct Sequence {
     pitch[pitch_pos] =
         (pack_pitch(p, oct_btn) & 0x3f) | (pitch[pitch_pos] & 0xc0);
   }
-  void SetLength(uint8_t len) { length = constrain(len, 1, MAX_USER_STEPS); }
+  void SetLength(uint8_t len, uint8_t max_len = MAX_USER_STEPS) { length = constrain(len, 1, max_len); }
   void nudge_octave_buttons(int dir) {
     init_if_empty();
     const uint8_t e = pitch[pitch_pos] & 0x3f;
@@ -381,8 +386,8 @@ struct Sequence {
     pitch[pitch_pos] = (pitch[pitch_pos] & ~(1 << 6)) | (on << 6);
   }
 
-  bool BumpLength() {
-    if (++length == MAX_USER_STEPS) return false;
+  bool BumpLength(uint8_t max_len = MAX_USER_STEPS) {
+    if (++length == max_len) return false;
     return true;
   }
 
@@ -614,7 +619,8 @@ static constexpr int PATTERN_SIZE = MAX_STEPS * 2; // in-RAM / SysEx blob size (
 // Bump version when pattern EEPROM layout/meaning changes.
 const char *const sig_pew_v2 = "PewPewPew!!2"; // v2: sequential pitch slots
 const char *const sig_pew_v3 = "PewPewPew!!3"; // v3: 1:1 pitch/time, 64-step
-const char *const sig_pew    = "PewPewPew!!4"; // v4: 1:1 pitch/time, 16-step groups
+const char *const sig_pew_v4 = "PewPewPew!!4"; // v4: 1:1 pitch/time, 16-step groups
+const char *const sig_pew    = "PewPewPew!!5"; // v5: groups 0-2=16-step, group 3=64-step
 
 extern EEPROMClass storage;
 
@@ -639,13 +645,15 @@ struct PersistentSettings {
   void Save() { storage.put(0, signature); }
 
   bool Validate() const {
-    if (strncmp(signature, sig_pew, 12) == 0)    return true; // v4
+    if (strncmp(signature, sig_pew,    12) == 0) return true; // v5: current
+    if (strncmp(signature, sig_pew_v4, 12) == 0) return true; // v4: needs migration
     if (strncmp(signature, sig_pew_v3, 12) == 0) return true; // v3: needs migration
     strcpy((char *)signature, sig_pew);
     return false;
   }
 
   bool IsV3() const { return strncmp(signature, sig_pew_v3, 12) == 0; }
+  bool IsV4() const { return strncmp(signature, sig_pew_v4, 12) == 0; }
 
   void load_midi_from_storage() {
     const uint8_t ch   = storage.read(kEepromMidiChannel);
@@ -676,6 +684,14 @@ extern PersistentSettings GlobalSettings;
 //   [30]     bits[2:0]=direction, bits[7:3]=stash_count
 //   [31]     length
 inline void WritePattern(Sequence &seq, int idx, int group) {
+  if (group == 3) {
+    // Group 3: full 128-byte blob directly (supports 64 steps)
+    const uint8_t *blob = seq.pitch; // pitch[] is the start of the 128-byte in-RAM layout
+    int off = G4_EEPROM_BASE + idx * EEPROM_G4_PATTERN_SIZE;
+    for (uint8_t i = 0; i < EEPROM_G4_PATTERN_SIZE; ++i)
+      storage.update(off + i, blob[i]);
+    return;
+  }
   uint8_t compact[EEPROM_PATTERN_SIZE];
   memcpy(compact,       seq.pitch,        16);
   memcpy(compact + 16,  seq.time_data,     8);
@@ -689,6 +705,14 @@ inline void WritePattern(Sequence &seq, int idx, int group) {
     storage.update(off + i, compact[i]);
 }
 inline void ReadPattern(Sequence &seq, int idx, int group) {
+  if (group == 3) {
+    // Group 3: full 128-byte blob directly (supports 64 steps)
+    int off = G4_EEPROM_BASE + idx * EEPROM_G4_PATTERN_SIZE;
+    uint8_t *blob = seq.pitch;
+    for (uint8_t i = 0; i < EEPROM_G4_PATTERN_SIZE; ++i)
+      blob[i] = storage.read(off + i);
+    return;
+  }
   int off = SETTINGS_SIZE + (group * NUM_PATTERNS + idx) * EEPROM_PATTERN_SIZE;
   uint8_t compact[EEPROM_PATTERN_SIZE];
   for (uint8_t i = 0; i < EEPROM_PATTERN_SIZE; ++i)
@@ -748,6 +772,35 @@ inline void migrate_v3_to_v4() {
       for (uint8_t i = 0; i < EEPROM_PATTERN_SIZE; ++i)
         storage.update(off + i, blank[i]);
     }
+  }
+  strcpy(GlobalSettings.signature, sig_pew_v4);
+  GlobalSettings.Save();
+}
+
+// Migrate v4 (all groups compact 32-byte) -> v5 (groups 0-2 compact, group 3 full 128-byte).
+// Group 3 patterns expand from compact at old offset to full blob at G4_EEPROM_BASE.
+// Process p=15..0 so later patterns are relocated before earlier ones overlap them.
+inline void migrate_v4_to_v5() {
+  uint8_t compact[EEPROM_PATTERN_SIZE];
+  for (int8_t p = NUM_PATTERNS - 1; p >= 0; --p) {
+    int old_off = SETTINGS_SIZE + (3 * NUM_PATTERNS + p) * EEPROM_PATTERN_SIZE;
+    for (uint8_t i = 0; i < EEPROM_PATTERN_SIZE; ++i)
+      compact[i] = storage.read(old_off + i);
+    // Expand compact -> full 128-byte blob
+    uint8_t blob[EEPROM_G4_PATTERN_SIZE];
+    memset(blob,      PITCH_EMPTY, 64); // pitch[0..63]
+    memset(blob + 64, 0,           64); // time+lock+reserved+length
+    memcpy(blob,       compact,      16); // pitch[0..15]
+    memcpy(blob + 64,  compact + 16,  8); // time_data[0..7]
+    memcpy(blob + 96,  compact + 24,  2); // step_lock[0..1]
+    memcpy(blob + 105, compact + 26,  4); // ratchets (reserved[1..4])
+    blob[104] = compact[30] & 0x07;        // direction in reserved[0]
+    blob[125] = (compact[30] >> 3) & 0x1F; // stash_count in reserved[21]
+    uint8_t L = compact[31];
+    blob[127] = (L >= 1 && L <= MAX_USER_STEPS) ? L : 8;
+    int new_off = G4_EEPROM_BASE + p * EEPROM_G4_PATTERN_SIZE;
+    for (uint8_t i = 0; i < EEPROM_G4_PATTERN_SIZE; ++i)
+      storage.update(new_off + i, blob[i]);
   }
   strcpy(GlobalSettings.signature, sig_pew);
   GlobalSettings.Save();
@@ -843,9 +896,8 @@ struct Engine {
     GlobalSettings.Load();
     bool valid = GlobalSettings.Validate();
 
-    if (valid && GlobalSettings.IsV3()) {
-      migrate_v3_to_v4();
-    }
+    if (valid && GlobalSettings.IsV3()) migrate_v3_to_v4();
+    if (GlobalSettings.IsV4()) migrate_v4_to_v5();
 
     if (valid) {
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
@@ -1269,12 +1321,12 @@ struct Engine {
     }
   }
   void SetLength(uint8_t len) {
-    get_sequence().SetLength(len);
+    get_sequence().SetLength(len, max_steps_for_group(group_));
     stale = true;
   }
   bool BumpLength() {
     stale = true;
-    return get_sequence().BumpLength();
+    return get_sequence().BumpLength(max_steps_for_group(group_));
   }
   void SetMode(SequencerMode m, bool reset = false) {
     if (reset && m != mode_) Reset();
@@ -1343,7 +1395,8 @@ struct Engine {
     uint8_t L = blob128[PATTERN_SIZE - 1];
     if (L < 1 || uint8_t(L) > MAX_STEPS)
       return false;
-    if (L > MAX_USER_STEPS) L = MAX_USER_STEPS;
+    const uint8_t gmax = max_steps_for_group(group_);
+    if (L > gmax) L = gmax;
     memcpy(pattern[idx].pitch, blob128, PATTERN_SIZE);
     pattern[idx].length = L;
     Sequence &s = pattern[idx];
