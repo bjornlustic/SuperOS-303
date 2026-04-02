@@ -302,6 +302,11 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     s_rx_chain_pending = true;
     break;
   }
+  case 0x1D: { // host → 303: queue pattern (switches at next pattern wrap, not immediately)
+    if (n < 3 || !g_eng) return;
+    g_eng->SetPattern(p[2] & 0x0F, false);
+    break;
+  }
   case 0x20: { // request config
     const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                               (GlobalSettings.midi_thru          ? 2 : 0));
