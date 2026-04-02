@@ -5,14 +5,10 @@
 .claude/
 .vscode/
 
-# Local reference material — not for publication
 docs/
 release/
 
-# Web editor (local only; not in git history)
 tools/web-pattern-edit/
 
 # macOS
 .DS_Store
-
-CLAUDE.md
