@@ -817,7 +817,8 @@ struct Engine {
       next_step_dir = 1;
       result = get_sequence().Advance();
       // Apply queued direction change and/or pattern switch at wrap (time_pos == 0).
-      if (0 == get_sequence().time_pos) {
+      // first_step is still true after a reset-first-step (not a real wrap); guard against it.
+      if (0 == get_sequence().time_pos && !get_sequence().first_step) {
         if (direction_change_pending_) {
           direction_ = next_direction_;
           direction_change_pending_ = false;

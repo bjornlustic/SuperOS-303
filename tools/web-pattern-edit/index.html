@@ -1326,35 +1326,30 @@
     chainDragMoved = false;
 
     if (chainHoldActive) {
-      // Released from hold-to-loop: resume chain advance
+      // Released from hold-to-loop: hardware resumes advancing on its own.
+      // Send the current chain state (unchanged) so hardware knows hold is released.
       chainHoldActive = false;
-      if (patChain.length > 1 && midiOut) {
-        var ci = patChain.indexOf(playingPat);
-        if (ci === -1) ci = 0;
-        var nextPat = patChain[(ci + 1) % patChain.length];
-        sendProgramChange(nextPat);
-        queuedPat = nextPat;
-      }
+      sendChainState(patChain, queuedChain);
     } else if (wasDrag && drag.length > 1) {
-      if (patChain.length > 0) {
-        // Already in chain: queue the new chain to play after current
+      if (patChain.length > 1) {
+        // Already in chain: queue the new chain — hardware plays current chain to end first
         queuedChain = drag;
-        if (midiOut) { sendProgramChange(queuedChain[0]); queuedPat = queuedChain[0]; }
+        sendChainState(patChain, queuedChain);
       } else {
         // Not in chain: activate immediately
         patChain    = drag;
         queuedChain = [];
         switchToPat(patChain[0]);
-        if (midiOut) { sendProgramChange(patChain[0]); queuedPat = patChain[0]; }
+        sendChainState(patChain, queuedChain);
       }
     } else {
-      // Tap
-      if (patChain.length > 0) {
-        // In chain: send PC and keep chain display until hardware switches to new pattern
+      // Tap (single pattern or single key release)
+      if (patChain.length > 1) {
+        // In chain: tap queues a single pattern (deactivates chain when reached)
         queuedChain = [];
-        switchToPat(chainAnchor); // update editor to the tapped pattern
-        if (midiOut) { sendProgramChange(chainAnchor); queuedPat = chainAnchor; }
-        // patChain stays alive — updatePlayingStep clears it when hardware leaves chain
+        switchToPat(chainAnchor);
+        sendChainState(patChain, [chainAnchor]); // queue the tapped pattern as single
+        queuedPat = chainAnchor;
       } else {
         queuedChain = [];
         pillClick(chainAnchor);
@@ -1369,22 +1364,38 @@
       switchToPat(p);
       return;
     }
-    var wasActive = (p === activePat && /* same group */ true);
+    var hadChain = patChain.length > 1;
     patChain    = []; // single click clears any chain
     queuedChain = [];
     switchToPat(p);
-    // If clock is running, queue this pattern (Program Change to hardware)
-    // Hardware will switch at end of current pattern
-    if (midiOut && p !== playingPat) {
-      sendProgramChange(p);
+    if (midiOut) {
+      if (hadChain) {
+        // Tell hardware to clear chain and queue this single pattern
+        sendChainState([p], []);
+      } else if (p !== playingPat) {
+        sendProgramChange(p);
+      }
       queuedPat = p;
     }
   }
 
   function sendProgramChange(pat) {
     if (!midiOut) return;
-    var ch = 0; // will be sent on ch1
     midiOut.send([0xC0, pat & 0x0F]);
+  }
+
+  // Send chain state to hardware (SysEx 0x1A).
+  // active: array of pattern indices for active chain (empty = no chain).
+  // queued: array of pattern indices for queued chain (empty = none).
+  function sendChainState(active, queued) {
+    if (!midiOut) return;
+    var inner = new Uint8Array(12);
+    inner[0] = 0x7d; inner[1] = 0x1a;
+    inner[2] = Math.min(active.length, 4);
+    for (var i = 0; i < 4; i++) inner[3 + i] = (i < active.length) ? (active[i] & 15) : 0;
+    inner[7] = Math.min(queued.length, 4);
+    for (var i = 0; i < 4; i++) inner[8 + i] = (i < queued.length) ? (queued[i] & 15) : 0;
+    sendSysex(inner);
   }
 
   function switchGroup(g) {
@@ -1857,34 +1868,14 @@
   function updatePlayingStep(pat, step) {
     if (pat !== playingPat) {
       playingPat = pat;
+      // Clear web-queued-single indicator when hardware starts playing that pattern
       if (pat === queuedPat) queuedPat = -1;
-
-      // Promote queued chain when its first pattern starts playing
-      if (queuedChain.length > 1 && pat === queuedChain[0]) {
-        patChain    = queuedChain.slice();
-        queuedChain = [];
-      }
-
-      // If hardware has moved outside the active chain, deactivate it
-      if (patChain.length > 1 && patChain.indexOf(pat) === -1) {
-        patChain    = [];
-        queuedChain = [];
-      }
 
       // Auto-follow chain: switch editor grid to the playing pattern
       if (patChain.length > 1 && activeGroup === 0 && !editLiveMode) {
         switchToPat(pat);
       }
 
-      // Chain advance: keep next pattern queued
-      if (patChain.length > 1) {
-        var ci = patChain.indexOf(pat);
-        if (ci !== -1) {
-          var nextPat = patChain[(ci + 1) % patChain.length];
-          sendProgramChange(nextPat);
-          queuedPat = nextPat;
-        }
-      }
       refreshAllPills();
     }
     playingStep = step;
@@ -2092,6 +2083,19 @@
         renderGrid();
       }
       log('Length update pat ' + (lPat+1) + ' \u2192 ' + newLen, 'log-ack');
+      return;
+    }
+
+    if (cmd === 0x1a && bytes.length >= 12) {
+      var aLen = bytes[2] & 7;
+      var newActive = [];
+      for (var i = 0; i < aLen && i < 4; i++) newActive.push(bytes[3 + i] & 15);
+      var qLen = bytes[7] & 7;
+      var newQueued = [];
+      for (var i = 0; i < qLen && i < 4; i++) newQueued.push(bytes[8 + i] & 15);
+      patChain    = newActive;
+      queuedChain = newQueued;
+      refreshAllPills();
       return;
     }
 

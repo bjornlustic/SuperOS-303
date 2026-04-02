@@ -159,6 +159,44 @@ static void send_ack(uint8_t status) {
   tx_push_message(inner, 3);
 }
 
+// --- Chain state RX (from web via SysEx 0x1A) -----------------------------------
+static bool    s_rx_chain_pending     = false;
+static uint8_t s_rx_chain_active_len  = 0;
+static uint8_t s_rx_chain_active_pats[4] = {};
+static uint8_t s_rx_chain_queued_len  = 0;
+static uint8_t s_rx_chain_queued_pats[4] = {};
+
+void midi_send_chain_state(uint8_t active_len, const uint8_t *active_pats,
+                            uint8_t queued_len, const uint8_t *queued_pats) {
+  uint8_t inner[12];
+  inner[0] = 0x7D; inner[1] = 0x1A;
+  inner[2] = active_len & 0x07;
+  for (uint8_t i = 0; i < 4; ++i)
+    inner[3 + i] = (active_pats && i < active_len) ? (active_pats[i] & 0x0F) : 0;
+  inner[7] = queued_len & 0x07;
+  for (uint8_t i = 0; i < 4; ++i)
+    inner[8 + i] = (queued_pats && i < queued_len) ? (queued_pats[i] & 0x0F) : 0;
+  tx_push_message(inner, 12);
+}
+
+bool midi_get_received_chain(uint8_t *out_active_len, uint8_t out_active_pats[4],
+                              uint8_t *out_queued_len, uint8_t out_queued_pats[4]) {
+  if (!s_rx_chain_pending) return false;
+  s_rx_chain_pending = false;
+  if (s_rx_chain_active_len == 0xff) {
+    // Sentinel: config request asked us to re-broadcast current state.
+    // Signal main.cpp with active_len=0xff so it just calls emit_chain_state().
+    *out_active_len = 0xff;
+    *out_queued_len = 0;
+    return true;
+  }
+  *out_active_len = s_rx_chain_active_len;
+  for (uint8_t i = 0; i < 4; ++i) out_active_pats[i] = s_rx_chain_active_pats[i];
+  *out_queued_len = s_rx_chain_queued_len;
+  for (uint8_t i = 0; i < 4; ++i) out_queued_pats[i] = s_rx_chain_queued_pats[i];
+  return true;
+}
+
 // --- Sequential dump after 0x13 -------------------------------------------------
 static bool s_dump_active = false;
 static uint8_t s_dump_next = 0;
@@ -200,12 +238,27 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     s_dump_active = true;
     dump_try_advance();
     break;
+  case 0x1A: { // set chain state from host
+    if (n < 12) return;
+    s_rx_chain_active_len = p[2] & 0x07;
+    if (s_rx_chain_active_len > 4) s_rx_chain_active_len = 4;
+    for (uint8_t i = 0; i < 4; ++i)
+      s_rx_chain_active_pats[i] = p[3 + i] & 0x0F;
+    s_rx_chain_queued_len = p[7] & 0x07;
+    if (s_rx_chain_queued_len > 4) s_rx_chain_queued_len = 4;
+    for (uint8_t i = 0; i < 4; ++i)
+      s_rx_chain_queued_pats[i] = p[8 + i] & 0x0F;
+    s_rx_chain_pending = true;
+    break;
+  }
   case 0x20: { // request config
     const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                               (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
     const uint8_t inner[5] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir};
     tx_push_message(inner, 5);
+    s_rx_chain_pending = true; // signal main.cpp to re-broadcast chain state
+    s_rx_chain_active_len = 0xff; // sentinel: "just re-emit current state"
     break;
   }
   case 0x22: { // set config
