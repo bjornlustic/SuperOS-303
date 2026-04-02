@@ -1099,6 +1099,7 @@
     blob[127] = 1;
     setStashCount(blob, 0);
     for (var L = 0; L < 8; L++) blob[96 + L] = 0;
+    for (var R = 0; R < 16; R++) blob[RATCHET_BASE + R] = 0;
   }
   function cloneU8(u) { var x = new Uint8Array(u.length); x.set(u); return x; }
   function blobsEqual(a, b) { for (var i = 0; i < PATTERN_SIZE; i++) if (a[i] !== b[i]) return false; return true; }
@@ -1224,6 +1225,10 @@
   var saveAckPending = false;
   var liveTimer = null;
   var liveEnabled = false;
+  var hwRunning = false;       // true while receiving 0x15 step position messages
+  var hwRunningTimer = null;   // timeout to clear hwRunning after no 0x15 for 500ms
+  var lastSentBlob = null;     // snapshot of last blob sent to hardware (for diffing)
+  var lastSentPat  = -1;       // pattern index of lastSentBlob
   var reflect303Enabled = false;
   var reflect303HistTimer = null;
 
@@ -1948,13 +1953,75 @@
     sendSysex(new Uint8Array([0x7d, 0x22, ch & 0x7f, flags & 0x7f, d & 0x7f]));
   }
 
+  function sendStepUpdate(pat, step, pitchByte, timeNibble) {
+    sendSysex(new Uint8Array([
+      0x7d, 0x16,
+      pat & 0x0f,
+      step & 0x3f,
+      pitchByte & 0x7f,
+      (pitchByte >> 7) & 0x01,
+      timeNibble & 0x0f
+    ]));
+  }
+  function sendLengthUpdate(pat, len) {
+    sendSysex(new Uint8Array([0x7d, 0x18, pat & 0x0f, len & 0x7f]));
+  }
+  function sendStepLockUpdate(pat, step, locked) {
+    sendSysex(new Uint8Array([0x7d, 0x19, pat & 0x0f, step & 0x3f, locked ? 1 : 0]));
+  }
+
+  /** Send per-step deltas to the 303 by diffing current blob against lastSentBlob. */
+  function sendDelta(pat, blob) {
+    var len = blob[127];
+    // Send changed steps (pitch byte + time nibble)
+    for (var i = 0; i < len; i++) {
+      var pitchChanged = !lastSentBlob || blob[i] !== lastSentBlob[i];
+      var timeChanged  = !lastSentBlob || getTime(blob, i) !== getTime(lastSentBlob, i);
+      if (pitchChanged || timeChanged) {
+        sendStepUpdate(pat, i, blob[i], getTime(blob, i));
+      }
+    }
+    // Send step lock changes
+    for (var i = 0; i < len; i++) {
+      var curLock  = getStepLock(blob, i);
+      var prevLock = lastSentBlob ? getStepLock(lastSentBlob, i) : false;
+      if (curLock !== prevLock) {
+        sendStepLockUpdate(pat, i, curLock);
+      }
+    }
+    // Send length change
+    if (!lastSentBlob || len !== lastSentBlob[127]) {
+      sendLengthUpdate(pat, len);
+    }
+    // Update snapshot
+    lastSentBlob = new Uint8Array(blob);
+    lastSentPat  = pat;
+  }
+
   function scheduleLiveSend() {
     if (!liveEnabled || !midiOut) return;
     syncBlob();
     if (liveTimer) clearTimeout(liveTimer);
     liveTimer = setTimeout(function() {
       liveTimer = null;
-      sendPattern(activePat & 15, activeBlob());
+      var pat  = activePat & 15;
+      var blob = activeBlob();
+      if (hwRunning && activeGroup === 0) {
+        // Hardware is playing — send individual step updates to avoid disrupting the sequencer
+        if (lastSentPat !== pat) {
+          // Pattern changed — need a fresh baseline, send full blob
+          sendPattern(pat, blob);
+          lastSentBlob = new Uint8Array(blob);
+          lastSentPat  = pat;
+        } else {
+          sendDelta(pat, blob);
+        }
+      } else {
+        // Clock stopped — safe to send full pattern blob
+        sendPattern(pat, blob);
+        lastSentBlob = new Uint8Array(blob);
+        lastSentPat  = pat;
+      }
     }, 100);
   }
 
@@ -1992,6 +2059,11 @@
       sanitizeStashAfterLoad(raw);
       normalizePatternTimes(raw, raw[127]);
       groups[g][pat].set(raw);
+      // Keep delta baseline in sync with what the hardware has
+      if (g === 0) {
+        lastSentBlob = new Uint8Array(raw);
+        lastSentPat  = pat;
+      }
       pushHistory(g, pat);
       commitIdx[g][pat] = histIdx[g][pat];
       saveGroupsToLS();
@@ -2024,6 +2096,9 @@
 
     if (cmd === 0x15 && bytes.length >= 4) {
       var hPat = bytes[2] & 0x0f, hStep = bytes[3] & 0x3f;
+      hwRunning = true;
+      if (hwRunningTimer) clearTimeout(hwRunningTimer);
+      hwRunningTimer = setTimeout(function() { hwRunning = false; }, 500);
       updatePlayingStep(hPat, hStep);
       return;
     }
@@ -2038,6 +2113,11 @@
       var rBlob = groups[0][rPat];
       rBlob[rStep] = pitchByte;
       setTime(rBlob, rStep, timeNibble);
+      // Keep delta baseline in sync so we don't re-send hardware's own edits
+      if (lastSentBlob && lastSentPat === rPat) {
+        lastSentBlob[rStep] = pitchByte;
+        setTime(lastSentBlob, rStep, timeNibble);
+      }
       saveGroupsToLS();
       // Re-render if this is the currently visible pattern
       if (activeGroup === 0 && rPat === activePat) {
@@ -2065,6 +2145,10 @@
         if (rLock) rBlob[byteIdx] |= (1 << (rStep & 7));
         else rBlob[byteIdx] &= ~(1 << (rStep & 7));
       }
+      if (lastSentBlob && lastSentPat === rPat && byteIdx < 104) {
+        if (rLock) lastSentBlob[byteIdx] |= (1 << (rStep & 7));
+        else lastSentBlob[byteIdx] &= ~(1 << (rStep & 7));
+      }
       saveGroupsToLS();
       if (activeGroup === 0 && rPat === activePat) renderGrid();
       recomputeDirty();
@@ -2089,6 +2173,7 @@
       if (newLen > 64) newLen = 64;
       var lPat = bytes[2] & 0x0f;
       if (lPat < 16) groups[activeGroup][lPat][127] = newLen;
+      if (lastSentBlob && lastSentPat === lPat) lastSentBlob[127] = newLen;
       if (lPat === activePat) {
         document.getElementById('patLen').value = String(newLen);
         renderGrid();
