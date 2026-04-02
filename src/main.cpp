@@ -475,7 +475,11 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     break;
 
   case TIME_MODE:
-    if (clk_run) PrintTime(); // live step chase while sequencer runs; TAP overlay handles stopped clock
+    if (clk_run) {
+      PrintTime();
+      Leds::Set(OutputIndex(engine.get_time_pos() & 0x7), true);
+      Leds::Set(OutputIndex(CSHARP_KEY_LED + (engine.get_time_pos() >> 3)), true);
+    }
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 

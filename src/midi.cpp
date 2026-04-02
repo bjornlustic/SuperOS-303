@@ -351,6 +351,13 @@ static void sysex_cb(byte *data, unsigned sz) {
                     static_cast<unsigned>(sz - 2));
 }
 
+// --- Bank select state (for Ableton Program Change mapping) ----------------------
+// CC 0 = group (0-3), CC 32 = section (0=Bank A patterns 0-7, 1=Bank B patterns 8-15)
+// PC value = pattern within section (0-7)
+// pattern_index = section * 8 + pc; group selects which group of 16 to load.
+static uint8_t s_bank_group   = 0; // last received CC 0 value
+static uint8_t s_bank_section = 0; // last received CC 32 value
+
 // --- Live note stack (legato / slide-back) ---------------------------------------
 // Tracks all physically-held notes so releasing the top note slides back to
 // whatever is still held underneath (e.g. hold C, slide up to B, release B → slide back to C).
@@ -607,9 +614,24 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
     case midi::MidiType::Stop:
       if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); }
       break;
+    case midi::MidiType::ControlChange:
+      if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel) {
+        const uint8_t cc  = MIDI.getData1();
+        const uint8_t val = MIDI.getData2();
+        if (cc == 0)  s_bank_group   = val < NUM_GROUPS ? val : NUM_GROUPS - 1;
+        if (cc == 32) s_bank_section = val < 2 ? val : 1;
+      }
+      break;
     case midi::MidiType::ProgramChange:
-      if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel)
-        engine.SetPattern(MIDI.getData1(), !clk_run);
+      if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel) {
+        const uint8_t pc  = MIDI.getData1();
+        const uint8_t pat = s_bank_section * 8 + (pc < 8 ? pc : 7);
+        if (s_bank_group != engine.get_group()) {
+          if (clk_run) engine.QueueGroup(s_bank_group);
+          else         engine.SetGroup(s_bank_group);
+        }
+        engine.SetPattern(pat, !clk_run);
+      }
       break;
     case midi::MidiType::SystemExclusive:
       break;
@@ -645,16 +667,23 @@ void midi_after_clock(Engine &engine, uint8_t transpose) {
   if (n > 127) n = 127;
   const uint8_t vel = engine.get_accent() ? 127 : 80;
 
-  if (s_seq_note_on && s_seq_note != static_cast<uint8_t>(n)) {
-    const bool slide_midi = engine.get_slide_dac();
-    if (slide_midi) {
-      MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
-      MIDI.sendNoteOff(s_seq_note, 0, och);
-    } else {
+  if (s_seq_note_on) {
+    if (s_seq_note != static_cast<uint8_t>(n)) {
+      const bool slide_midi = engine.get_slide_dac();
+      if (slide_midi) {
+        MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
+        MIDI.sendNoteOff(s_seq_note, 0, och);
+      } else {
+        MIDI.sendNoteOff(s_seq_note, 0, och);
+        MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
+      }
+      s_seq_note = static_cast<uint8_t>(n);
+    } else if (!engine.slide_gate) {
+      // Same note, no tie/slide — retrigger so each step is a distinct note.
       MIDI.sendNoteOff(s_seq_note, 0, och);
       MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
     }
-    s_seq_note = static_cast<uint8_t>(n);
+    // else: tie/slide continuation — hold the note on as-is
     return;
   }
 
