@@ -626,11 +626,10 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
       if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel) {
         const uint8_t pc  = MIDI.getData1();
         const uint8_t pat = s_bank_section * 8 + (pc < 8 ? pc : 7);
-        if (s_bank_group != engine.get_group()) {
-          if (clk_run) engine.QueueGroup(s_bank_group);
-          else         engine.SetGroup(s_bank_group);
-        }
-        engine.SetPattern(pat, !clk_run);
+        if (s_bank_group != engine.get_group())
+          engine.SetGroup(s_bank_group);
+        engine.SetPattern(pat, true);
+        engine.get_sequence().Reset();
       }
       break;
     case midi::MidiType::SystemExclusive:
