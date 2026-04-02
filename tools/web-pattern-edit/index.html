@@ -1256,7 +1256,7 @@
           chainHoldTimer = setTimeout(function() {
             if (chainDragging && !chainDragMoved) {
               chainHoldActive = true;
-              if (midiOut) { sendProgramChange(p); queuedPat = p; }
+              if (midiOut && !editLiveMode) { sendProgramChange(p); queuedPat = p; }
               refreshAllPills();
             }
           }, 400);
@@ -1279,7 +1279,7 @@
           chainHoldTimer = setTimeout(function() {
             if (chainDragging && !chainDragMoved) {
               chainHoldActive = true;
-              if (midiOut) { sendProgramChange(p); queuedPat = p; }
+              if (midiOut && !editLiveMode) { sendProgramChange(p); queuedPat = p; }
               refreshAllPills();
             }
           }, 400);
@@ -1325,6 +1325,13 @@
     dragChain   = [];
     chainDragMoved = false;
 
+    // Edit Live: only switch the display, never touch the chain or send MIDI
+    if (editLiveMode) {
+      switchToPat(chainAnchor);
+      refreshAllPills();
+      return;
+    }
+
     if (chainHoldActive) {
       // Released from hold-to-loop: hardware resumes advancing on its own.
       // Send the current chain state (unchanged) so hardware knows hold is released.
@@ -1346,9 +1353,11 @@
       // Tap (single pattern or single key release)
       if (patChain.length > 1) {
         // In chain: tap queues a single pattern (deactivates chain when reached)
+        var prevChain = patChain.slice(); // save before clearing
+        patChain = []; // clear chain on web side so next tap acts as single-pattern click
         queuedChain = [];
         switchToPat(chainAnchor);
-        sendChainState(patChain, [chainAnchor]); // queue the tapped pattern as single
+        sendChainState(prevChain, [chainAnchor]); // tell hardware: finish chain then play single
         queuedPat = chainAnchor;
       } else {
         queuedChain = [];
@@ -1871,8 +1880,10 @@
       // Clear web-queued-single indicator when hardware starts playing that pattern
       if (pat === queuedPat) queuedPat = -1;
 
-      // Auto-follow chain: switch editor grid to the playing pattern
-      if (patChain.length > 1 && activeGroup === 0 && !editLiveMode) {
+      // Auto-follow hardware: switch editor grid to the playing pattern.
+      // Always follow unless the user has explicitly queued a different pattern
+      // from the web editor (queuedPat !== -1), or Edit Live mode is active.
+      if (activeGroup === 0 && !editLiveMode && queuedPat === -1) {
         switchToPat(pat);
       }
 
