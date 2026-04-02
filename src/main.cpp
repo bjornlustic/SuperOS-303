@@ -254,11 +254,8 @@ uint8_t input_pitch(bool mod = false, bool clk_run = false) {
         // Compute audition note directly from packed pitch — engine.get_midi_note()
         // returns PITCH_DEFAULT for REST/TIE steps, not what was just written.
         const uint8_t written_note = uint8_t(36 + unpack_pitch_linear(uint8_t(i + 13 * oct)));
-        // Linear advance through all steps (not just NOTE steps).
-        const uint8_t len = engine.get_length();
-        engine.get_sequence().first_step = false;
-        engine.get_sequence().pitch_pos = int((unsigned(pp) + 1u) % unsigned(len));
-        engine.get_sequence().time_pos   = engine.get_sequence().pitch_pos;
+        // Advance to the next NOTE step, skipping REST and TIE slots.
+        engine.get_sequence().advance_pitch_to_next_note();
         return written_note;
       }
     }
@@ -719,7 +716,15 @@ void loop() {
     s_len_black_pressed = false;
   }
 
-  if (inputs[RUN].rising()) engine.Reset();
+  if (inputs[RUN].rising()) {
+    engine.Reset();
+    // If a chain is active, restart it from the first pattern and discard any queued chain.
+    if (s_chain_active && s_chain_len > 1) {
+      s_chain_pos       = 0;
+      s_chain_queue_len = 0;
+      engine.SetPattern(s_chain_pats[0], true);
+    }
+  }
 
   // -=-=- Process inputs and set LEDs -=-=-
 
@@ -764,7 +769,7 @@ void loop() {
       }
 
       if (write_mode) {
-        // FN+WRITE: pattern length editor
+        // FN hold + step press: pattern length editor
         // Black keys set 8-step base (C#=8, D#=16, F#=24, G#=32; +32 in extended mode)
         // White keys add fine offset +1 to +8
         // A# toggles extended mode (bases += 32)
@@ -838,11 +843,12 @@ void loop() {
       for (uint8_t ci = 0; ci < s_chain_len; ++ci)
         if (s_chain_pats[ci] == cur) { s_chain_pos = ci; break; }
 
-      // Queue next: hold-loop > queued chain > advance
+      // Queue next: hold-loop > queued chain (only after current chain completes) > advance
       uint8_t next_pat;
       if (s_chain_hold_loop) {
         next_pat = cur;
-      } else if (s_chain_queue_len > 0) {
+      } else if (s_chain_queue_len > 0 && s_chain_pos == s_chain_len - 1) {
+        // At the last pattern of the current chain: now hand off to the queued chain
         next_pat = s_chain_queued[0];
       } else {
         next_pat = s_chain_pats[(s_chain_pos + 1) % s_chain_len];
@@ -1134,7 +1140,7 @@ void loop() {
       // first_step is true until the first write+advance, preventing false exit on entry.
       if (!clk_run
           && !engine.get_sequence().first_step
-          && engine.get_sequence().pitch_pos == 0)
+          && engine.get_sequence().pitch_pos == engine.get_sequence().first_note_idx())
         engine.SetMode(NORMAL_MODE, true);
     }
     // If mode exited while a write-preview gate was latched, release it on key-up.

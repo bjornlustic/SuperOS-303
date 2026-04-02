@@ -449,13 +449,13 @@ struct Sequence {
       time_pos = pitch_pos;
     }
   }
-  /// PITCH_MODE write entry: clear reset flag and start at step 0 so all steps
-  /// (not just existing NOTE steps) are reachable for pitch entry.
+  /// PITCH_MODE write entry: clear reset flag and land on the first NOTE step so
+  /// pitch input targets playable steps rather than REST/TIE slots.
   void ensure_pitch_write_entry() {
     if (reset) {
       reset = false;
-      pitch_pos = 0;
-      time_pos = 0;
+      pitch_pos = int(first_note_idx());
+      time_pos = pitch_pos;
     }
   }
 
