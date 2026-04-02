@@ -784,8 +784,9 @@ struct Engine {
   // pattern storage
   Sequence pattern[NUM_PATTERNS];
   uint8_t p_select = 0;
-  uint8_t next_p = 0; // queued pattern
-  uint8_t group_ = 0; // active pattern group (0-3)
+  uint8_t next_p = 0;           // queued pattern
+  uint8_t group_ = 0;           // active pattern group (0-3)
+  uint8_t pending_group_ = 0xff; // group to load at next pattern wrap (0xff = none)
                       // TODO: start & end for chains
 
   SequencerMode      mode_      = NORMAL_MODE;
@@ -809,19 +810,33 @@ struct Engine {
   uint32_t step_start_us_ = 0;
 
   uint8_t get_group() const { return group_; }
+  uint8_t get_pending_group() const { return pending_group_; }
 
-  // Switch to a different pattern group: saves current, loads new.
-  void SetGroup(uint8_t g) {
-    if (g >= NUM_GROUPS || g == group_) return;
+  // Queue a group switch to happen at the next pattern wrap boundary.
+  void QueueGroup(uint8_t g) {
+    if (g < NUM_GROUPS) pending_group_ = g;
+  }
+
+  // Apply the pending group now (called at pattern wrap in Advance, or immediately when stopped).
+  void apply_pending_group() {
+    if (pending_group_ == 0xff || pending_group_ == group_) { pending_group_ = 0xff; return; }
     stale = true;
     Save();
-    group_ = g;
+    group_ = pending_group_;
+    pending_group_ = 0xff;
     for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
       ReadPattern(pattern[i], i, group_);
       if (!pattern[i].length) pattern[i].SetLength(8);
       normalize_pattern_times(pattern[i]);
     }
     stale = false;
+  }
+
+  // Switch to a different pattern group: saves current, loads new (immediate, for stopped clock).
+  void SetGroup(uint8_t g) {
+    if (g >= NUM_GROUPS || g == group_) return;
+    pending_group_ = g;
+    apply_pending_group();
   }
 
   void Load() {
@@ -894,6 +909,7 @@ struct Engine {
           direction_change_pending_ = false;
           pp_dir_ = 1;
         }
+        apply_pending_group();
         if (next_p != p_select) {
           p_select = next_p;
           get_sequence().Reset();
@@ -954,6 +970,7 @@ struct Engine {
             }
           }
         }
+        apply_pending_group();
         if (next_p != p_select) {
           p_select = next_p;
           get_sequence().Reset();

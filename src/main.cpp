@@ -28,6 +28,9 @@ static PinState inputs[INPUT_COUNT];
 static uint8_t tracknum = 0;
 static uint8_t s_prev_tracknum = 0xff; // 0xff = not yet initialized
 static uint8_t s_display_group = 0;    // group shown by dial (may differ from playing group when running)
+static uint8_t s_group_debounce_val   = 0xff; // pending new group value
+static uint8_t s_group_debounce_count = 0;    // consecutive frames seen
+static constexpr uint8_t GROUP_DEBOUNCE_FRAMES = 5;
 static bool step_counter = false;
 static bool midi_clk = false;
 static bool wrap_edit = false;
@@ -507,13 +510,10 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
 
     // ── Pattern select inputs ──
     if (clk_run && browsing_other_group) {
-      // Running in a different group: key press switches groups and selects pattern
+      // Running in a different group: queue the group switch + pattern to start at next wrap
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].rising()) {
-          engine.SetGroup(s_display_group);
-          midi_send_group_update(s_display_group);
-          for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
-            midi_send_pattern_update(_pi);
+          engine.QueueGroup(s_display_group);
           engine.SetPattern(bank * 8 + i, false);
           emit_chain_state();
           break;
@@ -987,17 +987,31 @@ void loop() {
            | (inputs[TRACK_BIT2].held() << 2));
 
   // Pattern group dial (positions 1-2=group0, 3-4=group1, 5-6=group2, 7=group3)
+  // Debounced: require GROUP_DEBOUNCE_FRAMES consecutive frames before accepting a new group.
   if (!inputs[TRACK_SEL].held()) {
     const uint8_t new_group = uint8_t(tracknum <= 1 ? 0 : tracknum <= 3 ? 1 : tracknum <= 5 ? 2 : 3);
-    if (s_prev_tracknum == 0xff) s_display_group = new_group; // init on first loop
-    if (new_group != s_display_group) {
+    if (s_prev_tracknum == 0xff) {
+      // First frame: initialize without debounce
       s_display_group = new_group;
-      if (!clk_run) {
-        engine.SetGroup(new_group);
-        midi_send_group_update(new_group);
-        // Broadcast all 16 patterns for the new group to web editor
-        for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
-          midi_send_pattern_update(_pi);
+      s_group_debounce_val = new_group;
+      s_group_debounce_count = GROUP_DEBOUNCE_FRAMES;
+    } else if (new_group != s_display_group) {
+      if (new_group == s_group_debounce_val) {
+        s_group_debounce_count++;
+        if (s_group_debounce_count >= GROUP_DEBOUNCE_FRAMES) {
+          s_display_group = new_group;
+          s_group_debounce_val = 0xff;
+          s_group_debounce_count = 0;
+          if (!clk_run) {
+            engine.SetGroup(new_group);
+            midi_send_group_update(new_group);
+            for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
+              midi_send_pattern_update(_pi);
+          }
+        }
+      } else {
+        s_group_debounce_val = new_group;
+        s_group_debounce_count = 1;
       }
     }
     s_prev_tracknum = tracknum;
@@ -1148,6 +1162,18 @@ void loop() {
         s_ratchet_gate_reset = true;
         midi_ratchet_retrigger(engine, transpose);
       }
+    }
+  }
+
+  // After clock ticks: detect when a queued group switch was applied at wrap, then broadcast.
+  {
+    static uint8_t s_prev_group = 0;
+    if (engine.get_group() != s_prev_group) {
+      s_prev_group = engine.get_group();
+      s_display_group = engine.get_group();
+      midi_send_group_update(engine.get_group());
+      for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
+        midi_send_pattern_update(_pi);
     }
   }
 

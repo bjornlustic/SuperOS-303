@@ -308,6 +308,11 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
     const uint8_t inner[5] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir};
     tx_push_message(inner, 5);
+    // Also broadcast current group so web editor syncs on connect
+    if (g_eng) {
+      const uint8_t grp[3] = {0x7D, 0x1C, g_eng->get_group()};
+      tx_push_message(grp, 3);
+    }
     s_rx_chain_pending = true; // signal main.cpp to re-broadcast chain state
     s_rx_chain_active_len = 0xff; // sentinel: "just re-emit current state"
     break;
