@@ -60,8 +60,13 @@ static elapsedMillis s_metro_gate_timer;
 // a ratchet boundary, e.g. 4x clocks 0→1 and 3→4 which have no natural gate-off).
 static bool s_ratchet_gate_reset = false;
 
-// Direction mode (FN + PITCH_KEY)
+// Direction mode (FN + TIME_KEY)
 static bool s_dir_mode = false;
+
+// Step-select mode (FN + PITCH_KEY held): pick one step via black-key bank + white key.
+// Chase LED lights only when playhead reaches that step. -1 = no selection.
+static int     s_step_sel      = -1;
+static uint8_t s_step_sel_base = 0; // 0, 8, 16, or 24
 
 // FN+write length entry state
 static bool    s_len_extended     = false;
@@ -109,7 +114,7 @@ static const OutputIndex kCfgWhiteNoteLeds[8] = {
 static const InputIndex kCfgWhiteKeys[8] = {
     C_KEY, D_KEY, E_KEY, F_KEY, G_KEY, A_KEY, B_KEY, C_KEY2};
 
-enum class CfgMenu : uint8_t { Off, Main, MidiCh, MidiChHigh, MidiClk, MidiThru };
+enum class CfgMenu : uint8_t { Off, Main, MidiCh, MidiChHigh, MidiClk, MidiThru, ClearAll };
 static CfgMenu s_cfg_menu = CfgMenu::Off;
 static bool s_cfg_suppress_clear_exit = false;
 
@@ -141,6 +146,7 @@ static void process_config_menu() {
     if (inputs[C_KEY].rising()) s_cfg_menu = CfgMenu::MidiCh;
     if (inputs[D_KEY].rising()) s_cfg_menu = CfgMenu::MidiClk;
     if (inputs[E_KEY].rising()) s_cfg_menu = CfgMenu::MidiThru;
+    if (inputs[F_KEY].rising()) s_cfg_menu = CfgMenu::ClearAll;
     break;
   case CfgMenu::MidiCh: {
     Leds::Set(CSHARP_KEY_LED, true);
@@ -185,6 +191,21 @@ static void process_config_menu() {
     }
     if (inputs[CLEAR_KEY].rising()) s_cfg_menu = CfgMenu::Main;
     break;
+  case CfgMenu::ClearAll: {
+    // Confirm-to-clear: all 8 pat LEDs blink. BACK confirms, CLEAR cancels.
+    const bool blink = bool((millis() >> 7) & 1);
+    for (uint8_t i = 0; i < 8; ++i) Leds::Set(OutputIndex(i), blink);
+    Leds::Set(ASHARP_KEY_LED, blink);
+    if (inputs[BACK_KEY].rising()) {
+      engine.ClearAllPatterns();
+      engine.Save();
+      for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
+        midi_send_pattern_update(_pi);
+      s_cfg_menu = CfgMenu::Main;
+    }
+    if (inputs[CLEAR_KEY].rising()) s_cfg_menu = CfgMenu::Main;
+    break;
+  }
   }
 }
 
@@ -411,18 +432,36 @@ void ProcessDirectionMode() {
 //   falling → gate/audition off (handled in main loop TAP_NEXT.falling section)
 // ---------------------------------------------------------------------------
 void ProcessEdit(const bool &write_mode, const bool clk_run) {
+  // TIME_KEY held while in edit mode acts as a nudge/ratchet modifier. Suppresses
+  // normal pitch/time writes so the same keys can drive nudge and ratchet select.
+  const bool nudge_mod = inputs[TIME_KEY].held();
   switch (engine.get_mode()) {
   case PITCH_MODE: {
     if (write_mode) {
-      const uint8_t updated_note = input_pitch(true, clk_run);
-      // When user presses a pitch key while TAP is held, re-audition with the new pitch
-      // (the initial TAP audition plays the old/default pitch before the key is pressed).
-      if (!clk_run && updated_note) {
-        uint16_t mn = uint16_t(updated_note) + transpose;
-        if (mn > 127) mn = 127;
-        const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
-        s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
-        midi_audition_note_on(uint8_t(mn), vel);
+      if (nudge_mod) {
+        // PITCH_MODE edit + TIME_KEY held:
+        //   UP/DOWN   → nudge semitone +/-1
+        //   C/D/E     → set ratchet 0/1/2 on current step
+        //   ACCENT/SLIDE still toggle (legacy)
+        if (inputs[UP_KEY].rising())   engine.NudgeSemitone(+1);
+        if (inputs[DOWN_KEY].rising()) engine.NudgeSemitone(-1);
+        if (inputs[C_KEY].rising())    engine.SetRatchetAtCurrent(0);
+        if (inputs[D_KEY].rising())    engine.SetRatchetAtCurrent(1);
+        if (inputs[E_KEY].rising())    engine.SetRatchetAtCurrent(2);
+        if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
+        if (inputs[SLIDE_KEY].rising())  engine.ToggleSlide();
+        midi_send_pattern_update(engine.get_patsel());
+      } else {
+        const uint8_t updated_note = input_pitch(true, clk_run);
+        // When user presses a pitch key while TAP is held, re-audition with the new pitch
+        // (the initial TAP audition plays the old/default pitch before the key is pressed).
+        if (!clk_run && updated_note) {
+          uint16_t mn = uint16_t(updated_note) + transpose;
+          if (mn > 127) mn = 127;
+          const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
+          s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
+          midi_audition_note_on(uint8_t(mn), vel);
+        }
       }
     }
     PrintPitch();
@@ -430,12 +469,32 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
   }
   case TIME_MODE:
     if (write_mode) {
-      if (inputs[SLIDE_KEY].rising()) {
-        engine.ToggleStepLockFromTimeMode();
-        const uint8_t ltp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
-        midi_send_step_lock_update(engine.get_patsel(), ltp, engine.get_sequence().step_locked(ltp));
+      if (nudge_mod) {
+        // TIME_MODE edit + TIME_KEY held: C/D/E set ratchet 0/1/2 on current step.
+        if (inputs[C_KEY].rising()) engine.SetRatchetAtCurrent(0);
+        if (inputs[D_KEY].rising()) engine.SetRatchetAtCurrent(1);
+        if (inputs[E_KEY].rising()) engine.SetRatchetAtCurrent(2);
+        midi_send_pattern_update(engine.get_patsel());
+      } else {
+        if (inputs[SLIDE_KEY].rising()) {
+          engine.ToggleStepLockFromTimeMode();
+          const uint8_t ltp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
+          midi_send_step_lock_update(engine.get_patsel(), ltp, engine.get_sequence().step_locked(ltp));
+        }
+        // C# = insert REST step at current time_pos (length +1).
+        // D# = delete current time_pos (length -1).
+        if (inputs[CSHARP_KEY].rising()) {
+          engine.InsertTimeStep();
+          midi_send_pattern_update(engine.get_patsel());
+          midi_send_length_update(engine.get_patsel(), engine.get_length());
+        }
+        if (inputs[DSHARP_KEY].rising()) {
+          engine.DeleteTimeStep();
+          midi_send_pattern_update(engine.get_patsel());
+          midi_send_length_update(engine.get_patsel(), engine.get_length());
+        }
+        input_time(true, clk_run);
       }
-      input_time(true, clk_run);
     }
     PrintTime();
     // fall through
@@ -523,7 +582,9 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     }
 
     // ── Pattern select inputs ──
-    if (clk_run && browsing_other_group) {
+    if (clk_run && clear_mod) {
+      // CLEAR held while running: pat keys reserved for global copy/paste.
+    } else if (clk_run && browsing_other_group) {
       // Running in a different group: queue the group switch + pattern to start at next wrap
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].rising()) {
@@ -534,7 +595,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
         }
       }
     }
-    if (clk_run && !browsing_other_group) {
+    if (clk_run && !browsing_other_group && !clear_mod) {
       // Running: chain building always available (whether or not a chain is currently active).
       //   two keys pressed simultaneously / hold+tap → build or queue a chain
       //   single key tap (quick press+release)       → queue single pattern (or chain pattern)
@@ -626,24 +687,21 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       s_chain_hold_loop = (s_chain_hold_key != 0xff && s_chain_hold_crossed);
 
     } else if (!clk_run) {
-      // Stopped: chain building
+      // Stopped: chain building.  When CLEAR is held, pat keys are reserved for
+      // global copy/paste handlers below — do nothing here.
       s_chain_hold_key = 0xff; // clear stale running state
-      if (s_chain_anchor_key == 0xff) {
+      if (clear_mod) {
+        // fall through: copy/paste and other CLEAR combos own pat-key rising.
+      } else if (s_chain_anchor_key == 0xff) {
         for (uint8_t i = 0; i < 8; ++i) {
           if (inputs[i].rising()) {
-            if (clear_mod) {
-              engine.ClearPattern(bank * 8 + i);
-              pattern_cleared_flash_timer = 0;
-              midi_send_pattern_update(bank * 8 + i);
-            } else {
-              s_chain_anchor_key = i;
-              s_chain_bank       = bank;
-              s_chain_pats[0]    = bank * 8 + i;
-              s_chain_len        = 1;
-              s_chain_active     = false;
-              s_chain_hold_loop  = false;
-              engine.SetPattern(bank * 8 + i, true);
-            }
+            s_chain_anchor_key = i;
+            s_chain_bank       = bank;
+            s_chain_pats[0]    = bank * 8 + i;
+            s_chain_len        = 1;
+            s_chain_active     = false;
+            s_chain_hold_loop  = false;
+            engine.SetPattern(bank * 8 + i, true);
             break;
           }
         }
@@ -673,15 +731,16 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       }
     }
 
-    // Bank switch — always clears chain
-    if (inputs[ACCENT_KEY].rising()) {
+    // Bank switch — always clears chain.  Skipped when CLEAR is held so
+    // CLEAR+ACCENT (randomize) and CLEAR+SLIDE combos can take the edge.
+    if (inputs[ACCENT_KEY].rising() && !clear_mod) {
       s_chain_active     = false; s_chain_len       = 0;
       s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
       s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
       engine.SetPattern(engine.get_patsel() % 8, !clk_run); // A
       emit_chain_state();
     }
-    if (inputs[SLIDE_KEY].rising()) {
+    if (inputs[SLIDE_KEY].rising() && !clear_mod) {
       s_chain_active     = false; s_chain_len       = 0;
       s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
       s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
@@ -838,21 +897,64 @@ void loop() {
 
   if (s_cfg_menu != CfgMenu::Off) {
     process_config_menu();
-  } else if (edit_mode && !fn_mod) {
+  } else if (edit_mode && !fn_mod && !clk_run && engine.get_mode() != NORMAL_MODE) {
     ProcessEdit(write_mode, clk_run);
   } else if (s_dir_mode) {
     ProcessDirectionMode();
   } else {
-    // FN + PITCH_KEY (key press, not hold) → enter direction mode; takes priority over transpose
-    if (!write_mode && fn_mod && inputs[PITCH_KEY].rising()) {
+    // FN + TIME_KEY rising → enter direction mode (allowed in pattern write mode; the
+    // TIME_MODE set at line ~1050 is gated by !fn_mod).
+    if (fn_mod && inputs[TIME_KEY].rising()) {
       s_dir_mode = true;
-    } else if (pitch_mod && !fn_mod) {
+    } else if (fn_mod && pitch_mod) {
+      // Step-select mode: C#/D#/F#/G# pick 8-step base, white keys pick step in bank.
+      // BACK_KEY clears the selection.  Chase LED lights only when playhead reaches the
+      // selected step — so selection in C# bank is invisible while playhead runs in D#.
+      Leds::Set(PITCH_MODE_LED,    clk_count & 4);
+      Leds::Set(FUNCTION_MODE_LED, clk_count & 4);
+      if (inputs[CSHARP_KEY].rising()) s_step_sel_base = 0;
+      if (inputs[DSHARP_KEY].rising()) s_step_sel_base = 8;
+      if (inputs[FSHARP_KEY].rising()) s_step_sel_base = 16;
+      if (inputs[GSHARP_KEY].rising()) s_step_sel_base = 24;
+      for (uint8_t wi = 0; wi < 8; ++wi) {
+        if (inputs[kCfgWhiteKeys[wi]].rising()) {
+          const uint8_t cand = uint8_t(s_step_sel_base + wi);
+          if (cand < engine.get_length()) s_step_sel = int(cand);
+        }
+      }
+      if (inputs[BACK_KEY].rising()) s_step_sel = -1;
+      // Black key LED shows which 8-step bank the selection lives in.
+      const OutputIndex base_led =
+          (s_step_sel_base == 0)  ? CSHARP_KEY_LED :
+          (s_step_sel_base == 8)  ? DSHARP_KEY_LED :
+          (s_step_sel_base == 16) ? FSHARP_KEY_LED : GSHARP_KEY_LED;
+      Leds::Set(base_led, true);
+      // White LED for the current selection (solid while held).
+      if (s_step_sel >= 0) Leds::Set(OutputIndex(s_step_sel & 0x7), true);
+      // Chase: only light the step LED when the playhead is on the selected step.
+      if (s_step_sel >= 0 && clk_run) {
+        const uint8_t tp = engine.get_time_pos();
+        if (uint8_t(s_step_sel) == tp)
+          Leds::Set(OutputIndex(tp & 0x7), clk_count < 12);
+      }
+    } else if (pitch_mod && !fn_mod && !clear_mod) {
       ProcessPitchMod();
     } else if (time_mod) {
       Leds::Set(TIME_MODE_LED, clk_count & (1 << 2));
       // TODO: performance time effects
     } else if (fn_mod) {
       Leds::Set(FUNCTION_MODE_LED, clk_count & (1 << 2));
+
+      // FN + ACCENT rising: stamp ALL NOTE steps with accent (toggle off if
+      // every NOTE already has it). FN + SLIDE rising: same, for slide.
+      if (!clear_mod && inputs[ACCENT_KEY].rising()) {
+        engine.StampAllAccent();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      if (!clear_mod && inputs[SLIDE_KEY].rising()) {
+        engine.StampAllSlide();
+        midi_send_pattern_update(engine.get_patsel());
+      }
 
       if (!write_mode) {
         // LED: white key = position within 8-step block; black keys = cumulative block coverage.
@@ -1046,24 +1148,13 @@ void loop() {
   }
 
   if (s_cfg_menu == CfgMenu::Off) {
-    if (inputs[TIME_KEY].rising()  && write_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
+    if (inputs[TIME_KEY].rising()  && write_mode && !clear_mod && !fn_mod) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
     if (inputs[PITCH_KEY].rising() && write_mode && !fn_mod) engine.SetMode(PITCH_MODE, !clk_run);
 
-    if (inputs[CLEAR_KEY].rising() && !fn_mod) {
-      uint8_t clear_pat = 0xFF;
-      for (uint8_t i = 0; i < 8; ++i) {
-        if (inputs[i].held()) {
-          clear_pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
-          break;
-        }
-      }
-      if (clear_pat != 0xFF) {
-        engine.ClearPattern(clear_pat);
-        pattern_cleared_flash_timer = 0;
-        midi_send_pattern_update(clear_pat);
-      } else if (clk_run && write_mode && engine.get_mode() == NORMAL_MODE) {
-        // No pattern key held: toggle metronome tap-write mode
-        s_metronome_active = !s_metronome_active;
+    // CLEAR + TIME_KEY: toggle metronome tap-write (running + write + NORMAL_MODE).
+    if (clear_mod && inputs[TIME_KEY].rising() && !fn_mod &&
+        clk_run && write_mode && engine.get_mode() == NORMAL_MODE) {
+      s_metronome_active = !s_metronome_active;
         if (!s_metronome_active) {
           midi_metronome_stop();
         } else {
@@ -1096,6 +1187,107 @@ void loop() {
           seq.set_stash_count(stash_n);
           engine.stale = true;
           midi_send_pattern_update(engine.get_patsel());
+        }
+    }
+
+    // CLEAR rising with a pat key held: clear that pattern (only clear path).
+    if (inputs[CLEAR_KEY].rising() && !fn_mod) {
+      for (uint8_t i = 0; i < 8; ++i) {
+        if (inputs[i].held()) {
+          const uint8_t pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
+          engine.ClearPattern(pat);
+          pattern_cleared_flash_timer = 0;
+          midi_send_pattern_update(pat);
+          break;
+        }
+      }
+    }
+
+    // ── Global CLEAR combos (clear_mod held, no FN) ──
+    if (clear_mod && !fn_mod) {
+      // CLEAR + ACCENT rising: randomize pattern but keep ratchets.
+      if (inputs[ACCENT_KEY].rising()) {
+        engine.RandomizeFullPatternKeepRatchets();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // CLEAR + DOWN rising: rotate time data one step LEFT within length.
+      if (inputs[DOWN_KEY].rising()) {
+        engine.RotateTimeLeft();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // CLEAR + UP rising: rotate time data one step RIGHT within length.
+      if (inputs[UP_KEY].rising()) {
+        engine.RotateTimeRight();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // CLEAR + SLIDE rising: Mutate current pattern (small random perturbation).
+      if (inputs[SLIDE_KEY].rising()) {
+        engine.Mutate();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // CLEAR + BACK rising: shift whole pattern (pitch+time) one step LEFT.
+      if (inputs[BACK_KEY].rising()) {
+        engine.ShiftPatternLeft();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // CLEAR + TAP_NEXT rising: shift whole pattern (pitch+time) one step RIGHT.
+      if (inputs[TAP_NEXT].rising()) {
+        engine.ShiftPatternRight();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // CLEAR + F# rising: reverse entire pattern (pitch+time) within length.
+      if (inputs[FSHARP_KEY].rising()) {
+        engine.ReversePattern();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // CLEAR + G# rising: clear pitches only (keep time data).
+      if (inputs[GSHARP_KEY].rising()) {
+        engine.ClearPitchesOnly();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // CLEAR + A# rising: clear time data only (keep pitches).
+      if (inputs[ASHARP_KEY].rising()) {
+        engine.ClearTimesOnly();
+        midi_send_pattern_update(engine.get_patsel());
+      }
+      // Individual-attribute randomize (CLEAR + mode-key held + white key rising):
+      //   CLEAR + PITCH_KEY + C = semitones, + D = octaves, + E = accents,
+      //                     + F = slides,    + G = full pitch data (sem+oct+acc+slide)
+      //   CLEAR + TIME_KEY  + C = time data, + D = ratchets
+      if (pitch_mod && !time_mod) {
+        if (inputs[C_KEY].rising()) { engine.RandomizeSemitones(); midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[D_KEY].rising()) { engine.RandomizeOctaves();   midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[E_KEY].rising()) { engine.RandomizeAccentData();midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[F_KEY].rising()) { engine.RandomizeSlideData(); midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[G_KEY].rising()) { engine.RandomizePitchData(); midi_send_pattern_update(engine.get_patsel()); }
+      } else if (time_mod && !pitch_mod) {
+        if (inputs[C_KEY].rising()) { engine.RandomizeTimeData();   midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[D_KEY].rising()) { engine.RandomizeRatchetData();midi_send_pattern_update(engine.get_patsel()); }
+      }
+      // CLEAR + C# held + pat key rising: copy pattern (current bank) to clipboard.
+      // CLEAR + D# held + pat key rising: paste clipboard into that pattern slot.
+      static uint8_t s_clip_buf[128];
+      static bool    s_clip_valid = false;
+      if (inputs[CSHARP_KEY].held()) {
+        for (uint8_t i = 0; i < 8; ++i) {
+          if (inputs[i].rising()) {
+            const uint8_t bank_now = (engine.get_patsel() >> 3) & 1;
+            engine.export_pattern_blob(bank_now * 8 + i, s_clip_buf);
+            s_clip_valid = true;
+            break;
+          }
+        }
+      } else if (inputs[DSHARP_KEY].held()) {
+        if (s_clip_valid) {
+          for (uint8_t i = 0; i < 8; ++i) {
+            if (inputs[i].rising()) {
+              const uint8_t bank_now = (engine.get_patsel() >> 3) & 1;
+              const uint8_t dst = bank_now * 8 + i;
+              engine.import_pattern_blob(dst, s_clip_buf, !clk_run);
+              midi_send_pattern_update(dst);
+              break;
+            }
+          }
         }
       }
     }
@@ -1212,29 +1404,27 @@ void loop() {
       midi_send_length_update(engine.get_patsel(), engine.get_length());
     }
 
-    if (inputs[TAP_NEXT].rising()) {
-      if (write_mode) {
-        if (!clk_run) {
-          if (engine.get_mode() == PITCH_MODE) {
-            engine.get_sequence().ensure_pitch_write_entry();
-            // Audition current step if it's a NOTE; advance happens on TAP falling.
-            if (engine.get_sequence().get_time() == 1) {
-              uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
-              if (mn > 127) mn = 127;
-              const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
-              s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
-              s_tap_pitch_preview_gate = true;
-              midi_audition_note_on(uint8_t(mn), vel);
-            }
-          } else if (engine.get_mode() == TIME_MODE) {
-            const bool send = engine.Advance();
-            engine.SyncAfterManualAdvance(send);
-          }
-        }
-      } else {
-        if (!clk_run) {
-          const bool g = engine.Advance();
-          if (g) {
+    // FN + BACK_KEY: length +1 (cap 64). FN + TAP_NEXT: length -1 (min 1). Any transport state.
+    // Skipped while PITCH_KEY is held — BACK is consumed by step-select mode.
+    if (fn_mod && !pitch_mod && inputs[BACK_KEY].rising()) {
+      uint8_t new_len = engine.get_length() < 64 ? engine.get_length() + 1 : 64;
+      engine.SetLength(new_len);
+      engine.stale = true;
+      midi_send_length_update(engine.get_patsel(), engine.get_length());
+    }
+    if (fn_mod && !pitch_mod && inputs[TAP_NEXT].rising()) {
+      uint8_t new_len = engine.get_length() > 1 ? engine.get_length() - 1 : 1;
+      engine.SetLength(new_len);
+      engine.stale = true;
+      midi_send_length_update(engine.get_patsel(), engine.get_length());
+    }
+
+    if (inputs[TAP_NEXT].rising() && !fn_mod) {
+      if (write_mode && !clk_run) {
+        if (engine.get_mode() == PITCH_MODE) {
+          engine.get_sequence().ensure_pitch_write_entry();
+          // Audition current step if it's a NOTE; advance happens on TAP falling.
+          if (engine.get_sequence().get_time() == 1) {
             uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
             if (mn > 127) mn = 127;
             const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
@@ -1242,8 +1432,9 @@ void loop() {
             s_tap_pitch_preview_gate = true;
             midi_audition_note_on(uint8_t(mn), vel);
           }
-        } else {
-          DAC::SetGate(engine.Advance());
+        } else if (engine.get_mode() == TIME_MODE) {
+          const bool send = engine.Advance();
+          engine.SyncAfterManualAdvance(send);
         }
       }
     }
@@ -1266,8 +1457,9 @@ void loop() {
     }
   }
 
-  // regular pattern write mode (no TAP_NEXT)
-  if (s_cfg_menu == CfgMenu::Off && !edit_mode && write_mode && !track_mode) {
+  // regular pattern write mode (no TAP_NEXT).  Suppressed in direction mode so pitched
+  // keys select a direction instead of writing notes into the active pattern.
+  if (s_cfg_menu == CfgMenu::Off && !edit_mode && write_mode && !track_mode && !s_dir_mode) {
 
     if (engine.get_mode() == TIME_MODE) {
       if (write_mode && inputs[SLIDE_KEY].rising()) {
@@ -1319,6 +1511,11 @@ void loop() {
   // ---------------------------------------------------------------------------
   // CV output: running = sequenced pitch + engine gate/accent/slide; stopped = keys
   // ---------------------------------------------------------------------------
+  // PITCH_KEY + ACCENT / SLIDE held (no FN, running): non-destructive force modifiers
+  // applied at the CV output stage only.  Pattern bytes are untouched.
+  const bool force_accent_live = pitch_mod && !fn_mod && clk_run && inputs[ACCENT_KEY].held();
+  const bool force_slide_live  = pitch_mod && !fn_mod && clk_run && inputs[SLIDE_KEY].held();
+
   if (clk_run) {
     // Expire short metronome gate pulse after 25 ms
     if (s_metro_gate_pulse && s_metro_gate_timer > 25) s_metro_gate_pulse = false;
@@ -1327,8 +1524,8 @@ void loop() {
         ? s_metro_pitch_cv
         : uint8_t(engine.get_pitch() + 4 + transpose);
     DAC::SetPitch(pitch_cv);
-    DAC::SetSlide(engine.get_slide_dac());
-    DAC::SetAccent(engine.get_accent() || (s_metro_gate_pulse && s_metro_is_downbeat));
+    DAC::SetSlide(engine.get_slide_dac() || force_slide_live);
+    DAC::SetAccent(engine.get_accent() || force_accent_live || (s_metro_gate_pulse && s_metro_is_downbeat));
     DAC::SetGate(s_ratchet_gate_reset ? false : (engine.get_gate() || s_metro_gate_pulse));
     s_ratchet_gate_reset = false;
   } else {

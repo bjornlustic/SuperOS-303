@@ -1011,6 +1011,42 @@ struct Engine {
     stale = true;
   }
 
+  /// Randomize pattern but preserve ratchet bytes (`reserved[1..4]`).
+  void RandomizeFullPatternKeepRatchets() {
+    Sequence &s = get_sequence();
+    uint8_t saved[4];
+    for (uint8_t i = 0; i < 4; ++i) saved[i] = s.reserved[1 + i];
+    RandomizeFullPattern();
+    for (uint8_t i = 0; i < 4; ++i) s.reserved[1 + i] = saved[i];
+    stale = true;
+  }
+
+  /// Rotate time data one step LEFT within `length` (pitches stay put).
+  void RotateTimeLeft() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    if (len < 2) return;
+    const uint8_t first = s.time(0);
+    for (uint8_t i = 0; i < len - 1; ++i)
+      sequence_set_time_at(s, i, s.time(i + 1));
+    sequence_set_time_at(s, len - 1, first);
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
+  /// Rotate time data one step RIGHT within `length` (pitches stay put).
+  void RotateTimeRight() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    if (len < 2) return;
+    const uint8_t last = s.time(len - 1);
+    for (uint8_t i = len - 1; i > 0; --i)
+      sequence_set_time_at(s, i, s.time(i - 1));
+    sequence_set_time_at(s, 0, last);
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
   /// Randomize pitches only — keeps time data intact (PITCH_MODE).
   void RandomizePitchData() {
     Sequence &s = get_sequence();
@@ -1074,6 +1110,349 @@ struct Engine {
           s.pitch[i] &= ~0x40;
       }
     }
+    stale = true;
+  }
+
+  /// Mutate: genetic-style nudge. Perturbs a few steps of the current pattern
+  /// without full re-randomization (flips a time nibble, re-rolls a pitch,
+  /// toggles accent/slide). Keeps ratchets.
+  void Mutate() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    if (len < 1) return;
+    const uint8_t passes = uint8_t(2 + random(3)); // 2..4 tweaks
+    for (uint8_t n = 0; n < passes; ++n) {
+      const uint8_t i = uint8_t(random(len));
+      const uint8_t action = uint8_t(random(5));
+      switch (action) {
+        case 0: {
+          // Re-roll pitch on a NOTE step
+          if (s.time(i) == 1) {
+            const uint8_t pk = uint8_t(random(PITCH_PACK_MAX + 1));
+            s.pitch[i] = (s.pitch[i] & 0xC0) | pk;
+          }
+          break;
+        }
+        case 1: {
+          // Toggle accent on a NOTE step
+          if (s.time(i) == 1 && !s.pitch_is_empty(i))
+            s.pitch[i] ^= 0x40;
+          break;
+        }
+        case 2: {
+          // Toggle slide on a NOTE step (clear ratchet if slide gained)
+          if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+            s.pitch[i] ^= 0x80;
+            if (s.pitch[i] & 0x80) s.set_ratchet_val(i, 0);
+          }
+          break;
+        }
+        case 3: {
+          // Nudge time nibble: rest<->note (avoid creating rest->tie issues)
+          const uint8_t t = s.time(i);
+          const uint8_t nt = (t == 0) ? 1 : (t == 1) ? 0 : 1;
+          s.time_pos = i;
+          s.SetTime(nt);
+          break;
+        }
+        case 4: {
+          // Nudge semitone up or down on a NOTE step
+          if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+            uint8_t lin = unpack_pitch_linear(s.pitch[i] & 0x3F);
+            const int dir = (random(2) ? 1 : -1);
+            int nlin = int(lin) + dir;
+            if (nlin < 0) nlin = 0;
+            if (nlin > 48) nlin = 48;
+            const uint8_t oct = uint8_t(nlin / 12);
+            const uint8_t key = uint8_t(nlin - oct * 12);
+            const uint8_t pk  = pack_pitch(key, oct);
+            s.pitch[i] = (s.pitch[i] & 0xC0) | pk;
+          }
+          break;
+        }
+      }
+    }
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
+  /// Insert a REST time-step at the current time_pos, shifting subsequent
+  /// time nibbles and pitch bytes right by one. Length grows by 1 (capped).
+  void InsertTimeStep() {
+    Sequence &s = get_sequence();
+    const uint8_t gmax = max_steps_for_group(group_);
+    if (s.length >= gmax) return;
+    const uint8_t at = uint8_t(s.time_pos & (MAX_STEPS - 1));
+    // Shift pitch bytes right from `at`
+    for (int i = int(s.length); i > int(at); --i) {
+      s.pitch[i] = s.pitch[i - 1];
+    }
+    // Shift time nibbles right from `at`
+    for (int i = int(s.length); i > int(at); --i) {
+      sequence_set_time_at(s, uint8_t(i), s.time(uint8_t(i - 1)));
+    }
+    // Shift ratchets right from `at`
+    for (int i = int(s.length); i > int(at); --i) {
+      s.set_ratchet_val(uint8_t(i), s.get_ratchet_val(uint8_t(i - 1)));
+    }
+    // Insert rest at `at`
+    sequence_set_time_at(s, at, 0);
+    s.pitch[at] = PITCH_EMPTY;
+    s.set_ratchet_val(at, 0);
+    s.length = uint8_t(s.length + 1);
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
+  /// Delete the time-step at the current time_pos, shifting subsequent
+  /// time nibbles and pitch bytes left by one. Length shrinks by 1 (min 1).
+  void DeleteTimeStep() {
+    Sequence &s = get_sequence();
+    if (s.length <= 1) return;
+    const uint8_t at = uint8_t(s.time_pos & (MAX_STEPS - 1));
+    if (at >= s.length) return;
+    for (uint8_t i = at; i < s.length - 1; ++i) {
+      s.pitch[i] = s.pitch[i + 1];
+      sequence_set_time_at(s, i, s.time(uint8_t(i + 1)));
+      s.set_ratchet_val(i, s.get_ratchet_val(uint8_t(i + 1)));
+    }
+    const uint8_t last = uint8_t(s.length - 1);
+    s.pitch[last] = PITCH_EMPTY;
+    sequence_set_time_at(s, last, 0);
+    s.set_ratchet_val(last, 0);
+    s.length = uint8_t(s.length - 1);
+    if (s.time_pos >= s.length) s.time_pos = 0;
+    if (s.pitch_pos >= s.length) s.pitch_pos = 0;
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
+  /// Shift entire pattern (pitch + time together) one step LEFT within length.
+  void ShiftPatternLeft() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    if (len < 2) return;
+    const uint8_t first_t = s.time(0);
+    const uint8_t first_p = s.pitch[0];
+    const uint8_t first_r = s.get_ratchet_val(0);
+    for (uint8_t i = 0; i < len - 1; ++i) {
+      s.pitch[i] = s.pitch[i + 1];
+      sequence_set_time_at(s, i, s.time(uint8_t(i + 1)));
+      s.set_ratchet_val(i, s.get_ratchet_val(uint8_t(i + 1)));
+    }
+    s.pitch[len - 1] = first_p;
+    sequence_set_time_at(s, uint8_t(len - 1), first_t);
+    s.set_ratchet_val(uint8_t(len - 1), first_r);
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
+  /// Shift entire pattern (pitch + time together) one step RIGHT within length.
+  void ShiftPatternRight() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    if (len < 2) return;
+    const uint8_t last_t = s.time(uint8_t(len - 1));
+    const uint8_t last_p = s.pitch[len - 1];
+    const uint8_t last_r = s.get_ratchet_val(uint8_t(len - 1));
+    for (int i = int(len - 1); i > 0; --i) {
+      s.pitch[i] = s.pitch[i - 1];
+      sequence_set_time_at(s, uint8_t(i), s.time(uint8_t(i - 1)));
+      s.set_ratchet_val(uint8_t(i), s.get_ratchet_val(uint8_t(i - 1)));
+    }
+    s.pitch[0] = last_p;
+    sequence_set_time_at(s, 0, last_t);
+    s.set_ratchet_val(0, last_r);
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
+  /// Rotate pitch bytes only one step LEFT within length (time_data stays put).
+  void RotatePitchLeft() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    if (len < 2) return;
+    const uint8_t first = s.pitch[0];
+    for (uint8_t i = 0; i < len - 1; ++i) s.pitch[i] = s.pitch[i + 1];
+    s.pitch[len - 1] = first;
+    stale = true;
+  }
+
+  /// Rotate pitch bytes only one step RIGHT within length.
+  void RotatePitchRight() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    if (len < 2) return;
+    const uint8_t last = s.pitch[len - 1];
+    for (int i = int(len - 1); i > 0; --i) s.pitch[i] = s.pitch[i - 1];
+    s.pitch[0] = last;
+    stale = true;
+  }
+
+  /// Reverse the entire pattern (pitch + time) within length.
+  void ReversePattern() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    if (len < 2) return;
+    for (uint8_t i = 0, j = uint8_t(len - 1); i < j; ++i, --j) {
+      const uint8_t tp = s.pitch[i]; s.pitch[i] = s.pitch[j]; s.pitch[j] = tp;
+      const uint8_t ti = s.time(i);
+      const uint8_t tj = s.time(j);
+      sequence_set_time_at(s, i, tj);
+      sequence_set_time_at(s, j, ti);
+      const uint8_t ri = s.get_ratchet_val(i);
+      const uint8_t rj = s.get_ratchet_val(j);
+      s.set_ratchet_val(i, rj);
+      s.set_ratchet_val(j, ri);
+    }
+    normalize_pattern_times(s);
+    stale = true;
+  }
+
+  /// Clear pitches only: wipe pitch[0..length-1] to PITCH_EMPTY, keep time data.
+  void ClearPitchesOnly() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; ++i) s.pitch[i] = PITCH_EMPTY;
+    s.set_stash_count(0);
+    stale = true;
+  }
+
+  /// Clear time data only: set all steps within length to REST, keep pitches.
+  void ClearTimesOnly() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; ++i) sequence_set_time_at(s, i, 0);
+    stale = true;
+  }
+
+  /// Stamp accent on every NOTE step (or clear all if already fully stamped).
+  /// Returns true if any step was changed.
+  void StampAllAccent() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    bool all_set = true;
+    uint8_t note_count = 0;
+    for (uint8_t i = 0; i < len; ++i) {
+      if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+        ++note_count;
+        if (!(s.pitch[i] & 0x40)) { all_set = false; }
+      }
+    }
+    if (note_count == 0) return;
+    for (uint8_t i = 0; i < len; ++i) {
+      if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+        if (all_set) s.pitch[i] &= ~0x40;
+        else         s.pitch[i] |=  0x40;
+      }
+    }
+    stale = true;
+  }
+
+  /// Stamp slide on every NOTE step (or clear all if already fully stamped).
+  /// Ratchets are cleared on any step that gains a slide.
+  void StampAllSlide() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    bool all_set = true;
+    uint8_t note_count = 0;
+    for (uint8_t i = 0; i < len; ++i) {
+      if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+        ++note_count;
+        if (!(s.pitch[i] & 0x80)) { all_set = false; }
+      }
+    }
+    if (note_count == 0) return;
+    for (uint8_t i = 0; i < len; ++i) {
+      if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+        if (all_set) s.pitch[i] &= ~0x80;
+        else       { s.pitch[i] |=  0x80; s.set_ratchet_val(i, 0); }
+      }
+    }
+    stale = true;
+  }
+
+  /// Clear every pattern in the active group and reset the engine.
+  void ClearAllPatterns() {
+    for (uint8_t i = 0; i < 16; ++i) pattern[i].Clear();
+    stale = true;
+    Reset();
+    mode_ = NORMAL_MODE;
+  }
+
+  /// Randomize semitone (key index 0..12) only. Preserves octave button,
+  /// accent, and slide on every NOTE step. Non-NOTE steps untouched.
+  void RandomizeSemitones() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; ++i) {
+      if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+        const uint8_t pk_old = s.pitch[i] & 0x3F;
+        const uint8_t oct    = pk_old / 13;
+        const uint8_t new_k  = uint8_t(random(PITCH_KEY_HIGH_C + 1));
+        const uint8_t pk_new = pack_pitch(new_k, oct);
+        s.pitch[i] = (s.pitch[i] & 0xC0) | pk_new;
+      }
+    }
+    stale = true;
+  }
+
+  /// Randomize octave button (0..3) only. Preserves semitone, accent, slide.
+  void RandomizeOctaves() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; ++i) {
+      if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
+        const uint8_t pk_old = s.pitch[i] & 0x3F;
+        const uint8_t key_i  = pk_old % 13;
+        const uint8_t new_o  = uint8_t(random(4));
+        const uint8_t pk_new = pack_pitch(key_i, new_o);
+        s.pitch[i] = (s.pitch[i] & 0xC0) | pk_new;
+      }
+    }
+    stale = true;
+  }
+
+  /// Nudge semitone +/-1 on the current pitch_pos step (PITCH_MODE edit).
+  /// Clamps at linear 0 and 48. Preserves accent/slide.
+  void NudgeSemitone(int dir) {
+    Sequence &s = get_sequence();
+    const uint8_t pp = uint8_t(s.pitch_pos & (MAX_STEPS - 1));
+    if (s.time(pp) != 1 || s.pitch_is_empty(pp)) return;
+    const uint8_t pk  = s.pitch[pp] & 0x3F;
+    int lin = int(unpack_pitch_linear(pk)) + dir;
+    if (lin < 0)  lin = 0;
+    if (lin > 48) lin = 48;
+    const uint8_t oct = uint8_t(lin / 12);
+    const uint8_t key = uint8_t(lin - oct * 12);
+    const uint8_t pk_new = pack_pitch(key, oct);
+    s.pitch[pp] = (s.pitch[pp] & 0xC0) | pk_new;
+    stale = true;
+  }
+
+  /// Nudge ratchet +/-1 on the current time_pos step. Cycles 0..2 (1x..3x).
+  /// Slide steps can't ratchet; no-op if current step has slide.
+  void NudgeRatchet(int dir) {
+    Sequence &s = get_sequence();
+    const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
+    if (s.time(tp) != 1) return;
+    if (!s.pitch_is_empty(tp) && (s.pitch[tp] & 0x80)) return;
+    int r = int(s.get_ratchet_val(tp)) + dir;
+    if (r < 0) r = 0;
+    if (r > 2) r = 2;
+    s.set_ratchet_val(tp, uint8_t(r));
+    stale = true;
+  }
+
+  /// Set ratchet value (0..2 = 1x/2x/3x) on the current time_pos step directly.
+  /// No-op if current step is not a NOTE or has slide set.
+  void SetRatchetAtCurrent(uint8_t val) {
+    Sequence &s = get_sequence();
+    const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
+    if (s.time(tp) != 1) return;
+    if (!s.pitch_is_empty(tp) && (s.pitch[tp] & 0x80)) return;
+    if (val > 2) val = 2;
+    s.set_ratchet_val(tp, val);
     stale = true;
   }
 
