@@ -114,7 +114,7 @@ static const OutputIndex kCfgWhiteNoteLeds[8] = {
 static const InputIndex kCfgWhiteKeys[8] = {
     C_KEY, D_KEY, E_KEY, F_KEY, G_KEY, A_KEY, B_KEY, C_KEY2};
 
-enum class CfgMenu : uint8_t { Off, Main, MidiCh, MidiChHigh, MidiClk, MidiThru, ClearAll };
+enum class CfgMenu : uint8_t { Off, Midi };
 static CfgMenu s_cfg_menu = CfgMenu::Off;
 static bool s_cfg_suppress_clear_exit = false;
 
@@ -129,83 +129,56 @@ static void cfg_save_midi() {
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
 }
 
+// Combined MIDI config screen:
+//   Pat keys 0-7 → set MIDI channel (1-8, or 9-16 if D# high-bank latched).
+//   D# key      → toggle high-bank for channel selection (LED solid while latched).
+//   Pat LED     → lit on the slot of the active channel within its bank.
+//   TIME mode LED ON  = DIN sync (midi_clock_receive == false).
+//   TIME mode LED OFF = MIDI sync (midi_clock_receive == true).
+//   TIME_KEY rising → toggle clock source.
+//   ACCENT LED ON  = MIDI OUT (midi_thru == false).
+//   ACCENT LED OFF = MIDI THRU (midi_thru == true).
+//   ACCENT_KEY rising → toggle thru.
+//   CLEAR or FN rising → exit menu.
 static void process_config_menu() {
-  switch (s_cfg_menu) {
-  case CfgMenu::Off:
-    return;
-  case CfgMenu::Main:
-    Leds::Set(FUNCTION_MODE_LED, true);
-    if (inputs[CLEAR_KEY].rising()) {
-      if (s_cfg_suppress_clear_exit)
-        s_cfg_suppress_clear_exit = false;
-      else {
-        s_cfg_menu = CfgMenu::Off;
-        break;
-      }
-    }
-    if (inputs[C_KEY].rising()) s_cfg_menu = CfgMenu::MidiCh;
-    if (inputs[D_KEY].rising()) s_cfg_menu = CfgMenu::MidiClk;
-    if (inputs[E_KEY].rising()) s_cfg_menu = CfgMenu::MidiThru;
-    if (inputs[F_KEY].rising()) s_cfg_menu = CfgMenu::ClearAll;
-    break;
-  case CfgMenu::MidiCh: {
-    Leds::Set(CSHARP_KEY_LED, true);
-    const uint8_t dc = cfg_display_channel();
-    if (dc <= 8) Leds::Set(kCfgWhiteNoteLeds[dc - 1], true);
-    else         Leds::Set(kCfgWhiteNoteLeds[dc - 9], true);
-    if (inputs[DSHARP_KEY].rising()) s_cfg_menu = CfgMenu::MidiChHigh;
-    if (inputs[CLEAR_KEY].rising())  s_cfg_menu = CfgMenu::Main;
-    for (uint8_t wi = 0; wi < 8; ++wi) {
-      if (inputs[kCfgWhiteKeys[wi]].rising()) {
-        GlobalSettings.midi_channel = uint8_t(wi + 1);
-        cfg_save_midi();
-      }
-    }
-    break;
+  if (s_cfg_menu == CfgMenu::Off) return;
+  Leds::Set(FUNCTION_MODE_LED, true);
+
+  static bool s_high_bank = false;
+  if (inputs[DSHARP_KEY].rising()) s_high_bank = !s_high_bank;
+  Leds::Set(DSHARP_KEY_LED, s_high_bank);
+
+  const uint8_t dc = cfg_display_channel();
+  if (s_high_bank) {
+    if (dc >= 9 && dc <= 16) Leds::Set(OutputIndex((dc - 9) & 0x7), true);
+  } else {
+    if (dc >= 1 && dc <= 8)  Leds::Set(OutputIndex((dc - 1) & 0x7), true);
   }
-  case CfgMenu::MidiChHigh:
-    if (inputs[CLEAR_KEY].rising())  s_cfg_menu = CfgMenu::Main;
-    if (inputs[DSHARP_KEY].rising()) s_cfg_menu = CfgMenu::MidiCh;
-    for (uint8_t wi = 0; wi < 8; ++wi) {
-      if (inputs[kCfgWhiteKeys[wi]].rising()) {
-        GlobalSettings.midi_channel = uint8_t(wi + 9);
-        cfg_save_midi();
-        s_cfg_menu = CfgMenu::MidiCh;
-      }
-    }
-    break;
-  case CfgMenu::MidiClk:
-    Leds::Set(TIME_MODE_LED, !GlobalSettings.midi_clock_receive);
-    if (inputs[TIME_KEY].rising()) {
-      GlobalSettings.midi_clock_receive = !GlobalSettings.midi_clock_receive;
+  for (uint8_t i = 0; i < 8; ++i) {
+    if (inputs[i].rising()) {
+      GlobalSettings.midi_channel = uint8_t(i + 1 + (s_high_bank ? 8 : 0));
       cfg_save_midi();
+      break;
     }
-    if (inputs[CLEAR_KEY].rising()) s_cfg_menu = CfgMenu::Main;
-    break;
-  case CfgMenu::MidiThru:
-    // SLIDE_KEY_LED on = MIDI thru enabled; off = disabled.
-    Leds::Set(SLIDE_KEY_LED, GlobalSettings.midi_thru);
-    if (inputs[SLIDE_KEY].rising()) {
-      GlobalSettings.midi_thru = !GlobalSettings.midi_thru;
-      cfg_save_midi();
-    }
-    if (inputs[CLEAR_KEY].rising()) s_cfg_menu = CfgMenu::Main;
-    break;
-  case CfgMenu::ClearAll: {
-    // Confirm-to-clear: all 8 pat LEDs blink. BACK confirms, CLEAR cancels.
-    const bool blink = bool((millis() >> 7) & 1);
-    for (uint8_t i = 0; i < 8; ++i) Leds::Set(OutputIndex(i), blink);
-    Leds::Set(ASHARP_KEY_LED, blink);
-    if (inputs[BACK_KEY].rising()) {
-      engine.ClearAllPatterns();
-      engine.Save();
-      for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
-        midi_send_pattern_update(_pi);
-      s_cfg_menu = CfgMenu::Main;
-    }
-    if (inputs[CLEAR_KEY].rising()) s_cfg_menu = CfgMenu::Main;
-    break;
   }
+
+  Leds::Set(TIME_MODE_LED, !GlobalSettings.midi_clock_receive);
+  if (inputs[TIME_KEY].rising()) {
+    GlobalSettings.midi_clock_receive = !GlobalSettings.midi_clock_receive;
+    cfg_save_midi();
+  }
+
+  Leds::Set(ACCENT_KEY_LED, !GlobalSettings.midi_thru);
+  if (inputs[ACCENT_KEY].rising()) {
+    GlobalSettings.midi_thru = !GlobalSettings.midi_thru;
+    cfg_save_midi();
+  }
+
+  if (inputs[CLEAR_KEY].rising()) {
+    if (s_cfg_suppress_clear_exit)
+      s_cfg_suppress_clear_exit = false;
+    else
+      s_cfg_menu = CfgMenu::Off;
   }
 }
 
@@ -432,36 +405,20 @@ void ProcessDirectionMode() {
 //   falling → gate/audition off (handled in main loop TAP_NEXT.falling section)
 // ---------------------------------------------------------------------------
 void ProcessEdit(const bool &write_mode, const bool clk_run) {
-  // TIME_KEY held while in edit mode acts as a nudge/ratchet modifier. Suppresses
-  // normal pitch/time writes so the same keys can drive nudge and ratchet select.
-  const bool nudge_mod = inputs[TIME_KEY].held();
+  // TIME_MODE edit + TIME_KEY held = ratchet view: DOWN/UP/ACCENT show & set ratchet 0/1/2.
+  // Released → revert to normal time display. PITCH_MODE no longer has a nudge/ratchet sub-mode.
+  const bool ratchet_mod = inputs[TIME_KEY].held();
   switch (engine.get_mode()) {
   case PITCH_MODE: {
     if (write_mode) {
-      if (nudge_mod) {
-        // PITCH_MODE edit + TIME_KEY held:
-        //   UP/DOWN   → nudge semitone +/-1
-        //   C/D/E     → set ratchet 0/1/2 on current step
-        //   ACCENT/SLIDE still toggle (legacy)
-        if (inputs[UP_KEY].rising())   engine.NudgeSemitone(+1);
-        if (inputs[DOWN_KEY].rising()) engine.NudgeSemitone(-1);
-        if (inputs[C_KEY].rising())    engine.SetRatchetAtCurrent(0);
-        if (inputs[D_KEY].rising())    engine.SetRatchetAtCurrent(1);
-        if (inputs[E_KEY].rising())    engine.SetRatchetAtCurrent(2);
-        if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
-        if (inputs[SLIDE_KEY].rising())  engine.ToggleSlide();
-        midi_send_pattern_update(engine.get_patsel());
-      } else {
-        const uint8_t updated_note = input_pitch(true, clk_run);
-        // When user presses a pitch key while TAP is held, re-audition with the new pitch
-        // (the initial TAP audition plays the old/default pitch before the key is pressed).
-        if (!clk_run && updated_note) {
-          uint16_t mn = uint16_t(updated_note) + transpose;
-          if (mn > 127) mn = 127;
-          const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
-          s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
-          midi_audition_note_on(uint8_t(mn), vel);
-        }
+      const uint8_t updated_note = input_pitch(true, clk_run);
+      // When user presses a pitch key while TAP is held, re-audition with the new pitch.
+      if (!clk_run && updated_note) {
+        uint16_t mn = uint16_t(updated_note) + transpose;
+        if (mn > 127) mn = 127;
+        const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
+        s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
+        midi_audition_note_on(uint8_t(mn), vel);
       }
     }
     PrintPitch();
@@ -469,35 +426,27 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
   }
   case TIME_MODE:
     if (write_mode) {
-      if (nudge_mod) {
-        // TIME_MODE edit + TIME_KEY held: C/D/E set ratchet 0/1/2 on current step.
-        if (inputs[C_KEY].rising()) engine.SetRatchetAtCurrent(0);
-        if (inputs[D_KEY].rising()) engine.SetRatchetAtCurrent(1);
-        if (inputs[E_KEY].rising()) engine.SetRatchetAtCurrent(2);
-        midi_send_pattern_update(engine.get_patsel());
+      if (ratchet_mod) {
+        // Ratchet view: DOWN=1x(0), UP=2x(1), ACCENT=3x(2). LED shows current value.
+        const uint8_t tp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
+        if (inputs[DOWN_KEY].rising())   { engine.SetRatchetAtCurrent(0); midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[UP_KEY].rising())     { engine.SetRatchetAtCurrent(1); midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[ACCENT_KEY].rising()) { engine.SetRatchetAtCurrent(2); midi_send_pattern_update(engine.get_patsel()); }
+        const uint8_t r = engine.get_sequence().get_ratchet_val(tp);
+        Leds::Set(DOWN_KEY_LED,   r == 0);
+        Leds::Set(UP_KEY_LED,     r == 1);
+        Leds::Set(ACCENT_KEY_LED, r == 2);
       } else {
         if (inputs[SLIDE_KEY].rising()) {
           engine.ToggleStepLockFromTimeMode();
           const uint8_t ltp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
           midi_send_step_lock_update(engine.get_patsel(), ltp, engine.get_sequence().step_locked(ltp));
         }
-        // C# = insert REST step at current time_pos (length +1).
-        // D# = delete current time_pos (length -1).
-        if (inputs[CSHARP_KEY].rising()) {
-          engine.InsertTimeStep();
-          midi_send_pattern_update(engine.get_patsel());
-          midi_send_length_update(engine.get_patsel(), engine.get_length());
-        }
-        if (inputs[DSHARP_KEY].rising()) {
-          engine.DeleteTimeStep();
-          midi_send_pattern_update(engine.get_patsel());
-          midi_send_length_update(engine.get_patsel(), engine.get_length());
-        }
         input_time(true, clk_run);
+        PrintTime();
       }
     }
-    PrintTime();
-    // fall through
+    break;
   case NORMAL_MODE:
     break;
   }
@@ -505,7 +454,6 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
   // BACK_KEY: step back one position
   if (inputs[BACK_KEY].rising()) {
     engine.StepBack();
-    // Audition the note we are now on if PITCH_MODE + not running
     if (!clk_run && engine.get_mode() == PITCH_MODE &&
         engine.get_sequence().get_time() != 0) {
       uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
@@ -516,11 +464,12 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       midi_audition_note_on(uint8_t(mn), vel);
     }
   }
-  if (inputs[BACK_KEY].falling()) {
-    if (!write_mode && !clk_run && engine.get_mode() == PITCH_MODE) {
-      s_back_pitch_preview_gate = false;
-      midi_audition_note_off();
-    }
+  // Always close audition on BACK falling — fixes the infinitely-held note
+  // bug when TAP_NEXT and BACK are pressed/released together (TAP falling
+  // closed only its own preview; the back-preview latch was orphaned).
+  if (inputs[BACK_KEY].falling() && engine.get_mode() == PITCH_MODE) {
+    s_back_pitch_preview_gate = false;
+    midi_audition_note_off();
   }
 }
 
@@ -760,7 +709,9 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
 
 // PITCH modifier: live transpose root / octave for performance
 void ProcessPitchMod() {
-  Leds::Set(PITCH_MODE_LED, clk_count & (1 << 2));
+  // Solid FUNCTION_MODE_LED so the indicator is visible while stopped (clk_count blink mask
+  // would otherwise sit at 0). On release the next-frame ProcessDefault redraws normal LEDs.
+  Leds::Set(FUNCTION_MODE_LED, true);
   Leds::Set(pitch_leds[transpose % 12], true);
   Leds::Set(DOWN_KEY_LED, (transpose / 12) == OCTAVE_DOWN || (transpose / 12) == OCTAVE_DOUBLE_UP);
   Leds::Set(UP_KEY_LED,   (transpose / 12) > OCTAVE_ZERO);
@@ -806,7 +757,7 @@ void loop() {
 
   if (s_cfg_menu == CfgMenu::Off && !edit_mode && fn_mod &&
       inputs[CLEAR_KEY].rising()) {
-    s_cfg_menu = CfgMenu::Main;
+    s_cfg_menu = CfgMenu::Midi;
     s_cfg_suppress_clear_exit = true;
   }
 
@@ -908,53 +859,74 @@ void loop() {
       s_dir_mode = true;
     } else if (fn_mod && pitch_mod) {
       // Step-select mode: C#/D#/F#/G# pick 8-step base, white keys pick step in bank.
-      // BACK_KEY clears the selection.  Chase LED lights only when playhead reaches the
-      // selected step — so selection in C# bank is invisible while playhead runs in D#.
-      Leds::Set(PITCH_MODE_LED,    clk_count & 4);
-      Leds::Set(FUNCTION_MODE_LED, clk_count & 4);
+      // BACK_KEY clears the selection or exits the per-step detail editor.
+      Leds::Set(FUNCTION_MODE_LED, true);
+      // Chase always visible while running so the user can audit timing inside the bank.
+      if (clk_run) {
+        const uint8_t tp = engine.get_time_pos();
+        Leds::Set(OutputIndex(tp & 0x7), clk_count < 12);
+      }
       if (inputs[CSHARP_KEY].rising()) s_step_sel_base = 0;
       if (inputs[DSHARP_KEY].rising()) s_step_sel_base = 8;
       if (inputs[FSHARP_KEY].rising()) s_step_sel_base = 16;
       if (inputs[GSHARP_KEY].rising()) s_step_sel_base = 24;
-      for (uint8_t wi = 0; wi < 8; ++wi) {
-        if (inputs[kCfgWhiteKeys[wi]].rising()) {
-          const uint8_t cand = uint8_t(s_step_sel_base + wi);
-          if (cand < engine.get_length()) s_step_sel = int(cand);
-        }
-      }
-      if (inputs[BACK_KEY].rising()) s_step_sel = -1;
-      // Black key LED shows which 8-step bank the selection lives in.
-      const OutputIndex base_led =
+      // Selected base bank LED blinks; cover-bank LEDs (≤ length) light solid.
+      const uint8_t blen = engine.get_length();
+      const bool blinkb = bool((millis() >> 8) & 1);
+      const OutputIndex sel_base_led =
           (s_step_sel_base == 0)  ? CSHARP_KEY_LED :
           (s_step_sel_base == 8)  ? DSHARP_KEY_LED :
           (s_step_sel_base == 16) ? FSHARP_KEY_LED : GSHARP_KEY_LED;
-      Leds::Set(base_led, true);
+      Leds::Set(CSHARP_KEY_LED, (blen > 0)  && (sel_base_led == CSHARP_KEY_LED ? blinkb : true));
+      Leds::Set(DSHARP_KEY_LED, (blen > 8)  && (sel_base_led == DSHARP_KEY_LED ? blinkb : true));
+      Leds::Set(FSHARP_KEY_LED, (blen > 16) && (sel_base_led == FSHARP_KEY_LED ? blinkb : true));
+      Leds::Set(GSHARP_KEY_LED, (blen > 24) && (sel_base_led == GSHARP_KEY_LED ? blinkb : true));
+      for (uint8_t wi = 0; wi < 8; ++wi) {
+        if (inputs[kCfgWhiteKeys[wi]].rising()) {
+          const uint8_t cand = uint8_t(s_step_sel_base + wi);
+          if (cand < blen) s_step_sel = int(cand);
+        }
+      }
       // White LED for the current selection (solid while held).
       if (s_step_sel >= 0) Leds::Set(OutputIndex(s_step_sel & 0x7), true);
-      // Chase: only light the step LED when the playhead is on the selected step.
-      if (s_step_sel >= 0 && clk_run) {
-        const uint8_t tp = engine.get_time_pos();
-        if (uint8_t(s_step_sel) == tp)
-          Leds::Set(OutputIndex(tp & 0x7), clk_count < 12);
+
+      // Detail editor: TAP_NEXT held + valid selection → show pitch info and edit it.
+      // BACK_KEY rising exits the editor (clears selection). Otherwise BACK clears selection.
+      if (s_step_sel >= 0 && edit_mode) {
+        engine.get_sequence().pitch_pos = s_step_sel;
+        engine.get_sequence().time_pos  = s_step_sel;
+        // Edit pitch attributes in place: pitch keys change semitone, UP/DOWN nudge octave,
+        // ACCENT/SLIDE rising toggle their flags. Only meaningful on NOTE steps.
+        if (engine.get_sequence().get_time() == 1) {
+          if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
+          if (inputs[SLIDE_KEY].rising())  engine.ToggleSlide();
+          if (inputs[UP_KEY].rising())     engine.NudgeOctave(+1);
+          if (inputs[DOWN_KEY].rising())   engine.NudgeOctave(-1);
+          for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
+            if (inputs[pitched_keys[pi]].rising()) {
+              engine.SetPitchSemitone(pi);
+              break;
+            }
+          }
+          midi_send_pattern_update(engine.get_patsel());
+          PrintPitch();
+        }
+        if (inputs[BACK_KEY].rising()) s_step_sel = -1;
+      } else if (inputs[BACK_KEY].rising()) {
+        s_step_sel = -1;
       }
-    } else if (pitch_mod && !fn_mod && !clear_mod) {
+    } else if (pitch_mod && !fn_mod && !clear_mod && !write_mode) {
       ProcessPitchMod();
     } else if (time_mod) {
-      Leds::Set(TIME_MODE_LED, clk_count & (1 << 2));
+      Leds::Set(FUNCTION_MODE_LED, true);
       // TODO: performance time effects
     } else if (fn_mod) {
-      Leds::Set(FUNCTION_MODE_LED, clk_count & (1 << 2));
+      // Always-solid FUNCTION_MODE_LED so it stays visible when the clock is stopped
+      // (clk_count is frozen and may sit at 0, hiding any blink mask).
+      Leds::Set(FUNCTION_MODE_LED, true);
 
-      // FN + ACCENT rising: stamp ALL NOTE steps with accent (toggle off if
-      // every NOTE already has it). FN + SLIDE rising: same, for slide.
-      if (!clear_mod && inputs[ACCENT_KEY].rising()) {
-        engine.StampAllAccent();
-        midi_send_pattern_update(engine.get_patsel());
-      }
-      if (!clear_mod && inputs[SLIDE_KEY].rising()) {
-        engine.StampAllSlide();
-        midi_send_pattern_update(engine.get_patsel());
-      }
+      // FN + ACCENT / FN + SLIDE: live force at the CV stage; only active while held.
+      // No persistent stamp — handled below in the DAC output block via fn_mod.
 
       if (!write_mode) {
         // LED: white key = position within 8-step block; black keys = cumulative block coverage.
@@ -1137,10 +1109,10 @@ void loop() {
     s_prev_tracknum = tracknum;
   }
 
-  if (inputs[FUNCTION_KEY].rising()) {
+  if (inputs[FUNCTION_KEY].rising() && !edit_mode) {
     if (s_dir_mode) {
       s_dir_mode = false;
-    } else if (s_cfg_menu == CfgMenu::Main) {
+    } else if (s_cfg_menu == CfgMenu::Midi) {
       s_cfg_menu = CfgMenu::Off;
     } else if (s_cfg_menu == CfgMenu::Off) {
       engine.SetMode(NORMAL_MODE, !clk_run);
@@ -1148,8 +1120,8 @@ void loop() {
   }
 
   if (s_cfg_menu == CfgMenu::Off) {
-    if (inputs[TIME_KEY].rising()  && write_mode && !clear_mod && !fn_mod) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
-    if (inputs[PITCH_KEY].rising() && write_mode && !fn_mod) engine.SetMode(PITCH_MODE, !clk_run);
+    if (inputs[TIME_KEY].rising()  && write_mode && !clear_mod && !fn_mod && !edit_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
+    if (inputs[PITCH_KEY].rising() && write_mode && !fn_mod && !edit_mode) engine.SetMode(PITCH_MODE, !clk_run);
 
     // CLEAR + TIME_KEY: toggle metronome tap-write (running + write + NORMAL_MODE).
     if (clear_mod && inputs[TIME_KEY].rising() && !fn_mod &&
@@ -1191,7 +1163,7 @@ void loop() {
     }
 
     // CLEAR rising with a pat key held: clear that pattern (only clear path).
-    if (inputs[CLEAR_KEY].rising() && !fn_mod) {
+    if (inputs[CLEAR_KEY].rising() && !fn_mod && !edit_mode) {
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].held()) {
           const uint8_t pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
@@ -1404,16 +1376,16 @@ void loop() {
       midi_send_length_update(engine.get_patsel(), engine.get_length());
     }
 
-    // FN + BACK_KEY: length +1 (cap 64). FN + TAP_NEXT: length -1 (min 1). Any transport state.
+    // FN + BACK_KEY: length -1 (min 1). FN + TAP_NEXT: length +1 (cap 64). Any transport state.
     // Skipped while PITCH_KEY is held — BACK is consumed by step-select mode.
     if (fn_mod && !pitch_mod && inputs[BACK_KEY].rising()) {
-      uint8_t new_len = engine.get_length() < 64 ? engine.get_length() + 1 : 64;
+      uint8_t new_len = engine.get_length() > 1 ? engine.get_length() - 1 : 1;
       engine.SetLength(new_len);
       engine.stale = true;
       midi_send_length_update(engine.get_patsel(), engine.get_length());
     }
     if (fn_mod && !pitch_mod && inputs[TAP_NEXT].rising()) {
-      uint8_t new_len = engine.get_length() > 1 ? engine.get_length() - 1 : 1;
+      uint8_t new_len = engine.get_length() < 64 ? engine.get_length() + 1 : 64;
       engine.SetLength(new_len);
       engine.stale = true;
       midi_send_length_update(engine.get_patsel(), engine.get_length());
@@ -1441,14 +1413,13 @@ void loop() {
     if (inputs[TAP_NEXT].falling()) {
       s_tap_pitch_preview_gate = false;
       midi_audition_note_off(); // close any open audition note
-      // PITCH_MODE write: advance linearly on release, exit after full loop.
+      // PITCH_MODE write: advance to the next NOTE step (skipping REST/TIE) on release,
+      // exit after a full loop. Linear advance was leaving the cursor on REST/TIE slots
+      // whose pitch byte is empty (PITCH_EMPTY), so the next audition played nothing.
       if (!clk_run && write_mode && engine.get_mode() == PITCH_MODE) {
-        const uint8_t len = engine.get_length();
-        engine.get_sequence().first_step = false;
-        engine.get_sequence().pitch_pos =
-            int((unsigned(engine.get_sequence().pitch_pos) + 1u) % unsigned(len));
-        engine.get_sequence().time_pos = engine.get_sequence().pitch_pos;
-        if (!wrap_edit && engine.get_sequence().pitch_pos == 0)
+        engine.get_sequence().advance_pitch_to_next_note();
+        if (engine.get_sequence().pitch_pos ==
+            int(engine.get_sequence().first_note_idx()))
           engine.SetMode(NORMAL_MODE, true);
       }
       if (!wrap_edit && !clk_run && engine.get_mode() == TIME_MODE &&
@@ -1511,10 +1482,13 @@ void loop() {
   // ---------------------------------------------------------------------------
   // CV output: running = sequenced pitch + engine gate/accent/slide; stopped = keys
   // ---------------------------------------------------------------------------
-  // PITCH_KEY + ACCENT / SLIDE held (no FN, running): non-destructive force modifiers
-  // applied at the CV output stage only.  Pattern bytes are untouched.
-  const bool force_accent_live = pitch_mod && !fn_mod && clk_run && inputs[ACCENT_KEY].held();
-  const bool force_slide_live  = pitch_mod && !fn_mod && clk_run && inputs[SLIDE_KEY].held();
+  // PITCH_KEY + ACCENT / SLIDE held OR FN + ACCENT / SLIDE held (running):
+  // non-destructive force modifiers applied at the CV output stage only.
+  // Active only while held - releasing returns to the pattern's stored flags.
+  const bool force_accent_live =
+      ((pitch_mod && !fn_mod) || (fn_mod && !pitch_mod)) && clk_run && inputs[ACCENT_KEY].held();
+  const bool force_slide_live  =
+      ((pitch_mod && !fn_mod) || (fn_mod && !pitch_mod)) && clk_run && inputs[SLIDE_KEY].held();
 
   if (clk_run) {
     // Expire short metronome gate pulse after 25 ms
