@@ -64,9 +64,11 @@ static bool s_ratchet_gate_reset = false;
 static bool s_dir_mode = false;
 
 // Step-select mode (FN + PITCH_KEY held): pick one step via black-key bank + white key.
-// Chase LED lights only when playhead reaches that step. -1 = no selection.
+// Chase LED lights only when playhead is within the active bank. -1 = no selection.
+// `s_step_sel_edit` = entered the per-step detail editor via ACCENT_KEY rising.
 static int     s_step_sel      = -1;
 static uint8_t s_step_sel_base = 0; // 0, 8, 16, or 24
+static bool    s_step_sel_edit = false;
 
 // FN+write length entry state
 static bool    s_len_extended     = false;
@@ -783,6 +785,8 @@ void loop() {
   const bool prev_midi_clk = midi_clk;
   uint8_t midi_clock_pulses = 0;
   midi_poll(engine, clk_run, midi_clk, midi_clock_pulses);
+  // SysEx 0x22 may have updated led_brightness; mirror into the LED driver.
+  Leds::brightness = GlobalSettings.led_brightness;
   // Detect MIDI clock Start rising edge (midi_clk just became true this frame).
   const bool midi_clk_rose = (!prev_midi_clk && midi_clk && GlobalSettings.midi_clock_receive);
 
@@ -869,67 +873,81 @@ void loop() {
   } else if (s_dir_mode) {
     ProcessDirectionMode();
   } else {
+    // Reset step-select detail-editor sub-state whenever we're not currently in step-select.
+    if (!(fn_mod && pitch_mod) && s_step_sel_edit) s_step_sel_edit = false;
     // FN + TIME_KEY rising → enter direction mode (allowed in pattern write mode; the
     // TIME_MODE set at line ~1050 is gated by !fn_mod).
     if (fn_mod && inputs[TIME_KEY].rising()) {
       s_dir_mode = true;
     } else if (fn_mod && pitch_mod) {
       // Step-select mode: C#/D#/F#/G# pick 8-step base, white keys pick step in bank.
-      // BACK_KEY clears the selection or exits the per-step detail editor.
+      // ACCENT_KEY rising on a valid selection enters the per-step detail editor;
+      // BACK_KEY rising exits the editor or clears the selection.
       Leds::Set(FUNCTION_MODE_LED, true);
-      // Chase always visible while running so the user can audit timing inside the bank.
-      if (clk_run) {
-        const uint8_t tp = engine.get_time_pos();
-        Leds::Set(OutputIndex(tp & 0x7), clk_count < 12);
-      }
-      if (inputs[CSHARP_KEY].rising()) s_step_sel_base = 0;
-      if (inputs[DSHARP_KEY].rising()) s_step_sel_base = 8;
-      if (inputs[FSHARP_KEY].rising()) s_step_sel_base = 16;
-      if (inputs[GSHARP_KEY].rising()) s_step_sel_base = 24;
-      // Selected base bank LED blinks; cover-bank LEDs (≤ length) light solid.
       const uint8_t blen = engine.get_length();
-      const bool blinkb = bool((millis() >> 8) & 1);
-      const OutputIndex sel_base_led =
-          (s_step_sel_base == 0)  ? CSHARP_KEY_LED :
-          (s_step_sel_base == 8)  ? DSHARP_KEY_LED :
-          (s_step_sel_base == 16) ? FSHARP_KEY_LED : GSHARP_KEY_LED;
-      Leds::Set(CSHARP_KEY_LED, (blen > 0)  && (sel_base_led == CSHARP_KEY_LED ? blinkb : true));
-      Leds::Set(DSHARP_KEY_LED, (blen > 8)  && (sel_base_led == DSHARP_KEY_LED ? blinkb : true));
-      Leds::Set(FSHARP_KEY_LED, (blen > 16) && (sel_base_led == FSHARP_KEY_LED ? blinkb : true));
-      Leds::Set(GSHARP_KEY_LED, (blen > 24) && (sel_base_led == GSHARP_KEY_LED ? blinkb : true));
-      for (uint8_t wi = 0; wi < 8; ++wi) {
-        if (inputs[kCfgWhiteKeys[wi]].rising()) {
-          const uint8_t cand = uint8_t(s_step_sel_base + wi);
-          if (cand < blen) s_step_sel = int(cand);
-        }
-      }
-      // White LED for the current selection (solid while held).
-      if (s_step_sel >= 0) Leds::Set(OutputIndex(s_step_sel & 0x7), true);
 
-      // Detail editor: TAP_NEXT held + valid selection → show pitch info and edit it.
-      // BACK_KEY rising exits the editor (clears selection). Otherwise BACK clears selection.
-      if (s_step_sel >= 0 && edit_mode) {
-        engine.get_sequence().pitch_pos = s_step_sel;
-        engine.get_sequence().time_pos  = s_step_sel;
-        // Edit pitch attributes in place: pitch keys change semitone, UP/DOWN nudge octave,
-        // ACCENT/SLIDE rising toggle their flags. Only meaningful on NOTE steps.
-        if (engine.get_sequence().get_time() == 1) {
-          if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
-          if (inputs[SLIDE_KEY].rising())  engine.ToggleSlide();
-          if (inputs[UP_KEY].rising())     engine.NudgeOctave(+1);
-          if (inputs[DOWN_KEY].rising())   engine.NudgeOctave(-1);
-          for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
-            if (inputs[pitched_keys[pi]].rising()) {
-              engine.SetPitchSemitone(pi);
-              break;
-            }
+      if (!s_step_sel_edit) {
+        // Bank pick (only outside the detail editor so the editor's own ACCENT/etc.
+        // input doesn't get re-interpreted as bank selection).
+        if (inputs[CSHARP_KEY].rising()) s_step_sel_base = 0;
+        if (inputs[DSHARP_KEY].rising()) s_step_sel_base = 8;
+        if (inputs[FSHARP_KEY].rising()) s_step_sel_base = 16;
+        if (inputs[GSHARP_KEY].rising()) s_step_sel_base = 24;
+        for (uint8_t wi = 0; wi < 8; ++wi) {
+          if (inputs[kCfgWhiteKeys[wi]].rising()) {
+            const uint8_t cand = uint8_t(s_step_sel_base + wi);
+            if (cand < blen) s_step_sel = int(cand);
           }
-          midi_send_pattern_update(engine.get_patsel());
-          PrintPitch();
         }
-        if (inputs[BACK_KEY].rising()) s_step_sel = -1;
-      } else if (inputs[BACK_KEY].rising()) {
-        s_step_sel = -1;
+        // Chase only while playhead is inside the currently visible bank.
+        if (clk_run) {
+          const uint8_t tp = engine.get_time_pos();
+          if ((tp & ~uint8_t(7)) == s_step_sel_base) {
+            Leds::Set(OutputIndex(tp & 0x7), true);
+          }
+        }
+        // Cover-bank LEDs: selected base blinks, other reachable bases solid.
+        const bool blinkb = bool((millis() >> 8) & 1);
+        const OutputIndex sel_base_led =
+            (s_step_sel_base == 0)  ? CSHARP_KEY_LED :
+            (s_step_sel_base == 8)  ? DSHARP_KEY_LED :
+            (s_step_sel_base == 16) ? FSHARP_KEY_LED : GSHARP_KEY_LED;
+        Leds::Set(CSHARP_KEY_LED, (blen > 0)  && (sel_base_led == CSHARP_KEY_LED ? blinkb : true));
+        Leds::Set(DSHARP_KEY_LED, (blen > 8)  && (sel_base_led == DSHARP_KEY_LED ? blinkb : true));
+        Leds::Set(FSHARP_KEY_LED, (blen > 16) && (sel_base_led == FSHARP_KEY_LED ? blinkb : true));
+        Leds::Set(GSHARP_KEY_LED, (blen > 24) && (sel_base_led == GSHARP_KEY_LED ? blinkb : true));
+        // Solid LED for the current selection (only when its bank is visible).
+        if (s_step_sel >= 0 && (uint8_t(s_step_sel) & ~uint8_t(7)) == s_step_sel_base) {
+          Leds::Set(OutputIndex(s_step_sel & 0x7), true);
+        }
+        // Enter detail editor on ACCENT_KEY rising with a valid selection.
+        if (s_step_sel >= 0 && inputs[ACCENT_KEY].rising()) s_step_sel_edit = true;
+        // BACK clears selection while not in the editor.
+        else if (inputs[BACK_KEY].rising()) s_step_sel = -1;
+      } else {
+        // Detail editor: pitch keys / UP / DOWN / ACCENT / SLIDE edit the selected step.
+        // BACK_KEY rising returns to the bank/step picker.
+        if (s_step_sel < 0) {
+          s_step_sel_edit = false;
+        } else {
+          engine.get_sequence().pitch_pos = s_step_sel;
+          engine.get_sequence().time_pos  = s_step_sel;
+          if (engine.get_sequence().get_time() == 1) {
+            if (inputs[ACCENT_KEY].rising()) engine.ToggleAccent();
+            if (inputs[SLIDE_KEY].rising())  engine.ToggleSlide();
+            if (inputs[UP_KEY].rising())     engine.NudgeOctave(+1);
+            if (inputs[DOWN_KEY].rising())   engine.NudgeOctave(-1);
+            for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
+              if (inputs[pitched_keys[pi]].rising()) {
+                engine.SetPitchSemitone(pi);
+                break;
+              }
+            }
+            midi_send_pattern_update(engine.get_patsel());
+            PrintPitch();
+          }
+          if (inputs[BACK_KEY].rising()) s_step_sel_edit = false;
+        }
       }
     } else if (pitch_mod && !fn_mod && !clear_mod && !write_mode) {
       ProcessPitchMod();
@@ -1446,7 +1464,9 @@ void loop() {
 
   // regular pattern write mode (no TAP_NEXT).  Suppressed in direction mode so pitched
   // keys select a direction instead of writing notes into the active pattern.
-  if (s_cfg_menu == CfgMenu::Off && !edit_mode && write_mode && !track_mode && !s_dir_mode) {
+  // Also suppressed in step-select mode (FN + PITCH held) so its inputs don't leak into writes.
+  if (s_cfg_menu == CfgMenu::Off && !edit_mode && write_mode && !track_mode && !s_dir_mode
+      && !(fn_mod && pitch_mod)) {
 
     if (engine.get_mode() == TIME_MODE) {
       if (write_mode && inputs[SLIDE_KEY].rising()) {

@@ -27,7 +27,6 @@
 #include <MIDI.h>
 #include <string.h>
 #include "engine.h"
-#include "drivers.h"
 #include "midi_api.h"
 
 struct SuperOsMidiSettings {
@@ -337,10 +336,8 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     }
     if (n >= 6) {
       const uint8_t br = p[5];
-      if (br >= 1 && br <= 8) {
-        GlobalSettings.led_brightness = br;
-        Leds::brightness = br;
-      }
+      if (br >= 1 && br <= 8) GlobalSettings.led_brightness = br;
+      // main.cpp loop syncs Leds::brightness from GlobalSettings each tick.
     }
     GlobalSettings.save_midi_to_storage();
     midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
