@@ -174,6 +174,21 @@ static void process_config_menu() {
     cfg_save_midi();
   }
 
+  // A# held + UP/DOWN: LED brightness 1..8
+  if (inputs[ASHARP_KEY].held()) {
+    Leds::Set(ASHARP_KEY_LED, true);
+    if (inputs[UP_KEY].rising() && GlobalSettings.led_brightness < 8) {
+      GlobalSettings.led_brightness++;
+      Leds::brightness = GlobalSettings.led_brightness;
+      cfg_save_midi();
+    }
+    if (inputs[DOWN_KEY].rising() && GlobalSettings.led_brightness > 1) {
+      GlobalSettings.led_brightness--;
+      Leds::brightness = GlobalSettings.led_brightness;
+      cfg_save_midi();
+    }
+  }
+
   if (inputs[CLEAR_KEY].rising()) {
     if (s_cfg_suppress_clear_exit)
       s_cfg_suppress_clear_exit = false;
@@ -343,6 +358,7 @@ void setup() {
 
   engine.Load();
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
+  Leds::brightness = GlobalSettings.led_brightness;
 }
 
 // =============================================================================

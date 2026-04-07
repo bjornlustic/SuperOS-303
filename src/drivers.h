@@ -53,6 +53,11 @@ namespace DAC {
 namespace Leds {
   // like a framebuffer, each bit corresponds to an entry in the switched_leds table
   static uint8_t ledstate[3];
+  // Global brightness 1..8 (8 = full). PWM-via-tick: on each Send() call,
+  // a small counter advances; only the first `brightness` slots out of every 8
+  // actually drive the matrix. The remaining slots blank the row.
+  static uint8_t brightness = 8;
+  static uint8_t pwm_phase  = 0;
 
   // set a bit in the framebuffer
   void Set(OutputIndex ledidx, bool enable = true) {
@@ -86,16 +91,18 @@ namespace Leds {
 
   // hardware output, framebuffer reset
   void Send(const uint8_t tick, const bool clear = true) {
-    //const uint8_t cycle = (tick >> 2) & 0x3; // scanner for select pins, bits 0-3
+    // PWM dim: only drive on the first `brightness` of every 8 calls
+    const bool lit = (pwm_phase < brightness);
+    pwm_phase = (pwm_phase + 1) & 0x7;
 
     // switched LEDs
     // which row depends on tick
     uint8_t mask = ledstate[(tick >> 1) & 1] >> (4 * ((tick >> 0) & 1));
-    SetLedSelection(switched_leds[(tick & 0x3) << 2].select, mask);
+    SetLedSelection(switched_leds[(tick & 0x3) << 2].select, lit ? mask : 0);
 
     // direct LEDs
     for (uint8_t i = 16; i < 20; ++i) {
-      digitalWriteFast(switched_leds[i].led, (ledstate[2] & (1 << (i-16))) ? HIGH : LOW);
+      digitalWriteFast(switched_leds[i].led, (lit && (ledstate[2] & (1 << (i-16)))) ? HIGH : LOW);
     }
 
     if (clear) {

@@ -630,11 +630,14 @@ struct PersistentSettings {
   uint8_t sequence_direction = 0; // DIR_FORWARD
   /// When true, MIDI IN messages are forwarded to MIDI OUT (software MIDI thru).
   bool midi_thru = false;
+  /// LED brightness 1..8 (8 = full). PWM via Leds::Send tick counter.
+  uint8_t led_brightness = 8;
 
   static constexpr int kEepromMidiChannel   = 16;
   static constexpr int kEepromMidiFlags     = 17;
   static constexpr int kEepromDirection     = 18;
   static constexpr int kEepromMidiThru      = 19;
+  static constexpr int kEepromLedBrightness = 20;
 
   void Load() { storage.get(0, signature); }
 
@@ -655,6 +658,8 @@ struct PersistentSettings {
     midi_clock_receive  = (fl <= 1)  ? (fl != 0) : true;
     sequence_direction  = (dir < uint8_t(DIR_COUNT)) ? dir : 0;
     midi_thru           = (thru == 1);
+    const uint8_t br    = storage.read(kEepromLedBrightness);
+    led_brightness      = (br >= 1 && br <= 8) ? br : 8;
   }
 
   void save_midi_to_storage() {
@@ -662,6 +667,7 @@ struct PersistentSettings {
     storage.update(kEepromMidiFlags, midi_clock_receive ? 1 : 0);
     storage.update(kEepromDirection, sequence_direction);
     storage.update(kEepromMidiThru, midi_thru ? 1 : 0);
+    storage.update(kEepromLedBrightness, led_brightness);
   }
 };
 
