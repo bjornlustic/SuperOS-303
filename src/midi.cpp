@@ -531,6 +531,16 @@ void midi_send_group_update(uint8_t group) {
   tx_push_message(inner, 3);
 }
 
+// --- Active pattern broadcast (SysEx 0x1E) ---------------------------------------
+// Used while stopped so the web editor follows hardware pat-key presses
+// without flagging the pill as "playing" (which 0x15 would do). Includes the
+// current group so the web can resync even if its hwGroup state is stale.
+void midi_send_active_pattern(uint8_t pat) {
+  const uint8_t grp = g_eng ? g_eng->get_group() : 0;
+  const uint8_t inner[4] = {0x7D, 0x1E, (uint8_t)(pat & 0x0F), (uint8_t)(grp & 0x03)};
+  tx_push_message(inner, 4);
+}
+
 // --- Metronome MIDI notes --------------------------------------------------------
 static uint8_t s_metro_note_on = 0;
 

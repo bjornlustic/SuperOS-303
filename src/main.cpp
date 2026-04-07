@@ -670,7 +670,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
             s_chain_hold_loop  = false;
             engine.SetPattern(bank * 8 + i, true);
             // Stopped: notify web editor of new active pattern (no 0x15 stream while stopped).
-            midi_send_step_position(engine.get_patsel(), 0);
+            midi_send_active_pattern(engine.get_patsel());
             break;
           }
         }
@@ -707,7 +707,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
       s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
       engine.SetPattern(engine.get_patsel() % 8, !clk_run); // A
-      if (!clk_run) midi_send_step_position(engine.get_patsel(), 0);
+      if (!clk_run) midi_send_active_pattern(engine.get_patsel());
       emit_chain_state();
     }
     if (inputs[SLIDE_KEY].rising() && !clear_mod) {
@@ -715,7 +715,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
       s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
       engine.SetPattern(engine.get_patsel() % 8 + 8, !clk_run); // B
-      if (!clk_run) midi_send_step_position(engine.get_patsel(), 0);
+      if (!clk_run) midi_send_active_pattern(engine.get_patsel());
       emit_chain_state();
     }
     break;

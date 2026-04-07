@@ -65,6 +65,13 @@ void midi_send_direction_update(uint8_t direction);
 /// Format: F0 7D 1C <group:0-3> F7
 void midi_send_group_update(uint8_t group);
 
+/// Broadcast active pattern selection while stopped (SysEx 0x1E).
+/// Used so the web editor follows hardware pat-key presses without showing
+/// the "playing" indicator that 0x15 would imply. Includes the current group
+/// so the web can resync even if its hwGroup state is stale.
+/// Format: F0 7D 1E <pat:0-15> <group:0-3> F7
+void midi_send_active_pattern(uint8_t pat);
+
 /// Broadcast a single step-lock toggle to host (SysEx 0x19).
 /// Format: F0 7D 19 <pat:0-15> <step:0-63> <locked:0|1> F7
 void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
