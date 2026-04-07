@@ -27,6 +27,7 @@
 #include <MIDI.h>
 #include <string.h>
 #include "engine.h"
+#include "drivers.h"
 #include "midi_api.h"
 
 struct SuperOsMidiSettings {
@@ -311,8 +312,8 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                               (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
-    const uint8_t inner[5] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir};
-    tx_push_message(inner, 5);
+    const uint8_t inner[6] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir, GlobalSettings.led_brightness};
+    tx_push_message(inner, 6);
     // Also broadcast current group so web editor syncs on connect
     if (g_eng) {
       const uint8_t grp[3] = {0x7D, 0x1C, g_eng->get_group()};
@@ -334,6 +335,13 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
       g_eng->SetDirection(d);
       GlobalSettings.sequence_direction = static_cast<uint8_t>(d);
     }
+    if (n >= 6) {
+      const uint8_t br = p[5];
+      if (br >= 1 && br <= 8) {
+        GlobalSettings.led_brightness = br;
+        Leds::brightness = br;
+      }
+    }
     GlobalSettings.save_midi_to_storage();
     midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
     send_ack(0);
@@ -341,8 +349,8 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t nfl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                                (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t ndir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
-    const uint8_t reply[5] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl, ndir};
-    tx_push_message(reply, 5);
+    const uint8_t reply[6] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl, ndir, GlobalSettings.led_brightness};
+    tx_push_message(reply, 6);
     break;
   }
   default:

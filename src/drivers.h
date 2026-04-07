@@ -91,9 +91,10 @@ namespace Leds {
 
   // hardware output, framebuffer reset
   void Send(const uint8_t tick, const bool clear = true) {
-    // PWM dim: only drive on the first `brightness` of every 8 calls
+    // PWM dim: advance phase once per full 4-row matrix sweep so every row
+    // is drawn (or skipped) uniformly. `lit` gates this entire sweep.
+    if ((tick & 0x3) == 0) pwm_phase = (pwm_phase + 1) & 0x7;
     const bool lit = (pwm_phase < brightness);
-    pwm_phase = (pwm_phase + 1) & 0x7;
 
     // switched LEDs
     // which row depends on tick
