@@ -16,6 +16,9 @@ uint8_t midi_sequencer_out_channel();
 void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses);
 /// Call once per 16th when `engine.Clock()` returned true while transport running.
 void midi_after_clock(Engine &engine, uint8_t transpose);
+/// Mute the sequencer's MIDI Note On for a specific step index. -1 = no muted step.
+/// Used by the step-select detail editor so the edited step doesn't repeat audibly.
+void midi_set_silence_step(int step);
 /// Call when `engine.is_ratchet_retrigger()` returns true (sub-tick within a ratcheted step).
 /// Sends Note Off + Note On for the current note without advancing the step.
 void midi_ratchet_retrigger(Engine &engine, uint8_t transpose);

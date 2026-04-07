@@ -661,10 +661,23 @@ void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave
   if (clocked && clk_run) MIDI.sendClock();
 }
 
+static int s_silence_step = -1;
+void midi_set_silence_step(int step) { s_silence_step = step; }
+
 void midi_after_clock(Engine &engine, uint8_t transpose) {
   const byte och = static_cast<byte>(out_ch());
 
   if (engine.resting) {
+    if (s_seq_note_on) {
+      MIDI.sendNoteOff(s_seq_note, 0, och);
+      s_seq_note_on = false;
+    }
+    return;
+  }
+
+  // Step-select detail editor mute: don't trigger this step's MIDI Note On.
+  if (s_silence_step >= 0 &&
+      static_cast<int>(engine.get_time_pos()) == s_silence_step) {
     if (s_seq_note_on) {
       MIDI.sendNoteOff(s_seq_note, 0, och);
       s_seq_note_on = false;
