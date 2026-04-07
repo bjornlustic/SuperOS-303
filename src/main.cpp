@@ -903,11 +903,15 @@ void loop() {
             if (cand < blen && seq.time(cand) == 1) s_step_sel = int(cand);
           }
         }
-        // Light every NOTE step in the visible bank so the user can see picks.
+        // NOTE steps full bright; TIE steps half-dim (gated on alternating ms);
+        // REST steps unlit so the user can see which slots hold pitches.
+        const bool half = bool(millis() & 1);
         for (uint8_t wi = 0; wi < 8; ++wi) {
           const uint8_t idx = uint8_t(s_step_sel_base + wi);
           if (idx >= blen) break;
-          if (seq.time(idx) == 1) Leds::Set(OutputIndex(wi), true);
+          const uint8_t tn = seq.time(idx);
+          if (tn == 1) Leds::Set(OutputIndex(wi), true);
+          else if (tn == 2 && half) Leds::Set(OutputIndex(wi), true);
         }
         // Chase only while playhead is inside the currently visible bank.
         if (clk_run) {
