@@ -945,8 +945,8 @@ void loop() {
         if (s_step_sel >= 0 && (uint8_t(s_step_sel) & ~uint8_t(7)) == s_step_sel_base) {
           Leds::Set(OutputIndex(s_step_sel & 0x7), bool((millis() >> 7) & 1));
         }
-        // Enter detail editor on ACCENT_KEY rising with a valid selection.
-        if (s_step_sel >= 0 && inputs[ACCENT_KEY].rising()) s_step_sel_edit = true;
+        // Enter detail editor on TAP_NEXT rising with a valid selection.
+        if (s_step_sel >= 0 && inputs[TAP_NEXT].rising()) s_step_sel_edit = true;
         // BACK clears selection while not in the editor.
         else if (inputs[BACK_KEY].rising()) s_step_sel = -1;
       } else {
