@@ -69,6 +69,7 @@ static bool s_dir_mode = false;
 static int     s_step_sel      = -1;
 static uint8_t s_step_sel_base = 0; // 0, 8, 16, or 24
 static bool    s_step_sel_edit = false;
+static bool    s_step_sel_mode = false; // toggled: FN+PITCH enters, FN exits
 
 // FN+write length entry state
 static bool    s_len_extended     = false;
@@ -878,12 +879,14 @@ void loop() {
     ProcessDirectionMode();
   } else {
     // Reset step-select detail-editor sub-state whenever we're not currently in step-select.
-    if (!(fn_mod && pitch_mod) && s_step_sel_edit) s_step_sel_edit = false;
+    if (!s_step_sel_mode && s_step_sel_edit) s_step_sel_edit = false;
     // FN + TIME_KEY rising → enter direction mode (allowed in pattern write mode; the
     // TIME_MODE set at line ~1050 is gated by !fn_mod).
     if (fn_mod && inputs[TIME_KEY].rising()) {
       s_dir_mode = true;
-    } else if (fn_mod && pitch_mod) {
+    } else if (fn_mod && inputs[PITCH_KEY].rising() && !s_step_sel_mode) {
+      s_step_sel_mode = true;
+    } else if (s_step_sel_mode) {
       // Step-select mode: C#/D#/F#/G# pick 8-step base, white keys pick a NOTE step in bank.
       // ACCENT_KEY rising on a valid selection enters the per-step detail editor;
       // BACK_KEY rising exits the editor or clears the selection. Only NOTE steps
@@ -907,15 +910,15 @@ void loop() {
             if (cand < blen && seq.time(cand) == 1) s_step_sel = int(cand);
           }
         }
-        // NOTE steps full bright; TIE steps half-dim (gated on alternating ms);
+        // NOTE steps full bright; TIE steps half-dim via the dim framebuffer
+        // (same flicker-free PWM as the global brightness setting).
         // REST steps unlit so the user can see which slots hold pitches.
-        const bool half = bool(millis() & 1);
         for (uint8_t wi = 0; wi < 8; ++wi) {
           const uint8_t idx = uint8_t(s_step_sel_base + wi);
           if (idx >= blen) break;
           const uint8_t tn = seq.time(idx);
           if (tn == 1) Leds::Set(OutputIndex(wi), true);
-          else if (tn == 2 && half) Leds::Set(OutputIndex(wi), true);
+          else if (tn == 2) Leds::SetDim(OutputIndex(wi), true);
         }
         // Chase only while playhead is inside the currently visible bank.
         if (clk_run) {
@@ -1190,7 +1193,10 @@ void loop() {
   }
 
   if (inputs[FUNCTION_KEY].rising() && !edit_mode) {
-    if (s_dir_mode) {
+    if (s_step_sel_mode) {
+      s_step_sel_mode = false;
+      s_step_sel_edit = false;
+    } else if (s_dir_mode) {
       s_dir_mode = false;
     } else if (s_cfg_menu == CfgMenu::Midi) {
       s_cfg_menu = CfgMenu::Off;
@@ -1512,7 +1518,7 @@ void loop() {
   // keys select a direction instead of writing notes into the active pattern.
   // Also suppressed in step-select mode (FN + PITCH held) so its inputs don't leak into writes.
   if (s_cfg_menu == CfgMenu::Off && !edit_mode && write_mode && !track_mode && !s_dir_mode
-      && !(fn_mod && pitch_mod)) {
+      && !s_step_sel_mode) {
 
     if (engine.get_mode() == TIME_MODE) {
       if (write_mode && inputs[SLIDE_KEY].rising()) {

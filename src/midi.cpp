@@ -27,6 +27,7 @@
 #include <MIDI.h>
 #include <string.h>
 #include "engine.h"
+#include "pins.h"
 #include "midi_api.h"
 
 struct SuperOsMidiSettings {
@@ -590,6 +591,10 @@ void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_
 // --- midi_init ------------------------------------------------------------------
 void midi_init(Engine *engine) {
   g_eng = engine;
+  // Enable internal pull-up on the MIDI RX pin so an unplugged 3.5mm jack
+  // does not leave PD2 floating and self-clocking the UART from EMI picked
+  // up off the LED matrix / DAC port writes.
+  pinMode(MIDI_IN_PIN, INPUT_PULLUP);
   Serial1.begin(31250);
   MIDI.begin(MIDI_CHANNEL_OMNI);
   MIDI.turnThruOff();

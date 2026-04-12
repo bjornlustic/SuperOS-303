@@ -18,10 +18,26 @@ namespace DAC {
   static uint8_t accent_ = false;
   static uint8_t gate_ = false;
 
+  // Last values actually pushed to hardware. Send() is called every loop
+  // iteration; without this cache PORTC/PORTE would be re-thrashed (and the
+  // latch re-pulsed) thousands of times per second even when nothing changed,
+  // bleeding switching noise into the analog supply.
+  static uint8_t last_pitch_  = 0xFF;
+  static uint8_t last_slide_  = 0xFF;
+  static uint8_t last_accent_ = 0xFF;
+  static uint8_t last_gate_   = 0xFF;
+
   inline void Send() {
+    if (pitch_ == last_pitch_ && slide_ == last_slide_
+        && accent_ == last_accent_ && gate_ == last_gate_) {
+      return;
+    }
+    last_pitch_  = pitch_;
+    last_slide_  = slide_;
+    last_accent_ = accent_;
+    last_gate_   = gate_;
+
     // set 6-bit pitch for CV Out
-
-
     PORTC = pitch_; // & 0x3f;
 
     PORTE = 0; // disable latch
@@ -53,6 +69,9 @@ namespace DAC {
 namespace Leds {
   // like a framebuffer, each bit corresponds to an entry in the switched_leds table
   static uint8_t ledstate[3];
+  // Second framebuffer: bits set here render at half the current brightness.
+  // A bit must NOT be set in both ledstate[] and dimstate[] simultaneously.
+  static uint8_t dimstate[3];
   // Global brightness 1..8 (8 = full). PWM-via-tick: on each Send() call,
   // a small counter advances; only the first `brightness` slots out of every 8
   // actually drive the matrix. The remaining slots blank the row.
@@ -64,6 +83,12 @@ namespace Leds {
     const uint8_t bit_idx = ledidx & 0x7;
     const uint8_t row = ledidx >> 3;
     ledstate[row] = (ledstate[row] & ~(1 << bit_idx)) | (enable << bit_idx);
+  }
+  // set a bit in the dim framebuffer (half brightness)
+  void SetDim(OutputIndex ledidx, bool enable = true) {
+    const uint8_t bit_idx = ledidx & 0x7;
+    const uint8_t row = ledidx >> 3;
+    dimstate[row] = (dimstate[row] & ~(1 << bit_idx)) | (enable << bit_idx);
   }
   // directly set hardware
   void Set(const MatrixPin pins, bool enable = true) {
@@ -94,16 +119,24 @@ namespace Leds {
     // PWM dim: advance phase once per full 4-row matrix sweep so every row
     // is drawn (or skipped) uniformly. `lit` gates this entire sweep.
     if ((tick & 0x3) == 0) pwm_phase = (pwm_phase + 1) & 0x7;
-    const bool lit = (pwm_phase < brightness);
+    const bool lit     = (pwm_phase < brightness);
+    const uint8_t half = 1; // minimal dim: 1 out of 8 PWM phases
+    const bool dim_lit = (pwm_phase < half);
 
     // switched LEDs
     // which row depends on tick
-    uint8_t mask = ledstate[(tick >> 1) & 1] >> (4 * ((tick >> 0) & 1));
-    SetLedSelection(switched_leds[(tick & 0x3) << 2].select, lit ? mask : 0);
+    const uint8_t ri = (tick >> 1) & 1;
+    const uint8_t sh = 4 * ((tick >> 0) & 1);
+    uint8_t mask = 0;
+    if (lit)     mask |= (ledstate[ri] >> sh);
+    if (dim_lit) mask |= (dimstate[ri] >> sh);
+    SetLedSelection(switched_leds[(tick & 0x3) << 2].select, mask & 0x0F);
 
     // direct LEDs
     for (uint8_t i = 16; i < 20; ++i) {
-      digitalWriteFast(switched_leds[i].led, (lit && (ledstate[2] & (1 << (i-16)))) ? HIGH : LOW);
+      const uint8_t b = 1 << (i - 16);
+      const bool on = (lit && (ledstate[2] & b)) || (dim_lit && (dimstate[2] & b));
+      digitalWriteFast(switched_leds[i].led, on ? HIGH : LOW);
     }
 
     if (clear) {
@@ -111,6 +144,9 @@ namespace Leds {
       ledstate[0] = 0;
       ledstate[1] = 0;
       ledstate[2] = 0;
+      dimstate[0] = 0;
+      dimstate[1] = 0;
+      dimstate[2] = 0;
     }
   }
 
