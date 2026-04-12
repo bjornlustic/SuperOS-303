@@ -67,28 +67,27 @@ namespace DAC {
 // Leds namespace — 3-byte framebuffer + time-multiplexed matrix output
 // =============================================================================
 namespace Leds {
-  // like a framebuffer, each bit corresponds to an entry in the switched_leds table
-  static uint8_t ledstate[3];
-  // Second framebuffer: bits set here render at half the current brightness.
-  // A bit must NOT be set in both ledstate[] and dimstate[] simultaneously.
-  static uint8_t dimstate[3];
-  // Global brightness 1..8 (8 = full). PWM-via-tick: on each Send() call,
-  // a small counter advances; only the first `brightness` slots out of every 8
-  // actually drive the matrix. The remaining slots blank the row.
-  static uint8_t brightness = 8;
-  static uint8_t pwm_phase  = 0;
+  // Double-buffered framebuffer: main loop writes to front[], ISR reads from
+  // back[]. Swap() publishes a new frame. ISR-driven refresh eliminates
+  // brightness flicker caused by variable main-loop timing (MIDI TX, DAC, etc.).
+  static volatile uint8_t back[3];     // ISR reads this
+  static volatile uint8_t back_dim[3]; // ISR reads this (dim layer)
+  static uint8_t front[3];             // main loop writes via Set()
+  static uint8_t front_dim[3];         // main loop writes via SetDim()
 
-  // set a bit in the framebuffer
+  static volatile uint8_t brightness = 8;
+  static uint8_t pwm_phase  = 0;
+  static volatile uint8_t isr_tick = 0;
+
   void Set(OutputIndex ledidx, bool enable = true) {
     const uint8_t bit_idx = ledidx & 0x7;
     const uint8_t row = ledidx >> 3;
-    ledstate[row] = (ledstate[row] & ~(1 << bit_idx)) | (enable << bit_idx);
+    front[row] = (front[row] & ~(1 << bit_idx)) | (enable << bit_idx);
   }
-  // set a bit in the dim framebuffer (half brightness)
   void SetDim(OutputIndex ledidx, bool enable = true) {
     const uint8_t bit_idx = ledidx & 0x7;
     const uint8_t row = ledidx >> 3;
-    dimstate[row] = (dimstate[row] & ~(1 << bit_idx)) | (enable << bit_idx);
+    front_dim[row] = (front_dim[row] & ~(1 << bit_idx)) | (enable << bit_idx);
   }
   // directly set hardware
   void Set(const MatrixPin pins, bool enable = true) {
@@ -97,15 +96,12 @@ namespace Leds {
       digitalWriteFast(pins.select, LOW);
     }
     digitalWriteFast(pins.led, enable ? HIGH : LOW);
-    //if (enable && pins.select) digitalWriteFast(pins.select, HIGH);
   }
 
-  // helper function
   void SetLedSelection(uint8_t select_pin, uint8_t enable_mask) {
     const uint8_t switched_pins[4] = {
       PG0_PIN, PG1_PIN, PG2_PIN, PG3_PIN,
     };
-
     PORTF = 0x0f;
     delayMicroseconds(SWITCH_DELAY);
     digitalWriteFast(select_pin, LOW);
@@ -114,43 +110,58 @@ namespace Leds {
     }
   }
 
-  // hardware output, framebuffer reset
-  void Send(const uint8_t tick, const bool clear = true) {
-    // PWM dim: advance phase once per full 4-row matrix sweep so every row
-    // is drawn (or skipped) uniformly. `lit` gates this entire sweep.
+  // Publish current front buffer to ISR. Call once per main-loop iteration
+  // after all Set()/SetDim() calls, then clear front buffers for next frame.
+  void Swap() {
+    uint8_t sreg = SREG;
+    cli();
+    back[0] = front[0]; back[1] = front[1]; back[2] = front[2];
+    back_dim[0] = front_dim[0]; back_dim[1] = front_dim[1]; back_dim[2] = front_dim[2];
+    SREG = sreg;
+    front[0] = 0; front[1] = 0; front[2] = 0;
+    front_dim[0] = 0; front_dim[1] = 0; front_dim[2] = 0;
+  }
+
+  // Called from Timer3 ISR at a fixed rate. Drives one matrix row per call.
+  void SendISR() {
+    const uint8_t tick = isr_tick++;
     if ((tick & 0x3) == 0) pwm_phase = (pwm_phase + 1) & 0x7;
     const bool lit     = (pwm_phase < brightness);
-    const uint8_t half = 1; // minimal dim: 1 out of 8 PWM phases
-    const bool dim_lit = (pwm_phase < half);
+    const bool dim_lit = (pwm_phase < 1);
 
-    // switched LEDs
-    // which row depends on tick
     const uint8_t ri = (tick >> 1) & 1;
     const uint8_t sh = 4 * ((tick >> 0) & 1);
     uint8_t mask = 0;
-    if (lit)     mask |= (ledstate[ri] >> sh);
-    if (dim_lit) mask |= (dimstate[ri] >> sh);
+    if (lit)     mask |= (back[ri] >> sh);
+    if (dim_lit) mask |= (back_dim[ri] >> sh);
     SetLedSelection(switched_leds[(tick & 0x3) << 2].select, mask & 0x0F);
 
-    // direct LEDs
     for (uint8_t i = 16; i < 20; ++i) {
       const uint8_t b = 1 << (i - 16);
-      const bool on = (lit && (ledstate[2] & b)) || (dim_lit && (dimstate[2] & b));
+      const bool on = (lit && (back[2] & b)) || (dim_lit && (back_dim[2] & b));
       digitalWriteFast(switched_leds[i].led, on ? HIGH : LOW);
-    }
-
-    if (clear) {
-      // blank slate for next time
-      ledstate[0] = 0;
-      ledstate[1] = 0;
-      ledstate[2] = 0;
-      dimstate[0] = 0;
-      dimstate[1] = 0;
-      dimstate[2] = 0;
     }
   }
 
+  // Start Timer3-driven LED refresh. Call once from setup().
+  void BeginRefresh() {
+    // Timer3 CTC mode, prescaler 64: 16MHz/64 = 250kHz tick.
+    // OCR3A = 15 -> 250000/16 ~ 15.6kHz per row, ~3.9kHz frame, ~488 Hz PWM cycle.
+    TCCR3A = 0;
+    TCCR3B = (1 << WGM32) | (1 << CS31) | (1 << CS30);
+    OCR3A  = 15;
+    TIMSK3 = (1 << OCIE3A);
+  }
+
+  // Suppress ISR during PollInputs (shared GPIO ports).
+  void PauseRefresh() { TIMSK3 &= ~(1 << OCIE3A); }
+  void ResumeRefresh() { TIMSK3 |= (1 << OCIE3A); }
+
 } // namespace Leds
+
+ISR(TIMER3_COMPA_vect) {
+  Leds::SendISR();
+}
 
 // =============================================================================
 // PollInputs — read full button matrix; clears mux ghosting before sampling

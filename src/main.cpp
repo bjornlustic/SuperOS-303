@@ -362,6 +362,7 @@ void setup() {
   engine.Load();
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
   Leds::brightness = GlobalSettings.led_brightness;
+  Leds::BeginRefresh();
 }
 
 // =============================================================================
@@ -757,7 +758,9 @@ void ProcessPitchMod() {
 // loop — poll, Tick, MIDI/clock, UI, DAC output every iteration
 // =============================================================================
 void loop() {
+  Leds::PauseRefresh();
   PollInputs(inputs);
+  Leds::ResumeRefresh();
   engine.Tick();
 
 #if DEBUG
@@ -1151,7 +1154,7 @@ void loop() {
     if (inputs[TAP_NEXT].falling()) s_metro_tap_released_since_last_beat = true;
   }
 
-  Leds::Send(ticks);
+  Leds::Swap();
 
   tracknum = uint8_t(inputs[TRACK_BIT0].held()
            | (inputs[TRACK_BIT1].held() << 1)
