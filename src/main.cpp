@@ -39,6 +39,7 @@ static uint8_t s_time_edit_steps = 0; // counts writes in the current TIME_MODE 
 /// Stopped-clock CV preview: audition paths set these; unified DAC block applies them.
 static bool s_tap_pitch_preview_gate = false;
 static uint8_t s_tap_pitch_preview_cv = 0;
+static bool s_tap_pitch_preview_accent = false;
 static bool s_back_pitch_preview_gate = false;
 static uint8_t s_back_pitch_preview_cv = 0;
 
@@ -1023,7 +1024,24 @@ void loop() {
         } else {
           // ── Pitch sub-mode picker ──
           // Enter detail editor on TAP_NEXT rising with a valid selection.
-          if (s_step_sel >= 0 && inputs[TAP_NEXT].rising()) s_step_sel_edit = true;
+          if (s_step_sel >= 0 && inputs[TAP_NEXT].rising()) {
+            s_step_sel_edit = true;
+            // Audition the selected note when stopped.
+            if (!clk_run) {
+              const uint8_t pb = seq.pitch[s_step_sel];
+              if (pb != PITCH_EMPTY) {
+                const uint8_t linear = unpack_pitch_linear(pb & 0x3f);
+                uint16_t mn = uint16_t(36 + linear) + transpose;
+                if (mn > 127) mn = 127;
+                const bool acc = (pb & (1 << 6)) != 0;
+                const uint8_t vel = acc ? 127 : 80;
+                s_tap_pitch_preview_cv = uint8_t(linear + 4 + transpose);
+                s_tap_pitch_preview_accent = acc;
+                s_tap_pitch_preview_gate = true;
+                midi_audition_note_on(uint8_t(mn), vel);
+              }
+            }
+          }
           // BACK clears selection.
           else if (inputs[BACK_KEY].rising()) s_step_sel = -1;
         }
@@ -1056,6 +1074,21 @@ void loop() {
                 seq.pitch[s_step_sel], seq.time(uint8_t(s_step_sel)));
           }
           if (inputs[BACK_KEY].rising()) s_step_sel_edit = false;
+          // Re-audition current step on TAP_NEXT while in the detail editor.
+          if (!clk_run && inputs[TAP_NEXT].rising()) {
+            const uint8_t ab = seq.pitch[s_step_sel];
+            if (ab != PITCH_EMPTY) {
+              const uint8_t lin = unpack_pitch_linear(ab & 0x3f);
+              uint16_t mn = uint16_t(36 + lin) + transpose;
+              if (mn > 127) mn = 127;
+              const bool acc = (ab & (1 << 6)) != 0;
+              const uint8_t vel = acc ? 127 : 80;
+              s_tap_pitch_preview_cv = uint8_t(lin + 4 + transpose);
+              s_tap_pitch_preview_accent = acc;
+              s_tap_pitch_preview_gate = true;
+              midi_audition_note_on(uint8_t(mn), vel);
+            }
+          }
 
           const uint8_t pb = seq.pitch[s_step_sel];
           if (pb != PITCH_EMPTY) {
@@ -1688,7 +1721,8 @@ void loop() {
 
     DAC::SetPitch(pitch_cv);
     DAC::SetSlide(slide_cv);
-    DAC::SetAccent(inputs[ACCENT_KEY].held() || midi_live_accent());
+    DAC::SetAccent(inputs[ACCENT_KEY].held() || midi_live_accent() ||
+                   (s_tap_pitch_preview_gate && s_tap_pitch_preview_accent));
     DAC::SetGate(gate);
   }
 
