@@ -95,11 +95,14 @@ static void midi_tx_drain() {
 }
 
 static bool tx_push_message(const uint8_t *inner, uint16_t inner_len) {
-  if (!tx_push_byte(0xF0)) return false;
-  for (uint16_t i = 0; i < inner_len; ++i) {
-    if (!tx_push_byte(inner[i])) return false;
-  }
-  return tx_push_byte(0xF7);
+  // Check space BEFORE writing anything to avoid partial SysEx corruption.
+  // A partial F0...no-F7 left in the buffer would break the MIDI output stream.
+  uint16_t avail = (s_tx_r + kTxCap - s_tx_w - 1) % kTxCap;
+  if (avail < inner_len + 2) return false; // +2 for F0 and F7
+  tx_push_byte(0xF0);
+  for (uint16_t i = 0; i < inner_len; ++i) tx_push_byte(inner[i]);
+  tx_push_byte(0xF7);
+  return true;
 }
 
 // --- 7-bit pack / unpack (128-byte blob) ---------------------------------------

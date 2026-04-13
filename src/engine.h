@@ -300,10 +300,10 @@ struct Sequence {
   /// SetTime was called. No-op when the step stays NOTE or stays non-NOTE.
   /// Stream includes non-NOTE slots with user-written pitch data so pitches written
   /// via PITCH_MODE survive the first TIME_MODE reflow.
-  void reflow_pitches_after_time_change(uint8_t old_time) {
+  bool reflow_pitches_after_time_change(uint8_t old_time) {
     const uint8_t tp = uint8_t(time_pos & (MAX_STEPS - 1));
     const uint8_t new_t = time(tp);
-    if ((old_time == 1) == (new_t == 1)) return; // NOTE↔NOTE or non↔non: nothing to do
+    if ((old_time == 1) == (new_t == 1)) return false; // NOTE↔NOTE or non↔non: nothing to do
 
     const uint8_t len = uint8_t(length);
 
@@ -347,6 +347,7 @@ struct Sequence {
     for (uint8_t k = 0; k < excess; ++k)
       pitch[len + k] = stream[note_count + k];
     set_stash_count(excess);
+    return true;
   }
   void SetPitch(uint8_t p, uint8_t flags) {
     pitch[pitch_pos] = (p & 0x3f) | (flags & 0xc0);
