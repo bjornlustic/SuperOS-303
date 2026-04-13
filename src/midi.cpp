@@ -510,8 +510,9 @@ void midi_audition_note_off() {
 
 // --- Step position broadcast (SysEx 0x15) ---------------------------------------
 void midi_send_step_position(uint8_t pat, uint8_t step) {
-  const uint8_t inner[4] = {0x7D, 0x15, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F)};
-  tx_push_message(inner, 4);
+  const uint8_t grp = g_eng ? g_eng->get_group() : 0;
+  const uint8_t inner[5] = {0x7D, 0x15, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), (uint8_t)(grp & 0x03)};
+  tx_push_message(inner, 5);
 }
 
 // --- Length update broadcast (SysEx 0x18) ----------------------------------------

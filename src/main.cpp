@@ -235,7 +235,9 @@ static uint8_t resolve_octave() {
 uint8_t input_pitch(bool mod = false, bool clk_run = false) {
   if (clk_run && engine.is_step_locked()) return 0;
   if (mod) {
-    engine.get_sequence().ensure_pitch_edit_entry();
+    // Only resolve reset when stopped — during playback Advance() owns the reset
+    // flag and consuming it here would skip step 0 after pattern switch / MIDI Start.
+    if (!clk_run) engine.get_sequence().ensure_pitch_edit_entry();
     // TIE and REST steps cannot be edited — only NOTE steps carry pitch/accent/slide/octave.
     if (engine.get_sequence().get_time() != 1) return 0;
     bool flag_changed = false;
@@ -979,7 +981,10 @@ void loop() {
             }
           }
           seq.pitch_pos = saved_pp;
-          if (changed) midi_send_pattern_update(engine.get_patsel());
+          if (changed) {
+            midi_send_step_update(engine.get_patsel(), uint8_t(s_step_sel),
+                seq.pitch[s_step_sel], seq.time(uint8_t(s_step_sel)));
+          }
           if (inputs[BACK_KEY].rising()) s_step_sel_edit = false;
 
           // Render pitch info for the SELECTED step directly from pitch[s_step_sel].

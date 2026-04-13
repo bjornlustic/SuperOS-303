@@ -1675,8 +1675,8 @@ struct Engine {
     pattern[idx].length = L;
     Sequence &s = pattern[idx];
     normalize_pattern_times(s);
-    if (s.pitch_pos >= s.length) s.pitch_pos = 0;
-    if (s.time_pos  >= s.length) s.time_pos  = 0;
+    if (s.pitch_pos >= s.length) s.pitch_pos %= s.length;
+    if (s.time_pos  >= s.length) s.time_pos  %= s.length;
     if (persist_eeprom)
       WritePattern(pattern[idx], idx, group_);
     return true;
