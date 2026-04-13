@@ -1,0 +1,3918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SuperOS-303 Pattern Editor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --black:   #000000;
+      --white:   #ffffff;
+      --gray-1:  #f2f2f2;
+      --gray-2:  #e0e0e0;
+      --gray-3:  #b0b0b0;
+      --gray-4:  #606060;
+      --red:     #cc0000;
+      --rule:    2px solid #000;
+      --rule-sm: 1px solid #000;
+      --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      --mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+
+    html { background: var(--white); color: var(--black); font-family: var(--font); font-size: 14px; -webkit-font-smoothing: antialiased; }
+    body { min-height: 100vh; margin: 0; overflow-x: hidden; }
+    .app {
+      padding: clamp(16px, 3vw, 36px) clamp(16px, 3vw, 36px) clamp(24px, 4vw, 48px);
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+      gap: 8px 20px; padding-bottom: 12px; border-bottom: var(--rule); margin-bottom: 24px;
+      min-width: 0;
+    }
+    .logo { font-size: clamp(22px, 5vw, 30px); font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase; line-height: 1; }
+    .logo-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gray-4); align-self: flex-end; padding-bottom: 4px; flex-shrink: 0; }
+
+    /* ── Banner ── */
+    .banner { display: none; padding: 10px 14px; border: var(--rule); margin-bottom: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: var(--black); color: var(--white); }
+    .banner.visible { display: block; }
+
+    /* ── Toast ── */
+    #downloadToast { position: fixed; bottom: 18px; right: 18px; padding: 8px 14px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: #c00; color: var(--white); border: var(--rule); opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 999; }
+    #downloadToast.visible { opacity: 1; }
+
+    /* ── Control strips ── */
+    .strip { display: flex; flex-wrap: wrap; align-items: stretch; border: var(--rule); margin-bottom: 6px; min-width: 0; }
+    .group { display: flex; align-items: center; gap: 0; padding: 0 14px; border-right: var(--rule); min-width: 0; flex: 0 1 auto; }
+    .group:last-child { border-right: none; }
+    .group--grow { flex: 1 1 220px; min-width: min(100%, 220px); }
+    .group-inner { display: flex; align-items: center; gap: 6px; padding: 10px 0; flex-wrap: wrap; min-width: 0; }
+    .lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); white-space: nowrap; padding-right: 10px; border-right: var(--rule-sm); margin-right: 10px; align-self: stretch; display: flex; align-items: center; }
+
+    /* Live / Edits / Clipboard — grid sections, label above controls */
+    .strip--action-bar {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0;
+      align-items: stretch;
+    }
+    .strip--action-bar .group {
+      flex-direction: column;
+      align-items: stretch;
+      align-self: stretch;
+      gap: 0;
+      padding: 14px 16px 16px;
+      border-right: none;
+      border-bottom: var(--rule);
+      flex: initial;
+      min-width: 0;
+    }
+    .strip--action-bar .group:last-child { border-bottom: none; }
+    .strip--action-bar .group .lbl {
+      border-right: none;
+      margin-right: 0;
+      padding: 0 0 10px 0;
+      margin-bottom: 12px;
+      border-bottom: var(--rule-sm);
+      align-self: stretch;
+      justify-content: flex-start;
+      letter-spacing: 0.2em;
+    }
+    .strip--action-bar .group-inner {
+      padding: 0;
+      align-items: flex-start;
+    }
+    .strip--action-bar .live-group-inner { align-self: stretch; flex: 0 0 auto; }
+    .group-inner--edits {
+      gap: 8px 10px;
+      flex-wrap: wrap;
+    }
+    .group-inner--clipboard {
+      gap: 8px 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .strip--action-bar #copyStatus {
+      padding-left: 0;
+      flex: 1 1 auto;
+      min-width: 0;
+      line-height: 1.35;
+      white-space: normal;
+    }
+    @media (min-width: 960px) {
+      .strip--action-bar {
+        grid-template-columns: minmax(220px, 1fr) minmax(340px, 1.75fr) minmax(200px, 1fr);
+      }
+      .strip--action-bar .group {
+        border-bottom: none;
+        border-right: var(--rule);
+      }
+      .strip--action-bar .group:last-child { border-right: none; }
+    }
+
+    /* ── Inputs ── */
+    input[type="number"], select { height: 30px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 13px; font-weight: 600; outline: none; border-radius: 0; appearance: none; transition: background 0.08s; }
+    input[type="number"]:focus, select:focus { background: var(--black); color: var(--white); }
+    input[type="number"] { width: 54px; text-align: center; }
+    select { min-width: min(150px, 100%); max-width: 100%; cursor: pointer; padding-right: 8px; }
+    input[type="file"] { display: none; }
+
+    /* ── Buttons ── */
+    .btn { height: 30px; padding: 0 14px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; white-space: nowrap; border-radius: 0; transition: background 0.08s, color 0.08s; }
+    .btn:hover:not(:disabled) { background: var(--black); color: var(--white); }
+    .btn:disabled { opacity: 0.25; cursor: default; }
+    .btn-primary { background: var(--black); color: var(--white); border-color: var(--black); font-weight: 900; }
+    .btn-primary:hover:not(:disabled) { background: var(--gray-4); border-color: var(--gray-4); }
+    .btn-green { background: #1a7a3a; color: var(--white); border-color: #1a7a3a; font-weight: 900; }
+    .btn-green:hover:not(:disabled) { background: #155e2d; border-color: #155e2d; }
+    .btn-ghost { height: 30px; padding: 0 14px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; }
+    .btn-ghost:hover { background: var(--black); color: var(--white); }
+    .btn-ghost.is-connected { background: var(--black); color: var(--white); }
+    .dir-btn { height: 26px; padding: 0 10px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; }
+    .dir-btn:hover { background: var(--gray-2); }
+    .dir-btn.btn-primary { background: var(--black); color: var(--white); border-color: var(--black); }
+
+    /* ── MIDI status ── */
+    #midiStatus { font-size: 11px; font-weight: 600; color: var(--gray-3); letter-spacing: 0.02em; padding-left: 10px; }
+    #midiStatus.is-ok { color: var(--black); }
+    #midiStatus.is-warn { color: var(--gray-4); }
+
+    /* ── Group tabs + Bank A/B (one bar) ── */
+    .bank-group-bar { display: flex; align-items: stretch; flex-wrap: wrap; border: var(--rule); margin-bottom: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
+    .bank-group-bar .group-tabs { display: flex; flex-direction: row; flex-shrink: 0; border-right: var(--rule); margin: 0; }
+    .bank-group-bar .group-tab {
+      flex: 0 0 auto; min-width: 44px; min-height: 36px; padding: 0 8px; box-sizing: border-box;
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+      font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase;
+      border-right: var(--rule-sm); background: var(--white); color: var(--gray-4); transition: all 0.08s; user-select: none;
+    }
+    .bank-group-bar .group-tab:last-child { border-right: none; }
+    .bank-group-bar .group-tab:hover:not(.is-active) { background: var(--gray-1); color: var(--black); }
+    .bank-group-bar .group-tab.is-active { background: var(--black); color: var(--white); }
+
+    /* ── Bank + Pattern pills (inside .bank-group-bar) ── */
+    .bank-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); padding: 0 12px; display: flex; align-items: center; border-right: var(--rule-sm); white-space: nowrap; flex-shrink: 0; }
+    .bank-label-sep { border-left: var(--rule); margin-left: -1px; }
+    .pat-pills { display: flex; gap: 0; flex-shrink: 0; }
+    .pat-pill {
+      width: 36px; height: 36px; border: var(--rule-sm); margin-right: -1px;
+      background: var(--white); color: var(--gray-3); font-family: var(--mono);
+      font-size: 10px; font-weight: 700; cursor: pointer; display: flex;
+      align-items: center; justify-content: center; transition: all 0.08s;
+      border-radius: 0; position: relative; user-select: none;
+    }
+    .pat-pill:hover:not(.is-active) { background: var(--gray-1); color: var(--black); }
+    .pat-pill.is-active { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
+    .pat-pill.is-dirty:not(.is-active) { box-shadow: inset 0 -2px 0 0 var(--black); color: var(--black); }
+    .pat-pill.is-queued:not(.is-active) { outline: 2px dashed var(--black); outline-offset: -2px; }
+    /* Blinking playing indicator */
+    .pat-pill.is-playing { animation: pill-blink 0.5s steps(1) infinite; }
+    .pat-pill.is-playing.is-active { animation: pill-blink-inv 0.5s steps(1) infinite; }
+    .pat-pill.is-copied { box-shadow: inset 0 0 0 2px var(--red); color: var(--black); font-weight: 900; }
+    .pat-pill.is-copied.is-active { box-shadow: inset 0 0 0 2px var(--red); }
+
+    /* Edit Live toggle */
+    .edit-live-btn {
+      flex: 0 0 auto; margin-left: auto; padding: 0 14px; min-height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      border: none; border-left: var(--rule-sm);
+      background: var(--white); color: var(--gray-4);
+      font-family: var(--font); font-size: 9px; font-weight: 900;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      cursor: pointer; user-select: none; white-space: nowrap;
+      transition: background 0.08s, color 0.08s;
+    }
+    .edit-live-btn:hover:not(.is-on) { background: var(--gray-1); color: var(--black); }
+    .edit-live-btn.is-on { background: var(--black); color: var(--white); }
+    .pat-pill.is-chained:not(.is-playing):not(.is-active) { background: var(--gray-2); outline: 2px solid var(--black); outline-offset: -2px; color: var(--black); font-weight: 700; }
+    .pat-pill.is-queued-chain:not(.is-playing):not(.is-active):not(.is-chained) { outline: 2px dashed var(--black); outline-offset: -2px; color: var(--black); }
+    .pat-pill.is-drag-chain:not(.is-playing):not(.is-active):not(.is-chained):not(.is-queued-chain) { background: var(--gray-1); outline: 2px dotted var(--black); outline-offset: -2px; color: var(--black); opacity: 0.75; }
+    @keyframes pill-blink     { 0%,100%{background:var(--white)} 50%{background:var(--gray-2)} }
+    @keyframes pill-blink-inv { 0%,100%{background:var(--black)} 50%{background:var(--gray-4)} }
+    .pat-pill-badge {
+      position: absolute; bottom: 1px; right: 2px;
+      font-size: 6px; font-weight: 900; line-height: 1;
+      opacity: 0.55; pointer-events: none;
+    }
+    .pat-pill.is-active .pat-pill-badge { opacity: 0.7; }
+
+    /* ── Sequencer panel ── */
+    .seq-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
+    .seq-toolbar {
+      display: flex; align-items: center; justify-content: flex-start; padding: 10px 14px; border-bottom: var(--rule);
+      flex-wrap: wrap; gap: 10px 14px; min-width: 0;
+    }
+    .live-group-inner { padding: 0 !important; align-self: stretch; flex: 1; min-width: 0; }
+    .live-toggle {
+      display: flex; align-items: center; justify-content: flex-start;
+      width: 100%; min-height: 36px; padding: 10px 14px; box-sizing: border-box;
+      border: none;
+      background: var(--white); color: var(--black);
+      font-family: var(--font); font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      cursor: pointer; user-select: none; text-align: left;
+      transition: background 0.12s, color 0.12s;
+    }
+    .live-toggle:hover:not(.is-on) { background: var(--gray-1); }
+    .live-toggle.is-on { background: var(--red); color: var(--white); }
+    .live-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+    .live-toggle:focus-within { outline: 2px solid var(--black); outline-offset: -2px; }
+    .live-toggle.is-on:focus-within { outline-color: var(--white); }
+    .live-push-lbl { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+    .seq-toolbar-lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .seq-toolbar-steps { display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-width: 0; }
+    .seq-pat-len { width: 36px; text-align: center; flex-shrink: 0; }
+    .len-adj-btn { width: 22px; height: 30px; padding: 0; border: var(--rule-sm); background: var(--white); color: var(--black); font-size: 14px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .len-adj-btn:hover { background: var(--gray-1); }
+    .len-adj-btn:active { background: var(--black); color: var(--white); }
+    .seq-hint {
+      font-size: 11px; font-weight: 500; color: var(--gray-3); letter-spacing: 0.02em;
+      flex: 1 1 260px; min-width: 0; max-width: 100%;
+    }
+    .seq-hint b { color: var(--black); font-weight: 700; }
+    .seq-grid-wrap { padding: 12px; overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
+    /* Column min scales down on narrow viewports; when min track sum exceeds the wrap, horizontal scroll appears */
+    .seq-grid {
+      display: grid;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      grid-template-columns: repeat(8, minmax(clamp(44px, 10vw, 72px), 1fr));
+      gap: 0; border-top: var(--rule-sm); border-left: var(--rule-sm);
+    }
+    .seq-grid.cols-16 { grid-template-columns: repeat(16, minmax(clamp(40px, 5.5vw, 60px), 1fr)); }
+
+    /* ── Chain view ── */
+    .chain-view { display: flex; flex-direction: column; gap: 0; width: 100%; }
+    .chain-pat-section { border-top: var(--rule-sm); }
+    .chain-pat-section.is-active .chain-pat-header { background: var(--black); color: var(--white); }
+    .chain-pat-header {
+      padding: 4px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px;
+      background: var(--gray-1); color: var(--gray-4); border-bottom: var(--rule-sm);
+    }
+    .chain-pat-header:hover { background: var(--gray-2); }
+    .chain-pat-section.is-active .chain-pat-header:hover { background: #222; }
+    .chain-pat-section:not(.is-active) .seq-grid { pointer-events: none; opacity: 0.55; }
+    .chain-pat-play-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+      flex-shrink: 0; display: none;
+    }
+    .chain-pat-section.is-playing-pat .chain-pat-play-dot { display: block; }
+
+    /* ── Step card ── */
+    .step-card { background: var(--white); border-right: var(--rule-sm); border-bottom: var(--rule-sm); padding: 8px 8px 8px; display: flex; flex-direction: column; gap: 6px; transition: background 0.08s; min-width: 0; position: relative; }
+    .step-card:hover { background: var(--gray-1); }
+    .step-card.is-note { background: var(--black); color: var(--white); }
+    .step-card.is-note:hover { background: #222; }
+    .step-card.is-tie { background: var(--gray-2); }
+    .step-card.is-tie:hover { background: #d0d0d0; }
+    .step-card.is-rest { opacity: 0.52; }
+    .step-card.is-rest:hover { opacity: 0.8; }
+    .seq-grid > .step-card:nth-child(4n) { border-right: var(--rule); }
+
+    /* Playing step indicator — small red dot top-right */
+    .step-play-dot {
+      position: absolute; top: 3px; right: 3px;
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--red); display: none;
+    }
+    .step-card.is-playing-step .step-play-dot { display: block; animation: dot-blink 0.25s steps(1) 2; }
+    @keyframes dot-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    .step-num { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: var(--gray-3); line-height: 1; }
+    .is-note .step-num { color: rgba(255,255,255,0.4); }
+    .is-tie  .step-num { color: var(--gray-4); }
+
+    .step-time { display: flex; gap: 0; }
+    .t-btn { flex: 1; height: 18px; border: var(--rule-sm); margin-right: -1px; font-size: 8px; font-weight: 900; letter-spacing: 0.08em; cursor: pointer; background: var(--white); color: var(--gray-3); font-family: var(--font); text-transform: uppercase; border-radius: 0; transition: all 0.08s; }
+    .t-btn:last-child { margin-right: 0; }
+    .t-btn:hover { background: var(--gray-2); color: var(--black); }
+    .t-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
+    .is-note .t-btn { background: transparent; border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.4); }
+    .is-note .t-btn:hover { background: rgba(255,255,255,0.15); color: var(--white); }
+    .is-note .t-btn.is-on { background: var(--white); border-color: var(--white); color: var(--black); }
+    .is-tie .t-btn { background: transparent; border-color: var(--gray-3); color: var(--gray-4); }
+    .is-tie .t-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); }
+    .t-btn:disabled { opacity: 0.28; cursor: default; }
+    .is-note .t-btn:disabled, .is-tie .t-btn:disabled { opacity: 0.22; }
+    .step-card.is-locked.is-note .pitch-knob-track { pointer-events: none; cursor: default; opacity: 0.42; }
+
+    .step-name { text-align: center; font-size: 20px; font-weight: 900; letter-spacing: -0.04em; line-height: 1; height: 22px; overflow: hidden; color: var(--black); }
+    .is-note .step-name { color: var(--white); }
+    .is-tie  .step-name { color: var(--black); }
+    .is-rest .step-name { color: var(--black); }
+
+    .pitch-knob-wrap { display: flex; flex-direction: row; align-items: stretch; gap: 6px; min-height: 72px; user-select: none; touch-action: none; }
+    .pitch-knob-track { flex: 1; position: relative; height: 72px; border: var(--rule-sm); background: var(--gray-1); cursor: ns-resize; }
+    .is-note .pitch-knob-track { border-color: rgba(255,255,255,0.35); background: rgba(255,255,255,0.08); }
+    .is-tie  .pitch-knob-track { border-color: var(--gray-3); }
+    .pitch-knob-fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--gray-3); pointer-events: none; }
+    .is-note .pitch-knob-fill { background: rgba(255,255,255,0.35); }
+    .pitch-knob-thumb { position: absolute; left: -1px; right: -1px; height: 6px; margin-bottom: -3px; background: var(--black); pointer-events: none; border: var(--rule-sm); }
+    .is-note .pitch-knob-thumb { background: var(--white); border-color: var(--white); }
+
+    .step-flags { display: flex; gap: 0; }
+    .f-btn { flex: 1; height: 18px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 8px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; }
+    .f-btn:last-child { margin-right: 0; }
+    .f-btn:disabled { opacity: 0.15; cursor: default; }
+    .f-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
+    .f-btn.f-on { background: var(--black); border-color: var(--black); color: var(--white); }
+    .is-note .f-btn { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.4); }
+    .is-note .f-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
+    .is-note .f-btn.f-on { background: var(--white); border-color: var(--white); color: var(--black); }
+    .is-tie .f-btn { border-color: var(--gray-3); color: var(--gray-4); }
+    .is-tie .f-btn.f-on { background: var(--black); border-color: var(--black); color: var(--white); }
+
+    .step-card.is-locked { outline: 2px dashed var(--black); outline-offset: -2px; }
+    .step-oct-row { display: flex; gap: 0; margin-top: 2px; }
+    .f-btn-o { flex: 1; min-width: 0; height: 22px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 6px; font-weight: 900; letter-spacing: 0; line-height: 1.05; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; padding: 1px 2px; }
+    .f-btn-o:last-child { margin-right: 0; }
+    .f-btn-o:disabled { opacity: 0.2; cursor: default; }
+    .f-btn-o:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
+    .f-btn-o.is-on { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
+    .is-note .f-btn-o { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.45); }
+    .is-note .f-btn-o:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
+    .is-note .f-btn-o.is-on { background: var(--white); border-color: var(--white); color: var(--black); }
+    .is-tie .f-btn-o { border-color: var(--gray-3); color: var(--gray-4); }
+    .is-tie .f-btn-o.is-on { background: var(--black); border-color: var(--black); color: var(--white); }
+    .f-btn.f-lock.f-lock-active { background: var(--red); border-color: var(--red); color: var(--white); }
+    .is-note .f-btn.f-lock.f-lock-active { background: var(--red); border-color: var(--red); color: var(--white); }
+    .step-name.is-muted { font-size: 16px; font-weight: 700; color: var(--gray-3); }
+    .is-note .step-name.is-muted { color: rgba(255,255,255,0.35); }
+    .is-rest .pitch-knob-wrap,
+    .is-rest .step-oct-row { display: none !important; }
+    .is-rest .step-flags .f-btn:not(.f-lock) { display: none !important; }
+
+    .step-ratchet { display: flex; gap: 0; margin-top: 2px; }
+    .is-rest .step-ratchet,
+    .is-tie  .step-ratchet { display: none !important; }
+    .r-btn { flex: 1; min-width: 0; height: 18px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 7px; font-weight: 900; letter-spacing: 0; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; }
+    .r-btn:last-child { margin-right: 0; }
+    .r-btn:disabled { opacity: 0.2; cursor: default; }
+    .r-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
+    .r-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
+    .is-note .r-btn { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.45); }
+    .is-note .r-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
+    .is-note .r-btn.is-on { background: var(--white); border-color: var(--white); color: var(--black); }
+
+    #copyStatus { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; color: var(--red); padding-left: 8px; white-space: nowrap; }
+
+    /* ── Config panel ── */
+    .config-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
+    .config-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .config-bar:hover { background: var(--gray-1); }
+    .config-bar.is-open { border-bottom: var(--rule-sm); }
+    .config-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .config-bar-arrow { font-size: 8px; color: var(--gray-3); display: inline-block; transition: transform 0.12s; }
+    .config-bar.is-open .config-bar-arrow { transform: rotate(90deg); }
+    .config-body { display: none; }
+    .config-body.is-open { display: block; }
+    .config-inner { padding: 14px; display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+    .config-field { display: flex; flex-direction: column; gap: 4px; }
+    .config-field label { font-size: 9px; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray-4); }
+    .config-status { font-size: 11px; color: var(--gray-4); font-weight: 600; align-self: center; }
+
+    /* ── Log ── */
+    .log-panel { border: var(--rule); min-width: 0; max-width: 100%; }
+    .log-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .log-bar:hover { background: var(--gray-1); }
+    .log-bar.is-open { border-bottom: var(--rule-sm); }
+    .log-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .log-bar-arrow { font-size: 8px; color: var(--gray-3); display: inline-block; transition: transform 0.12s; }
+    .log-bar.is-open .log-bar-arrow { transform: rotate(90deg); }
+    .log-bar-count { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; }
+    .log-body { display: none; }
+    .log-body.is-open { display: block; }
+    #log { font-family: var(--mono); font-size: 11px; font-weight: 500; background: var(--gray-1); padding: 12px 14px; min-height: 132px; height: clamp(120px, 25vh, 220px); max-height: 50vh; overflow: auto; white-space: pre-wrap; color: var(--gray-4); line-height: 1.9; letter-spacing: 0.02em; }
+    .log-note { color: var(--black); font-weight: 700; }
+    .log-syx  { color: var(--black); }
+    .log-err  { color: var(--red); font-weight: 700; }
+    .log-ack  { color: var(--gray-4); }
+
+    /* ── Scale Lock ── */
+    .scale-select { height: 30px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 11px; font-weight: 700; cursor: pointer; border-radius: 0; min-width: 168px; }
+    .scale-root-btn, .scale-note-btn { height: 26px; padding: 0 6px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; white-space: nowrap; }
+    .scale-root-btn:hover, .scale-note-btn:hover { background: var(--gray-2); }
+    .scale-root-btn.active, .scale-note-btn.active { background: var(--black); color: var(--white); border-color: var(--black); }
+    .scale-root-btn.is-black, .scale-note-btn.is-black { background: var(--gray-2); color: var(--black); }
+    .scale-root-btn.is-black.active, .scale-note-btn.is-black.active { background: var(--black); color: var(--white); }
+    .scale-root-btn.is-black:hover, .scale-note-btn.is-black:hover { background: var(--gray-3); }
+    #btnScaleLockToggle.is-on { background: var(--black); color: var(--white); border-color: var(--black); }
+
+    /* ── Play Buddy ── */
+    .buddy-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
+    .buddy-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .buddy-bar:hover { background: var(--gray-1); }
+    .buddy-bar.is-open { border-bottom: var(--rule-sm); }
+    .buddy-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .buddy-bar-arrow { font-size: 8px; color: var(--gray-3); display: inline-block; transition: transform 0.12s; }
+    .buddy-bar.is-open .buddy-bar-arrow { transform: rotate(90deg); }
+    .buddy-run-lbl { font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; margin-left: auto; }
+    .buddy-run-lbl.is-on { color: var(--red); }
+    .buddy-body { display: none; }
+    .buddy-body.is-open { display: block; }
+    .buddy-inner { padding: 14px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+    .buddy-ctrl-row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+    .buddy-ctrl-lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray-4); }
+    .buddy-sep { border-bottom: var(--rule-sm); }
+    .buddy-cats { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+    .buddy-cat { display: flex; align-items: center; gap: 6px; }
+    .buddy-cat input[type="checkbox"] { width: 13px; height: 13px; cursor: pointer; accent-color: var(--black); flex-shrink: 0; }
+    .buddy-cat-name { font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; min-width: 54px; cursor: pointer; color: var(--black); }
+    .buddy-cat-name.is-off { color: var(--gray-3); }
+    .buddy-cat-pair { display: flex; align-items: center; gap: 4px; }
+    .buddy-cat-pair-lbl { font-size: 8px; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray-4); }
+    .buddy-cat input[type="range"] { width: 72px; height: 4px; cursor: pointer; accent-color: var(--black); }
+    .buddy-cat input[type="range"]:disabled { opacity: 0.25; cursor: default; }
+    .buddy-cat-val { font-size: 9px; font-weight: 700; color: var(--gray-4); min-width: 26px; font-family: var(--mono); }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <header class="header">
+    <div class="logo">SuperOS&#x2011;303</div>
+    <div class="logo-sub">Pattern Editor</div>
+  </header>
+
+  <div id="downloadToast"></div>
+
+  <div class="banner" id="httpBanner">
+    &#9632;&nbsp; Serve over HTTP for Web MIDI — run: python3 -m http.server 8080 --directory tools/web-pattern-edit
+  </div>
+
+  <!-- MIDI Connection -->
+  <div class="strip">
+    <div class="group">
+      <div class="group-inner">
+        <button class="btn-ghost" id="btnMidi">Connect MIDI</button>
+        <span id="midiStatus">Not connected</span>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Out &#8594; 303</span>
+      <div class="group-inner"><select id="selOut" disabled></select></div>
+    </div>
+    <div class="group">
+      <span class="lbl">303 &#8594; In</span>
+      <div class="group-inner"><select id="selIn" disabled></select></div>
+    </div>
+    <div class="group">
+      <span class="lbl">Keyboard &#8594; 303</span>
+      <div class="group-inner">
+        <select id="selKbd" disabled></select>
+        <span id="kbdStatus" style="font-size:11px;font-weight:600;color:#aaa;padding-left:8px;">Off</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- From 303 (request) / Save+Load JSON -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">From 303</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnReq" disabled>&#8595; Request</button>
+        <button class="btn" id="btnReqAll" disabled>&#8595; All 16</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Save JSON</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnSavePattern">Pattern</button>
+        <button class="btn" id="btnSaveBank">Bank</button>
+        <button class="btn" id="btnSaveGroup">Group</button>
+        <button class="btn" id="btnSaveAll">All Groups</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Load JSON</span>
+      <div class="group-inner" style="gap:6px">
+        <button class="btn" id="btnLoadJson">&#8593; Upload JSON</button>
+        <input type="file" id="fileInput" accept=".json" />
+      </div>
+    </div>
+  </div>
+
+  <div class="bank-group-bar">
+    <div class="group-tabs" id="groupTabs"></div>
+    <div class="bank-label">Bank A</div>
+    <div class="pat-pills" id="pillsA"></div>
+    <div class="bank-label bank-label-sep">Bank B</div>
+    <div class="pat-pills" id="pillsB"></div>
+    <button class="edit-live-btn" id="btnEditLive" title="Edit a pattern without changing what&#39;s playing">Edit Live</button>
+  </div>
+
+  <!-- Live + Edits + clipboard (above step grid) -->
+  <div class="strip strip--action-bar">
+    <div class="group">
+      <span class="lbl">Live</span>
+      <div class="group-inner live-group-inner">
+        <label class="live-toggle" id="liveToggleLabel" title="Live off — tap to push edits while the sequencer runs">
+          <input type="checkbox" id="chkLive" />
+          <span>Push web edits to 303 while playing</span>
+        </label>
+        <label class="live-toggle" id="reflectToggleLabel" title="Reflect 303 edits off — tap to mirror hardware knob writes into the web editor in real time">
+          <input type="checkbox" id="chkReflect" />
+          <span>Pull 303 edits to web editor while playing</span>
+        </label>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Edits</span>
+      <div class="group-inner group-inner--edits">
+        <button class="btn" id="btnUndo" disabled>&#8592; Undo</button>
+        <button class="btn" id="btnRedo" disabled>Redo &#8594;</button>
+        <button class="btn" id="btnResetBefore" disabled>Reset to Saved</button>
+        <button class="btn" id="btnResetAfter" disabled>Reset to Latest</button>
+        <button class="btn" id="btnClearPat">Clear pattern</button>
+        <button class="btn btn-green" id="btnSave303" disabled>Commit &amp; Save to 303</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Clipboard</span>
+      <div class="group-inner group-inner--clipboard">
+        <button class="btn" id="btnCopy">Copy Pattern</button>
+        <button class="btn" id="btnPaste" disabled>Paste Pattern</button>
+        <span id="copyStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Nudge -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Nudge</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnNudgePitchL">&#8592; Pitch</button>
+        <button class="btn" id="btnNudgePitchR">Pitch &#8594;</button>
+        <button class="btn" id="btnNudgeOctaveL">&#8592; Oct</button>
+        <button class="btn" id="btnNudgeOctaveR">Oct &#8594;</button>
+        <button class="btn" id="btnNudgeAccentL">&#8592; Acc</button>
+        <button class="btn" id="btnNudgeAccentR">Acc &#8594;</button>
+        <button class="btn" id="btnNudgeSlideL">&#8592; Slide</button>
+        <button class="btn" id="btnNudgeSlideR">Slide &#8594;</button>
+        <button class="btn" id="btnNudgeRatchetL">&#8592; Rtch</button>
+        <button class="btn" id="btnNudgeRatchetR">Rtch &#8594;</button>
+        <button class="btn" id="btnNudgeTimeL">&#8592; Time</button>
+        <button class="btn" id="btnNudgeTimeR">Time &#8594;</button>
+        <button class="btn" id="btnNudgeAllL">&#8592; All</button>
+        <button class="btn" id="btnNudgeAllR">All &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Randomize -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Randomize</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnRandPitch">Pitches</button>
+        <button class="btn" id="btnRandOctave">Octave</button>
+        <button class="btn" id="btnRandTime">Time</button>
+        <button class="btn" id="btnRandAccent">Accent</button>
+        <button class="btn" id="btnRandSlide">Slide</button>
+        <button class="btn" id="btnRandRatchet">Ratchet</button>
+        <button class="btn" id="btnRandAll">All</button>
+        <button class="btn" id="btnRandBrownian">Brownian</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scale Lock -->
+  <div class="strip">
+    <div class="group">
+      <span class="lbl">Scale<br>Lock</span>
+      <div class="group-inner">
+        <button type="button" class="btn" id="btnScaleLockToggle">Off</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Root</span>
+      <div class="group-inner" id="scaleRootBtns" style="gap:3px;flex-wrap:wrap"></div>
+    </div>
+    <div class="group">
+      <span class="lbl">Scale</span>
+      <div class="group-inner">
+        <select id="scaleSelect" class="scale-select"></select>
+      </div>
+    </div>
+    <div class="group group--grow">
+      <span class="lbl">Notes</span>
+      <div class="group-inner" id="scaleNoteBtns" style="gap:3px;flex-wrap:wrap"></div>
+    </div>
+  </div>
+
+  <!-- Sequencer grid -->
+  <div class="seq-panel">
+    <div class="seq-toolbar">
+      <div class="seq-toolbar-steps">
+        <span class="seq-toolbar-lbl">Steps</span>
+        <button class="len-adj-btn" id="patLenDec" title="Fewer steps">−</button>
+        <input type="number" id="patLen" class="seq-pat-len" min="1" max="16" value="16" />
+        <button class="len-adj-btn" id="patLenInc" title="More steps">+</button>
+      </div>
+      <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
+        <span class="seq-toolbar-lbl" style="margin-right:4px">Dir</span>
+        <button class="dir-btn btn-primary" data-dir="0" title="Forward">Fwd</button>
+        <button class="dir-btn" data-dir="1" title="Reverse">Rev</button>
+        <button class="dir-btn" data-dir="2" title="Ping-pong">Ping</button>
+        <button class="dir-btn" data-dir="3" title="Random">Rnd</button>
+        <button class="dir-btn" data-dir="4" title="Half-random">Half</button>
+        <button class="dir-btn" data-dir="5" title="Brownian (random walk ±1 step)">Brn</button>
+      </div>
+      <div class="seq-toolbar-steps" style="align-items:center">
+        <label class="live-push-lbl" title="Unchecked: 303 octave row + buttons. Checked: one slider C0–C4.">
+          <input type="checkbox" id="pitchModeFull" />
+          Full range pitch
+        </label>
+      </div>
+      <span class="seq-hint">
+        <b>N</b> note &nbsp;&middot;&nbsp; <b>T</b> tie &nbsp;&middot;&nbsp; <b>R</b> rest &nbsp;&mdash;&nbsp;
+        vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide &nbsp;&middot;&nbsp; <b>L</b> lock step
+        &nbsp;&mdash;&nbsp;
+        up to <b>64</b> steps &nbsp;&middot;&nbsp; red dot = currently playing step
+      </span>
+    </div>
+    <div class="seq-grid-wrap">
+      <div class="seq-grid" id="seqGrid"></div>
+    </div>
+  </div>
+
+  <!-- Play Buddy -->
+  <div class="buddy-panel" id="buddyPanel">
+    <div class="buddy-bar" id="buddyBar">
+      <span class="buddy-bar-arrow">&#9658;</span>
+      <span class="buddy-bar-label">Play Buddy</span>
+      <span class="buddy-run-lbl" id="buddyRunLbl">Off</span>
+    </div>
+    <div class="buddy-body" id="buddyBody">
+      <div class="buddy-inner">
+        <div class="buddy-ctrl-row">
+          <button class="btn btn-primary" id="btnBuddyToggle">Start</button>
+          <span class="buddy-ctrl-lbl">Interval</span>
+          <input type="number" id="buddyInterval" min="1" max="64" value="8" style="width:54px;cursor:ns-resize" />
+          <span class="buddy-ctrl-lbl">Notes / tick</span>
+          <input type="number" id="buddyNotesPerTick" min="1" max="64" value="1" style="width:54px;cursor:ns-resize" />
+          <span class="buddy-ctrl-lbl">Changes / note</span>
+          <select id="buddyChangesPerTick">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="8">8</option>
+          </select>
+          <button class="btn" id="btnBuddyRestore" disabled>Restore Original</button>
+        </div>
+        <div class="buddy-sep"></div>
+        <div class="buddy-cats" id="buddyCatsEl"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config panel -->
+  <div class="config-panel">
+    <div class="config-bar" id="configBar">
+      <span class="config-bar-arrow">&#9658;</span>
+      <span class="config-bar-label">Device Config</span>
+      <span style="margin-left:auto;font-size:10px;font-weight:600;color:var(--gray-3);" id="configStatus">Not synced</span>
+    </div>
+    <div class="config-body" id="configBody">
+      <div class="config-inner">
+        <div class="config-field">
+          <label>MIDI Channel</label>
+          <select id="cfgMidiCh">
+            <option value="0">Omni (all)</option>
+            <script>for(var _c=1;_c<=16;_c++) document.write('<option value="'+_c+'">Ch '+_c+'</option>');</script>
+          </select>
+        </div>
+        <div class="config-field">
+          <label>MIDI Clock</label>
+          <select id="cfgMidiClk">
+            <option value="1">Receive MIDI Clock</option>
+            <option value="0">Internal only (DIN jack)</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label>MIDI Thru</label>
+          <select id="cfgMidiThru">
+            <option value="0">Off</option>
+            <option value="1">On (forward MIDI IN → OUT)</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label>LED Brightness</label>
+          <select id="cfgLedBri">
+            <script>for(var _b=1;_b<=8;_b++) document.write('<option value="'+_b+'">'+_b+(_b===8?' (max)':'')+'</option>');</script>
+          </select>
+        </div>
+        <div class="group-inner" style="gap:6px">
+          <button class="btn" id="btnCfgRead" disabled>Read from 303</button>
+          <button class="btn btn-primary" id="btnCfgWrite" disabled>Write to 303</button>
+        </div>
+        <span class="config-status" id="cfgFeedback"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="log-panel">
+    <div class="log-bar" id="logBar">
+      <span class="log-bar-arrow">&#9658;</span>
+      <span class="log-bar-label">MIDI Log</span>
+      <span class="log-bar-count" id="logCount"></span>
+    </div>
+    <div class="log-body" id="logBody">
+      <div id="log"></div>
+    </div>
+  </div>
+
+</div>
+<script>
+(function () {
+  'use strict';
+
+  // ── Constants ──────────────────────────────────────────────────────
+  var PATTERN_SIZE = 128;
+  var MAX_STEPS    = 64;
+  function groupMaxSteps() { return activeGroup === 3 ? 64 : 16; }
+  /** Extra note pitches when there are fewer NOTE steps than stored stream (303-style). */
+  var STASH_COUNT_IDX = 125;
+  /** Ratchet data: 2 bits per step, 4 steps per byte, 16 bytes at reserved[1..16] = blob[105..120]. Values 0–2 = 1x–3x (max). */
+  var RATCHET_BASE = 105;
+  var PITCH_MAX    = 12 + 13 * 3; // 51 (supports DOUBLE_UP octave)
+  /** Full-range slider: linear semitones 0..48 (= unpack_pitch_linear), C0..C4 for natural notes at C boundaries. */
+  var PITCH_FULL_LIN_MIN = 0;
+  var PITCH_FULL_LIN_MAX = 48;
+  var NUM_GROUPS   = 4;
+  var LS_PITCH_MODE = 'superos303_pitch_mode';
+  var PATS_PER_GROUP = 16; // 2 banks of 8
+
+  var NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+  /** false = OG (13 key positions per octave button); true = linear slider 0..48 semitones. */
+  var pitchEditorFullRange = false;
+  try {
+    pitchEditorFullRange = localStorage.getItem(LS_PITCH_MODE) === 'full';
+  } catch (e) { /* ignore */ }
+
+  if (location.protocol === 'file:')
+    document.getElementById('httpBanner').classList.add('visible');
+
+  // ── Logging ────────────────────────────────────────────────────────
+  var logEntries = 0;
+  function log(msg, cls) {
+    var el = document.getElementById('log');
+    var sp = document.createElement('span');
+    sp.className = cls || '';
+    sp.textContent = msg + '\n';
+    el.appendChild(sp);
+    el.scrollTop = el.scrollHeight;
+    logEntries++;
+    document.getElementById('logCount').textContent = logEntries;
+  }
+  document.getElementById('logBar').addEventListener('click', function() {
+    var bar = document.getElementById('logBar'), body = document.getElementById('logBody');
+    var open = body.classList.toggle('is-open');
+    bar.classList.toggle('is-open', open);
+  });
+
+  // ── Config bar toggle ──────────────────────────────────────────────
+  document.getElementById('configBar').addEventListener('click', function() {
+    var bar = document.getElementById('configBar'), body = document.getElementById('configBody');
+    var open = body.classList.toggle('is-open');
+    bar.classList.toggle('is-open', open);
+  });
+
+  // ── TB-303 pitch encoding ──────────────────────────────────────────
+  function unpackLinear(e) {
+    if (e > PITCH_MAX) return e & 0x3f;
+    return (e % 13) + 12 * Math.floor(e / 13);
+  }
+  function clampFullLinear(lin) {
+    return Math.max(PITCH_FULL_LIN_MIN, Math.min(PITCH_FULL_LIN_MAX, lin | 0));
+  }
+  /**
+   * Packed byte for a linear pitch 0..48: oct_btn = floor(lin/12) (cap 3), key = lin - 12*oct_btn.
+   * Keeps octave buttons (down / norm / up / 2×) aligned with the note in full-range mode.
+   * Aliases (e.g. same lin from different e) are normalized to this form.
+   */
+  function linearToPacked(lin) {
+    lin = clampFullLinear(lin);
+    var oct_btn = Math.min(3, Math.floor(lin / 12));
+    var key = lin - 12 * oct_btn;
+    return Math.min(key + 13 * oct_btn, PITCH_MAX);
+  }
+  function clampPackedByte(b) {
+    var fl = b & 0xc0;
+    var e = b & 0x3f;
+    if (e > PITCH_MAX) e = PITCH_MAX;
+    return (e | fl);
+  }
+  /** Note label from firmware linear pitch (same as unpack_pitch_linear). */
+  function noteNameFromLinear(lin) {
+    lin = clampFullLinear(lin | 0);
+    var chroma = lin % 12;
+    var oct = Math.floor(lin / 12);
+    return NOTE_NAMES[chroma] + oct;
+  }
+
+  /**
+   * MIDI log labels: match firmware + grid (MIDI 36..84 = linear 0..48 → C0..C4).
+   * Standard wire naming (e.g. MIDI 36 = "C2") is wrong next to SysEx / step editor.
+   */
+  function midiNoteNameForLog(midi) {
+    var n = midi | 0;
+    if (n >= 36 && n <= 84) {
+      var lin = n - 36;
+      if (lin > 48) lin = 48;
+      return noteNameFromLinear(lin);
+    }
+    return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1);
+  }
+
+  // ── 7-bit pack / unpack ────────────────────────────────────────────
+  function pack7(src) {
+    var out = [];
+    for (var i = 0; i < src.length; i += 7) {
+      var msb = 0, n = Math.min(7, src.length - i);
+      for (var b = 0; b < n; b++) if (src[i+b] & 0x80) msb |= 1 << b;
+      out.push(msb);
+      for (var b2 = 0; b2 < n; b2++) out.push(src[i+b2] & 0x7f);
+    }
+    return new Uint8Array(out);
+  }
+  function unpack7(inp, outLen) {
+    var out = new Uint8Array(outLen), oi = 0, ii = 0;
+    while (oi < outLen) {
+      if (ii >= inp.length) return null;
+      var msb = inp[ii++];
+      for (var b = 0; b < 7 && oi < outLen; b++) {
+        if (ii >= inp.length) return null;
+        out[oi++] = inp[ii++] | (((msb >> b) & 1) ? 0x80 : 0);
+      }
+    }
+    return out;
+  }
+  function xorBlob(u8) {
+    var x = 0;
+    for (var i = 0; i < 128; i++) x ^= u8[i];
+    return x & 0xff;
+  }
+
+  // ── Time nibble helpers ────────────────────────────────────────────
+  function getTime(blob, s) {
+    var idx = s & (MAX_STEPS - 1);
+    return (blob[64 + (idx >> 1)] >> (4 * (idx & 1))) & 0xf;
+  }
+  function setTime(blob, s, v) {
+    var idx = s & (MAX_STEPS - 1), p = 64 + (idx >> 1), sh = 4 * (idx & 1);
+    blob[p] = (blob[p] & ~(0xf << sh)) | ((v & 0xf) << sh);
+  }
+  /**
+   * Match firmware normalize_pattern_times: all-tie → first note; step 0 tie → note;
+   * rest followed by tie (including wrap last→first) → note on rest step. Empty pitch → default 13.
+   */
+  function normalizePatternTimes(blob, len) {
+    len = Math.min(MAX_STEPS, Math.max(1, len | 0));
+    var allTie = true;
+    for (var i = 0; i < len; i++) {
+      if (getTime(blob, i) !== 2) { allTie = false; break; }
+    }
+    if (allTie) {
+      setTime(blob, 0, 1);
+      if (blob[0] === 0xff) blob[0] = clampPackedByte(13);
+    }
+    if (getTime(blob, 0) === 2) {
+      setTime(blob, 0, 1);
+      if (blob[0] === 0xff) blob[0] = clampPackedByte(13);
+    }
+    for (var j = 0; j < len; j++) {
+      var nxt = (j + 1) % len;
+      if (getTime(blob, j) === 0 && getTime(blob, nxt) === 2) {
+        setTime(blob, j, 1);
+        if (blob[j] === 0xff) blob[j] = clampPackedByte(13);
+      }
+    }
+  }
+
+  // step_lock bytes in firmware blob: index 96..103 (8 bytes, 64 bits)
+  function getStepLock(blob, s) {
+    var b = 96 + ((s & (MAX_STEPS - 1)) >> 3);
+    if (b >= 104) return false;
+    return !!(blob[b] & (1 << (s & 7)));
+  }
+  function toggleStepLock(blob, s) {
+    var b = 96 + ((s & (MAX_STEPS - 1)) >> 3);
+    if (b >= 104) return;
+    blob[b] ^= (1 << (s & 7));
+  }
+
+  // Ratchet: 2 bits per step packed into blob[RATCHET_BASE..RATCHET_BASE+15].
+  // Value 0=1x, 1=2x, 2=3x (max). Only meaningful on NOTE steps without slide.
+  function getRatchet(blob, s) {
+    var idx = s & (MAX_STEPS - 1);
+    var b   = RATCHET_BASE + (idx >> 2);
+    var sh  = (idx & 3) << 1;
+    return (blob[b] >> sh) & 0x03;
+  }
+  function setRatchet(blob, s, val) {
+    var idx = s & (MAX_STEPS - 1);
+    var b   = RATCHET_BASE + (idx >> 2);
+    var sh  = (idx & 3) << 1;
+    blob[b] = (blob[b] & ~(0x03 << sh)) | ((val & 0x03) << sh);
+  }
+
+  function snapshotTimes(blob, len) {
+    var t = [];
+    for (var i = 0; i < len; i++) t.push(getTime(blob, i));
+    return t;
+  }
+  function getStashCount(blob) {
+    return Math.min(MAX_STEPS, Math.max(0, blob[STASH_COUNT_IDX] | 0));
+  }
+  function setStashCount(blob, n) {
+    blob[STASH_COUNT_IDX] = Math.min(MAX_STEPS, Math.max(0, n | 0));
+  }
+  /** Per-step pitch bytes + tail stash (blob[len..]) before a time edit. */
+  function snapshotPitchState(blob, len) {
+    var step = new Uint8Array(len);
+    for (var i = 0; i < len; i++) step[i] = blob[i];
+    var sc = getStashCount(blob);
+    var stash = [];
+    for (var k = 0; k < sc; k++) stash.push(blob[len + k]);
+    return { step: step, stash: stash };
+  }
+  function pitchByteOr13(r) {
+    return (r === 0xff || r === undefined) ? 13 : (r & 0xff);
+  }
+  // Build pitch stream from slots that were NOTE *or* had user-written pitch data.
+  // This ensures pitches entered via PITCH_MODE write survive the first TIME_MODE reflow.
+  function buildPitchStreamFromState(state, timesBefore, len) {
+    var stream = [];
+    for (var i = 0; i < len; i++) {
+      var wasNote = (timesBefore[i] === 1);
+      var hasPitch = (state.step[i] !== 0xff && state.step[i] !== undefined);
+      if (wasNote || hasPitch)
+        stream.push(hasPitch ? pitchByteOr13(state.step[i]) : 13);
+    }
+    for (var k = 0; k < state.stash.length; k++)
+      stream.push(pitchByteOr13(state.stash[k]));
+    return stream;
+  }
+  function clampStashToBlob(blob, len, stashCount) {
+    var maxS = Math.max(0, MAX_STEPS - len);
+    if (stashCount > maxS) stashCount = maxS;
+    return stashCount;
+  }
+  // Sequential redistribution with stash: NOTE steps get pitches in order from the stream;
+  // excess pitches go to stash tail; non-NOTE slots are cleared to 0xff.
+  function reflowPitchesAfterTimeChange(blob, len, timesBefore, state) {
+    var stream = buildPitchStreamFromState(state, timesBefore, len);
+    var newNoteCount = 0;
+    for (var i = 0; i < len; i++) if (getTime(blob, i) === 1) newNoteCount++;
+    if (newNoteCount === 0) {
+      var sc0 = clampStashToBlob(blob, len, stream.length);
+      setStashCount(blob, sc0);
+      for (var ks = 0; ks < sc0; ks++)
+        blob[len + ks] = clampPackedByte(stream[ks] & 0xff);
+      for (var z = 0; z < len; z++) blob[z] = 0xff;
+      return;
+    }
+    while (stream.length < newNoteCount) stream.push(13);
+    var excess = stream.length - newNoteCount;
+    var stashCount = clampStashToBlob(blob, len, excess);
+    if (newNoteCount + stashCount < stream.length)
+      stream = stream.slice(0, newNoteCount + stashCount);
+    var notePos = [];
+    for (var j = 0; j < len; j++) if (getTime(blob, j) === 1) notePos.push(j);
+    for (var n = 0; n < notePos.length; n++)
+      blob[notePos[n]] = clampPackedByte(stream[n] & 0xff);
+    setStashCount(blob, stashCount);
+    for (var t = 0; t < stashCount; t++)
+      blob[len + t] = clampPackedByte(stream[newNoteCount + t] & 0xff);
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) !== 1) blob[s] = 0xff;
+    }
+  }
+  function migratePitchStashOnResize(blob, oldLen, newLen) {
+    var sc = getStashCount(blob);
+    if (sc === 0 || oldLen === newLen) return;
+    var tmp = [];
+    for (var k = 0; k < sc; k++) tmp.push(blob[oldLen + k]);
+    sc = clampStashToBlob(blob, newLen, sc);
+    setStashCount(blob, sc);
+    for (k = 0; k < sc; k++) blob[newLen + k] = tmp[k];
+  }
+  function sanitizeStashAfterLoad(blob) {
+    var L = blob[127] | 0;
+    if (L < 1 || L > MAX_STEPS) return;
+    setStashCount(blob, clampStashToBlob(blob, L, getStashCount(blob)));
+  }
+
+  /// Packed pitch nibble (0..51) for the pitch you *hear* on this step (tie inherits previous note).
+  function effectivePacked6(blob, s, len) {
+    s &= (MAX_STEPS - 1);
+    len = Math.min(MAX_STEPS, Math.max(1, len | 0));
+    var t = getTime(blob, s);
+    if (t === 0) return null;
+    if (t === 2) {
+      var g, tp, tt;
+      for (g = 1; g < len; g++) {
+        tp = (s + len - g) % len;
+        tt = getTime(blob, tp);
+        if (tt === 0) break;
+        if (tt === 1) {
+          var br = blob[tp];
+          return (br === 0xff) ? 13 : (br & 0x3f);
+        }
+      }
+      return 13;
+    }
+    var r = blob[s];
+    return (r === 0xff) ? null : (r & 0x3f);
+  }
+
+  /**
+   * Which octave button is highlighted: OG uses packed band (key row 0..3). Full range uses
+   * heard linear pitch / 12 (same idea as firmware get_octave), so aliases still show correctly.
+   */
+  function octButtonFromPacked(packed6, editorFullRange) {
+    if (packed6 == null) return 1;
+    var e = packed6 & 0x3f;
+    if (e > PITCH_MAX) e = PITCH_MAX;
+    if (editorFullRange) {
+      var lin = unpackLinear(e);
+      return Math.min(3, Math.max(0, Math.floor(lin / 12) | 0));
+    }
+    return Math.min(3, Math.max(0, Math.floor(e / 13) | 0));
+  }
+  function setOctaveOnStep(blob, si, octBtn) {
+    octBtn = Math.max(0, Math.min(3, octBtn | 0));
+    var r = blob[si];
+    if (r === 0xff) r = 13;
+    var k = (r & 0x3f) % 13;
+    var flags = r & 0xc0;
+    var e = k + 13 * octBtn;
+    if (e > PITCH_MAX) e = PITCH_MAX;
+    blob[si] = clampPackedByte((e & 0x3f) | (r & 0xc0));
+  }
+
+  // ── Storage ────────────────────────────────────────────────────────
+  // groups[g][p] = Uint8Array(128) for group g (0-3), pattern p (0-15)
+  // Hardware holds 16 patterns; groups 2-4 are stored locally in localStorage.
+  var groups = []; // [4][16]
+  var LS_KEY = 'superos303_groups';
+  var LS_SCALE_LOCK = 'superos303_scale_lock';
+
+  // ── Scale definitions ──────────────────────────────────────────────
+  var NOTE_NAMES       = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  var BLACK_KEY_INDICES = [1,3,6,8,10];
+  var SCALES = {
+    'Major':              [0,2,4,5,7,9,11],
+    'Minor':              [0,2,3,5,7,8,10],
+    'Dorian':             [0,2,3,5,7,9,10],
+    'Mixolydian':         [0,2,4,5,7,9,10],
+    'Lydian':             [0,2,4,6,7,9,11],
+    'Phrygian':           [0,1,3,5,7,8,10],
+    'Locrian':            [0,1,3,5,6,8,10],
+    'Whole Tone':         [0,2,4,6,8,10],
+    'Half-Whole Dim.':    [0,1,3,4,6,7,9,10],
+    'Whole-Half Dim.':    [0,2,3,5,6,8,9,11],
+    'Minor Blues':        [0,3,5,6,7,10],
+    'Minor Pentatonic':   [0,3,5,7,10],
+    'Major Pentatonic':   [0,2,4,7,9],
+    'Harmonic Minor':     [0,2,3,5,7,8,11],
+    'Harmonic Major':     [0,2,4,5,7,8,11],
+    'Dorian #4':          [0,2,3,6,7,9,10],
+    'Phrygian Dominant':  [0,1,4,5,7,8,10],
+    'Melodic Minor':      [0,2,3,5,7,9,11],
+    'Lydian Augmented':   [0,2,4,6,8,9,11],
+    'Lydian Dominant':    [0,2,4,6,7,9,10],
+    'Super Locrian':      [0,1,3,4,6,8,10],
+    '8-Tone Spanish':     [0,1,3,4,5,6,8,10],
+    'Bhairav':            [0,1,4,5,7,8,11],
+    'Hungarian Minor':    [0,2,3,6,7,8,11],
+    'Hirajoshi':          [0,2,3,7,8],
+    'In-Sen':             [0,1,5,7,10],
+    'Iwato':              [0,1,5,6,10],
+    'Kumoi':              [0,2,3,7,9],
+    'Pelog Selisir':      [0,1,3,7,8],
+    'Pelog Tembung':      [0,1,5,7,8],
+    'Messiaen 3':         [0,2,3,4,6,7,8,10,11],
+    'Messiaen 4':         [0,1,2,5,6,7,8,11],
+    'Messiaen 5':         [0,1,5,6,7,11],
+    'Messiaen 6':         [0,2,4,5,6,8,10,11],
+    'Messiaen 7':         [0,1,2,3,5,6,7,8,9,11]
+  };
+  var SCALE_NAMES = Object.keys(SCALES);
+
+  // ── Scale lock state ───────────────────────────────────────────────
+  var scaleLockEnabled   = false;
+  var scaleLockRoot      = 0;
+  var scaleLockName      = 'Major';
+  var scaleLockIntervals = SCALES['Major'].slice(); // intervals relative to root (0–11)
+  var scaleLockSnaps     = [];  // [NUM_GROUPS][PATS_PER_GROUP] Uint8Array(64) | null
+
+  function makeBlankPat() {
+    var b = new Uint8Array(PATTERN_SIZE);
+    b[127] = 16;
+    b[STASH_COUNT_IDX] = 0;
+    for (var i = 0; i < 64; i++) b[i] = 13; // PITCH_DEFAULT (C, center oct)
+    return b;
+  }
+  /** One step, rest, no pitch stash or step locks. */
+  function clearPatternMinimalRest(blob) {
+    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    setTime(blob, 0, 0);
+    for (var p = 0; p < 64; p++) blob[p] = 0xff;
+    blob[127] = 1;
+    setStashCount(blob, 0);
+    for (var L = 0; L < 8; L++) blob[96 + L] = 0;
+    for (var R = 0; R < 16; R++) blob[RATCHET_BASE + R] = 0;
+  }
+  function cloneU8(u) { var x = new Uint8Array(u.length); x.set(u); return x; }
+  function blobsEqual(a, b) { for (var i = 0; i < PATTERN_SIZE; i++) if (a[i] !== b[i]) return false; return true; }
+
+  function initGroups() {
+    groups = [];
+    for (var g = 0; g < NUM_GROUPS; g++) {
+      groups[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++)
+        groups[g][p] = makeBlankPat();
+    }
+  }
+  function saveGroupsToLS() {
+    try {
+      var ser = groups.map(function(grp) {
+        return grp.map(function(b) { return Array.from(b); });
+      });
+      localStorage.setItem(LS_KEY, JSON.stringify(ser));
+    } catch(e) { /* quota */ }
+  }
+  function loadGroupsFromLS() {
+    try {
+      var raw = localStorage.getItem(LS_KEY);
+      if (!raw) return false;
+      var ser = JSON.parse(raw);
+      if (!Array.isArray(ser) || ser.length !== NUM_GROUPS) return false;
+      for (var g = 0; g < NUM_GROUPS; g++) {
+        if (!Array.isArray(ser[g]) || ser[g].length !== PATS_PER_GROUP) return false;
+        for (var p = 0; p < PATS_PER_GROUP; p++) {
+          var arr = ser[g][p];
+          if (!Array.isArray(arr) || arr.length !== PATTERN_SIZE) return false;
+          groups[g][p] = new Uint8Array(arr);
+        }
+      }
+      return true;
+    } catch(e) { return false; }
+  }
+
+  initGroups();
+  loadGroupsFromLS();
+
+  // ── Undo / redo per pattern per group ─────────────────────────────
+  // history[g][p] = array of Uint8Array snapshots
+  // histIdx[g][p] = index of current state in history
+  var history = [], histIdx = [];
+  function initHistory() {
+    history = []; histIdx = [];
+    for (var g = 0; g < NUM_GROUPS; g++) {
+      history[g] = []; histIdx[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++) {
+        history[g][p] = [cloneU8(groups[g][p])];
+        histIdx[g][p] = 0;
+      }
+    }
+  }
+  initHistory();
+
+  function pushHistory(g, p) {
+    var h = history[g][p], idx = histIdx[g][p];
+    // Truncate any future states
+    h.splice(idx + 1);
+    h.push(cloneU8(groups[g][p]));
+    if (h.length > 50) { h.shift(); } else { histIdx[g][p] = h.length - 1; }
+  }
+  function canUndo(g, p) { return histIdx[g][p] > 0; }
+  function canRedo(g, p) { return histIdx[g][p] < history[g][p].length - 1; }
+  function doUndo(g, p) {
+    if (!canUndo(g, p)) return;
+    histIdx[g][p]--;
+    groups[g][p].set(history[g][p][histIdx[g][p]]);
+  }
+  function doRedo(g, p) {
+    if (!canRedo(g, p)) return;
+    histIdx[g][p]++;
+    groups[g][p].set(history[g][p][histIdx[g][p]]);
+  }
+  // Jump to the baseline (first snapshot = last committed state)
+  function getBaselineIdx(g, p) {
+    // The baseline is the snapshot at index 0 of history (or after last commit)
+    // We store commitIdx to track where last save happened
+    return commitIdx[g][p];
+  }
+
+  // commitIdx[g][p] = histIdx at last successful save to 303
+  var commitIdx = [];
+  function initCommitIdx() {
+    commitIdx = [];
+    for (var g = 0; g < NUM_GROUPS; g++) {
+      commitIdx[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++) commitIdx[g][p] = 0;
+    }
+  }
+  initCommitIdx();
+
+  // ── Active state ───────────────────────────────────────────────────
+  var activeGroup  = 0;   // 0-3
+  var activePat    = 0;   // 0-15 within the group
+  var playingPat   = -1;  // hardware-reported playing pattern (0-15), -1 = unknown
+  var editLiveMode = false; // when true: display a pattern without changing what plays
+  var playingStep = -1;  // hardware-reported playing step
+  var queuedPat   = -1;  // pattern queued for next play (sent via PC)
+  var patChain       = [];    // active chain (2-4 patterns)
+  var queuedChain    = [];    // chain waiting to activate after current finishes
+  var dragChain      = [];    // preview chain being built during pointer drag
+  var chainDragging  = false;
+  var chainDragMoved = false;
+  var chainAnchor    = -1;    // pattern index where pointer went down
+  var chainHoldTimer = null;
+  var chainHoldActive = false; // true = hold threshold crossed, currently looping
+  var clipboard   = null;
+  /** Last pattern copied (for pill highlight). */
+  var copiedFrom  = null; // { g, p } or null
+
+  function activeBlob() { return groups[activeGroup][activePat]; }
+
+  // ── MIDI state ─────────────────────────────────────────────────────
+  var midiAccess = null, midiOut = null, midiIn = null, midiKbd = null;
+  var autoPatternDumpTimer = null;
+  var autoConnectDone = false;
+  var rxBuf = [];
+  var expectDump = 0;
+  var bulkNextPat = -1; // next pattern index to request (-1 = not in bulk)
+  /** Group index (0–3) to store patterns during a 0x13 bulk read; set when dump starts. */
+  var patternBulkTargetGroup = 0;
+  var saveAckPending = false;
+  var liveTimer = null;
+  var liveEnabled = false;
+  var hwGroup        = -1;     // pattern group currently loaded on hardware (0-3); -1 = not yet synced
+  var initialSyncDone = false; // true after the first bulk download on connect
+  var hwRunning = false;       // true while receiving 0x15 step position messages
+  var hwRunningTimer = null;
+  var lastSentBlob = null;     // snapshot of last blob sent to hardware (for diffing)
+  var lastSentPat  = -1;       // pattern index of lastSentBlob
+  var reflect303Enabled = false;
+  var reflect303HistTimer = null;
+
+  // ── Build UI ───────────────────────────────────────────────────────
+  // Group tabs
+  var tabsEl = document.getElementById('groupTabs');
+  for (var gi = 0; gi < NUM_GROUPS; gi++) {
+    (function(g) {
+      var t = document.createElement('div');
+      t.className = 'group-tab' + (g === 0 ? ' is-active' : '');
+      t.textContent = 'Group ' + (g + 1);
+      t.addEventListener('click', function() { switchGroup(g); });
+      tabsEl.appendChild(t);
+    })(gi);
+  }
+
+  // Bank A pills (patterns 0-7)
+  var pillsAEl = document.getElementById('pillsA');
+  var pillsBEl = document.getElementById('pillsB');
+  for (var pi = 0; pi < 8; pi++) {
+    (function(p) {
+      var btn = document.createElement('button');
+      btn.className = 'pat-pill';
+      btn.dataset.pat = p;
+      btn.addEventListener('pointerdown', function(e) {
+        chainAnchor = p; chainDragMoved = false; chainDragging = true;
+        chainHoldActive = false; dragChain = [p];
+        clearTimeout(chainHoldTimer); chainHoldTimer = null;
+        if (patChain.length > 0 || queuedChain.length > 0) {
+          chainHoldTimer = setTimeout(function() {
+            if (chainDragging && !chainDragMoved) {
+              chainHoldActive = true;
+              if (midiOut && !editLiveMode) { sendProgramChange(p); queuedPat = p; }
+              refreshAllPills();
+            }
+          }, 400);
+        }
+        e.preventDefault();
+      });
+      pillsAEl.appendChild(btn);
+    })(pi);
+  }
+  for (var pi = 8; pi < 16; pi++) {
+    (function(p) {
+      var btn = document.createElement('button');
+      btn.className = 'pat-pill';
+      btn.dataset.pat = p;
+      btn.addEventListener('pointerdown', function(e) {
+        chainAnchor = p; chainDragMoved = false; chainDragging = true;
+        chainHoldActive = false; dragChain = [p];
+        clearTimeout(chainHoldTimer); chainHoldTimer = null;
+        if (patChain.length > 0 || queuedChain.length > 0) {
+          chainHoldTimer = setTimeout(function() {
+            if (chainDragging && !chainDragMoved) {
+              chainHoldActive = true;
+              if (midiOut && !editLiveMode) { sendProgramChange(p); queuedPat = p; }
+              refreshAllPills();
+            }
+          }, 400);
+        }
+        e.preventDefault();
+      });
+      pillsBEl.appendChild(btn);
+    })(pi);
+  }
+
+  // ── Chain drag: document-level pointer handlers ──────────────────────
+  function chainBuild(a, b) {
+    if ((a < 8) !== (b < 8)) return [a]; // different banks: no chain
+    var lo = Math.min(a, b), hi = Math.min(Math.max(a, b), lo + 3);
+    var arr = [];
+    for (var i = lo; i <= hi; i++) arr.push(i);
+    return arr;
+  }
+
+  document.addEventListener('pointermove', function(e) {
+    if (!chainDragging) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    while (el && !el.classList.contains('pat-pill')) el = el.parentElement;
+    if (!el) return;
+    var hoverPat = parseInt(el.dataset.pat, 10);
+    if (isNaN(hoverPat) || hoverPat === chainAnchor) return;
+    var newDrag = chainBuild(chainAnchor, hoverPat);
+    if (newDrag.length > 1 &&
+        (newDrag.length !== dragChain.length || newDrag[0] !== dragChain[0] ||
+         newDrag[newDrag.length-1] !== dragChain[dragChain.length-1])) {
+      chainDragMoved = true;
+      dragChain = newDrag;
+      refreshAllPills();
+    }
+  });
+
+  document.addEventListener('pointerup', function() {
+    if (!chainDragging) return;
+    chainDragging = false;
+    clearTimeout(chainHoldTimer); chainHoldTimer = null;
+    var wasDrag = chainDragMoved;
+    var drag    = dragChain.slice();
+    dragChain   = [];
+    chainDragMoved = false;
+
+    // Edit Live: only switch the display, never touch the chain or send MIDI
+    if (editLiveMode) {
+      switchToPat(chainAnchor);
+      refreshAllPills();
+      return;
+    }
+
+    if (chainHoldActive) {
+      // Released from hold-to-loop: hardware resumes advancing on its own.
+      // Send the current chain state (unchanged) so hardware knows hold is released.
+      chainHoldActive = false;
+      sendChainState(patChain, queuedChain);
+    } else if (wasDrag && drag.length > 1) {
+      if (patChain.length > 1) {
+        // Already in chain: queue the new chain — hardware plays current chain to end first
+        queuedChain = drag;
+        sendChainState(patChain, queuedChain);
+      } else {
+        // Not in chain: activate immediately
+        patChain    = drag;
+        queuedChain = [];
+        switchToPat(patChain[0]);
+        sendChainState(patChain, queuedChain);
+      }
+    } else {
+      // Tap (single pattern or single key release)
+      if (patChain.length > 1) {
+        // In chain: tap queues a single pattern (deactivates chain when reached)
+        var prevChain = patChain.slice(); // save before clearing
+        patChain = []; // clear chain on web side so next tap acts as single-pattern click
+        queuedChain = [];
+        switchToPat(chainAnchor);
+        sendChainState(prevChain, [chainAnchor]); // tell hardware: finish chain then play single
+        queuedPat = chainAnchor;
+      } else {
+        queuedChain = [];
+        pillClick(chainAnchor);
+      }
+    }
+    refreshAllPills();
+  });
+
+  function pillClick(p) {
+    if (editLiveMode) {
+      // Edit Live: only switch the display, never touch the playing pattern or chain
+      switchToPat(p);
+      return;
+    }
+    var hadChain = patChain.length > 1;
+    patChain    = []; // single click clears any chain
+    queuedChain = [];
+    switchToPat(p);
+    if (midiOut) {
+      if (hadChain) {
+        // Tell hardware to clear chain and queue this single pattern
+        sendChainState([p], []);
+      } else if (p !== playingPat) {
+        sendProgramChange(p);
+      }
+      queuedPat = p;
+    }
+  }
+
+  function sendProgramChange(pat) {
+    // SysEx 0x1D: queue pattern — hardware switches at next pattern wrap, not immediately.
+    sendSysex(new Uint8Array([0x7d, 0x1d, pat & 0x0f]));
+  }
+
+  // Send chain state to hardware (SysEx 0x1A).
+  // active: array of pattern indices for active chain (empty = no chain).
+  // queued: array of pattern indices for queued chain (empty = none).
+  function sendChainState(active, queued) {
+    if (!midiOut) return;
+    var inner = new Uint8Array(12);
+    inner[0] = 0x7d; inner[1] = 0x1a;
+    inner[2] = Math.min(active.length, 4);
+    for (var i = 0; i < 4; i++) inner[3 + i] = (i < active.length) ? (active[i] & 15) : 0;
+    inner[7] = Math.min(queued.length, 4);
+    for (var i = 0; i < 4; i++) inner[8 + i] = (i < queued.length) ? (queued[i] & 15) : 0;
+    sendSysex(inner);
+  }
+
+  function switchGroup(g) {
+    syncBlob();
+    activeGroup = g;
+    var lenEl = document.getElementById('patLen');
+    var gmax = groupMaxSteps();
+    lenEl.max = String(gmax);
+    if (Number(lenEl.value) > gmax) { lenEl.value = String(gmax); syncBlob(); }
+    if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat); applySnapToBlob(activeGroup, activePat); }
+    var tabs = tabsEl.querySelectorAll('.group-tab');
+    for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('is-active', i === g);
+    refreshAllPills();
+    renderGrid();
+    updateButtons();
+  }
+
+  function switchToPat(p) {
+    syncBlob();
+    activePat = p & 15;
+    if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat); applySnapToBlob(activeGroup, activePat); }
+    var lenEl = document.getElementById('patLen');
+    lenEl.max = String(groupMaxSteps());
+    lenEl.value = String(activeBlob()[127]);
+    refreshAllPills();
+    recomputeDirty();
+    renderGrid();
+  }
+
+  function refreshAllPills() {
+    var allPills = document.querySelectorAll('.pat-pill');
+    allPills.forEach(function(pill) {
+      var p = parseInt(pill.dataset.pat, 10);
+      pill.classList.toggle('is-active',   p === activePat);
+      pill.classList.toggle('is-dirty',    isDirty(activeGroup, p));
+      var inActive = patChain.indexOf(p) !== -1;
+      var inQueued = queuedChain.indexOf(p) !== -1;
+      var inDrag   = dragChain.indexOf(p) !== -1;
+      pill.classList.toggle('is-playing',      p === playingPat);
+      pill.classList.toggle('is-queued',       p === queuedPat && p !== activePat && p !== playingPat && !inActive && !inQueued);
+      pill.classList.toggle('is-chained',      inActive);
+      pill.classList.toggle('is-queued-chain', inQueued && !inActive);
+      pill.classList.toggle('is-drag-chain',   inDrag && !inActive && !inQueued);
+      pill.classList.toggle('is-copied',       copiedFrom && copiedFrom.g === activeGroup && copiedFrom.p === p);
+      var blob = groups[activeGroup][p];
+      var patLen = blob[127] || 16;
+      var patEmpty = true;
+      for (var s = 0; s < patLen; s++) { if (getTime(blob, s) !== 0) { patEmpty = false; break; } }
+      pill.innerHTML = String(p + 1) + '<span class="pat-pill-badge">' + (patEmpty ? 'E' : patLen) + '</span>';
+    });
+  }
+
+  function isDirty(g, p) {
+    var h = history[g][p];
+    var ci = commitIdx[g][p];
+    return !blobsEqual(groups[g][p], h[ci] || h[0]);
+  }
+
+  function recomputeDirty() {
+    var dirty = isDirty(activeGroup, activePat);
+    document.getElementById('btnUndo').disabled        = !canUndo(activeGroup, activePat);
+    document.getElementById('btnRedo').disabled        = !canRedo(activeGroup, activePat);
+    document.getElementById('btnResetBefore').disabled = !canUndo(activeGroup, activePat);
+    document.getElementById('btnResetAfter').disabled  = !canRedo(activeGroup, activePat);
+    document.getElementById('btnSave303').disabled     = !dirty || !midiOut;
+    refreshAllPills();
+  }
+
+  function updateButtons() {
+    var ok = !!midiOut && !!midiIn;
+    document.getElementById('btnReq').disabled     = !ok;
+    document.getElementById('btnReqAll').disabled  = !ok;
+    document.getElementById('btnCfgRead').disabled  = !ok;
+    document.getElementById('btnCfgWrite').disabled = !ok;
+    recomputeDirty();
+  }
+
+  function currentPatLen() {
+    return Math.min(groupMaxSteps(), Math.max(1, Number(document.getElementById('patLen').value) | 0));
+  }
+
+  function updateDisplayLabels(blob, s, len, nameEl) {
+    var t = getTime(blob, s);
+    var eff = effectivePacked6(blob, s, len);
+    if (t === 0) {
+      nameEl.textContent = '\u2014';
+      nameEl.classList.add('is-muted');
+    } else {
+      nameEl.classList.remove('is-muted');
+      var u = eff != null ? eff : 13;
+      var pk = (u & 0x3f);
+      if (pk > PITCH_MAX) pk = PITCH_MAX;
+      nameEl.textContent = noteNameFromLinear(unpackLinear(pk));
+    }
+  }
+
+  function toggleStepLockAtStep(si) {
+    si = si | 0;
+    var blob2 = activeBlob();
+    var L = currentPatLen();
+    if (si < 0 || si >= L) return;
+    toggleStepLock(blob2, si);
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    scheduleLiveSend();
+  }
+
+  // ── Sequencer rendering ────────────────────────────────────────────
+  /** Returns true if the nearest previous NOTE step (skipping TIEs) has the slide flag set.
+   *  REST between source and destination cancels slide per the 303 slide model. */
+  function prevNoteHasSlide(blob, s, len) {
+    for (var i = 1; i <= len; i++) {
+      var prev = (s - i + len) % len;
+      var pt = getTime(blob, prev);
+      if (pt === 0) return false; // REST cancels slide
+      if (pt === 1) {             // NOTE: check slide bit
+        var pr = blob[prev];
+        return pr !== 0xff && !!(pr & 0x80);
+      }
+      // TIE: keep looking back
+    }
+    return false;
+  }
+
+  function renderGrid() {
+    var grid = document.getElementById('seqGrid');
+    grid.innerHTML = '';
+
+    if (patChain.length > 1) {
+      grid.className = 'chain-view';
+      for (var ci = 0; ci < patChain.length; ci++) {
+        var pi = patChain[ci];
+        var isActive = (pi === activePat);
+        var cblob = groups[activeGroup][pi];
+        var clen = cblob[127] || 16;
+        normalizePatternTimes(cblob, clen);
+
+        var section = document.createElement('div');
+        var secCls = 'chain-pat-section' + (isActive ? ' is-active' : '');
+        if (pi === playingPat) secCls += ' is-playing-pat';
+        section.className = secCls;
+        section.dataset.chainPat = pi;
+
+        var header = document.createElement('div');
+        header.className = 'chain-pat-header';
+        var label = document.createElement('span');
+        label.textContent = 'Pattern ' + (pi + 1);
+        header.appendChild(label);
+        var playDot = document.createElement('div');
+        playDot.className = 'chain-pat-play-dot';
+        header.appendChild(playDot);
+        (function(p) {
+          header.addEventListener('click', function() { switchToPat(p); });
+        })(pi);
+        section.appendChild(header);
+
+        var innerGrid = document.createElement('div');
+        innerGrid.className = 'seq-grid' + (clen > 32 ? ' cols-16' : '');
+        renderPatternCards(cblob, pi, clen, innerGrid, isActive);
+        section.appendChild(innerGrid);
+        grid.appendChild(section);
+      }
+    } else {
+      var blob = activeBlob();
+      var len = currentPatLen();
+      blob[127] = len;
+      normalizePatternTimes(blob, len);
+      grid.className = 'seq-grid' + (len > 32 ? ' cols-16' : '');
+      renderPatternCards(blob, activePat, len, grid, true);
+    }
+  }
+
+  function renderPatternCards(blob, patIdx, len, gridEl, editable) {
+    for (var s = 0; s < len; s++) {
+      var t      = getTime(blob, s);
+      var raw    = blob[s];
+      var isEmpty = (raw === 0xff);
+      var eff    = effectivePacked6(blob, s, len);
+      var packedRaw = isEmpty ? 13 : (raw & 0x3f);
+      var dispPacked = t === 1 ? packedRaw : (eff != null ? eff : 13);
+      var acc     = t === 1 && !isEmpty && !!(raw & 0x40);
+      var sl      = t === 1 && !isEmpty && !!(raw & 0x80);
+      var locked  = getStepLock(blob, s);
+      var tieStep = (t === 2);
+      var noteStep = (t === 1);
+
+      var isPlayingStep = (patIdx === playingPat && s === playingStep);
+
+      var cardCls = 'step-card';
+      if      (t === 0) cardCls += ' is-rest';
+      else if (t === 1) cardCls += ' is-note';
+      else if (t === 2) cardCls += ' is-tie';
+      if (isPlayingStep) cardCls += ' is-playing-step';
+      if (locked) cardCls += ' is-locked';
+
+      var card = document.createElement('div');
+      card.className = cardCls;
+      card.dataset.s = s;
+      card.dataset.pat = patIdx;
+
+      var dot = document.createElement('div');
+      dot.className = 'step-play-dot';
+      card.appendChild(dot);
+
+      var numEl = document.createElement('div');
+      numEl.className = 'step-num';
+      numEl.textContent = String(s + 1).padStart(2, '0');
+      card.appendChild(numEl);
+
+      var timeRow = document.createElement('div');
+      timeRow.className = 'step-time';
+      [['N',1],['T',2],['R',0]].forEach(function(pair) {
+        var lbl = pair[0], val = pair[1];
+        var b = document.createElement('button');
+        b.className = 't-btn' + (t === val ? ' is-on' : '');
+        b.textContent = lbl;
+        b.disabled = locked;
+        b.addEventListener('click', (function(si, tv) {
+          return function() {
+            var blob2 = activeBlob();
+            if (getStepLock(blob2, si)) return;
+            var L = currentPatLen();
+            var nxt = (si + 1) % L;
+            var prv = (si + L - 1) % L;
+            if (tv === 0 && getTime(blob2, nxt) === 2) {
+              alert('Cannot put rest before a tie.');
+              return;
+            }
+            if (tv === 2 && getTime(blob2, prv) === 0) {
+              alert('Cannot put rest before a tie.');
+              return;
+            }
+            var tb = snapshotTimes(blob2, L);
+            var st = snapshotPitchState(blob2, L);
+            setTime(blob2, si, tv);
+            normalizePatternTimes(blob2, L);
+            reflowPitchesAfterTimeChange(blob2, L, tb, st);
+            pushHistory(activeGroup, activePat);
+            saveGroupsToLS();
+            renderGrid();
+            recomputeDirty();
+            scheduleLiveSend();
+          };
+        })(s, val));
+        timeRow.appendChild(b);
+      });
+      card.appendChild(timeRow);
+
+      var nameEl = document.createElement('div');
+      nameEl.className = 'step-name';
+      card.appendChild(nameEl);
+
+      updateDisplayLabels(blob, s, len, nameEl);
+
+      var pkWrap = document.createElement('div');
+      pkWrap.className = 'pitch-knob-wrap';
+      var uiPacked = noteStep ? packedRaw : dispPacked;
+      if (pitchEditorFullRange)
+        pkWrap.dataset.lin = String(clampFullLinear(unpackLinear(uiPacked)));
+      else
+        pkWrap.dataset.key = String(uiPacked % 13);
+      var track = document.createElement('div');
+      track.className = 'pitch-knob-track';
+      var fill  = document.createElement('div'); fill.className  = 'pitch-knob-fill';
+      var thumb = document.createElement('div'); thumb.className = 'pitch-knob-thumb';
+      track.appendChild(fill); track.appendChild(thumb);
+      pkWrap.appendChild(track);
+      if (tieStep) {
+        pkWrap.style.opacity = '0.35';
+        track.style.pointerEvents = 'none';
+      }
+      layoutPitchKnob(pkWrap, nameEl, blob, s, len);
+      if (noteStep && !locked && editable) bindPitchKnob(pkWrap, track, s, nameEl);
+      card.appendChild(pkWrap);
+
+      var octSel = octButtonFromPacked(uiPacked, pitchEditorFullRange);
+      var octRow = document.createElement('div');
+      octRow.className = 'step-oct-row';
+      [[0, 'down'], [1, 'norm'], [2, 'up'], [3, '2x UP']].forEach(function(op) {
+        var ob = op[0], ol = op[1];
+        var obtn = document.createElement('button');
+        obtn.type = 'button';
+        obtn.className = 'f-btn-o' + (octSel === ob ? ' is-on' : '');
+        obtn.textContent = ol;
+        obtn.disabled = tieStep || locked;
+        obtn.addEventListener('click', (function(si, oi, btn) {
+          return function() {
+            var blob2 = activeBlob();
+            if (getStepLock(blob2, si) || getTime(blob2, si) === 2) return;
+            setOctaveOnStep(blob2, si, oi);
+            pushHistory(activeGroup, activePat);
+            saveGroupsToLS();
+            renderGrid();
+            recomputeDirty();
+            scheduleLiveSend();
+          };
+        })(s, ob, obtn));
+        octRow.appendChild(obtn);
+      });
+      card.appendChild(octRow);
+
+      var flagRow = document.createElement('div');
+      flagRow.className = 'step-flags';
+
+      var aBtn = document.createElement('button');
+      aBtn.className = 'f-btn' + (acc ? ' f-on' : '');
+      aBtn.disabled = tieStep || locked;
+      aBtn.textContent = 'A';
+      aBtn.addEventListener('click', (function(si, btn) {
+        return function() {
+          var blob2 = activeBlob();
+          if (getStepLock(blob2, si)) return;
+          if (blob2[si] === 0xff) blob2[si] = 13;
+          blob2[si] ^= 0x40;
+          btn.classList.toggle('f-on', !!(blob2[si] & 0x40));
+          pushHistory(activeGroup, activePat);
+          saveGroupsToLS();
+          recomputeDirty();
+          scheduleLiveSend();
+        };
+      })(s, aBtn));
+
+      var sBtn = document.createElement('button');
+      sBtn.className = 'f-btn' + (sl ? ' f-on' : '');
+      sBtn.disabled = tieStep || locked;
+      sBtn.textContent = 'S';
+      sBtn.addEventListener('click', (function(si, btn) {
+        return function() {
+          var blob2 = activeBlob();
+          if (getStepLock(blob2, si)) return;
+          if (blob2[si] === 0xff) blob2[si] = 13;
+          blob2[si] ^= 0x80;
+          // If slide just turned on, reset ratchet to 1x
+          if (!!(blob2[si] & 0x80)) setRatchet(blob2, si, 0);
+          pushHistory(activeGroup, activePat);
+          saveGroupsToLS();
+          renderGrid();
+          recomputeDirty();
+          scheduleLiveSend();
+        };
+      })(s, sBtn));
+
+      var lBtn = document.createElement('button');
+      lBtn.className = 'f-btn f-lock' + (locked ? ' f-on f-lock-active' : '');
+      lBtn.textContent = 'L';
+      lBtn.title = 'Step lock — locked steps ignore edits; click to toggle';
+      lBtn.addEventListener('click', (function(si) {
+        return function(ev) {
+          ev.preventDefault();
+          toggleStepLockAtStep(si);
+        };
+      })(s));
+
+      flagRow.appendChild(aBtn);
+      flagRow.appendChild(sBtn);
+      flagRow.appendChild(lBtn);
+      card.appendChild(flagRow);
+
+      // Ratchet row — only active on NOTE steps without slide or slide destination
+      var ratchetRow = document.createElement('div');
+      ratchetRow.className = 'step-ratchet';
+      var curRatchet = getRatchet(blob, s);
+      var isSlideTarget = noteStep && prevNoteHasSlide(blob, s, len);
+      var ratchetDisabled = !noteStep || sl || isSlideTarget || locked;
+      [0, 1, 2].forEach(function(rv) {
+        var rb = document.createElement('button');
+        rb.type = 'button';
+        rb.className = 'r-btn' + (curRatchet === rv ? ' is-on' : '');
+        rb.textContent = (rv + 1) + 'x';
+        rb.disabled = ratchetDisabled;
+        rb.title = (rv + 1) + 'x ratchet' + (!noteStep ? ' (note steps only)' : sl ? ' (disabled on slide source)' : isSlideTarget ? ' (disabled on slide destination)' : '');
+        rb.addEventListener('click', (function(si, val) {
+          return function() {
+            var blob2 = activeBlob();
+            if (getStepLock(blob2, si)) return;
+            if (getTime(blob2, si) !== 1) return;
+            if (blob2[si] !== 0xff && !!(blob2[si] & 0x80)) return; // slide on
+            setRatchet(blob2, si, val);
+            pushHistory(activeGroup, activePat);
+            saveGroupsToLS();
+            renderGrid();
+            recomputeDirty();
+            scheduleLiveSend();
+          };
+        })(s, rv));
+        ratchetRow.appendChild(rb);
+      });
+      card.appendChild(ratchetRow);
+
+      gridEl.appendChild(card);
+    }
+  }
+
+  function syncBlob() {
+    var blob = activeBlob();
+    var len = Math.min(groupMaxSteps(), Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    blob[127] = len;
+    var syncRoot = (patChain.length > 1)
+      ? (document.querySelector('.chain-pat-section.is-active') || document)
+      : document;
+    var cards = syncRoot.querySelectorAll('.step-card');
+    for (var i = 0; i < cards.length; i++) {
+      var si   = Number(cards[i].dataset.s);
+      if (getTime(blob, si) !== 1) continue;
+      if (getStepLock(blob, si)) continue;
+      var wrap = cards[i].querySelector('.pitch-knob-wrap');
+      if (wrap) {
+        var flags = blob[si] & 0xc0;
+        var pk;
+        if (pitchEditorFullRange) {
+          var lin = Number(wrap.dataset.lin);
+          if (!isNaN(lin)) pk = linearToPacked(lin);
+        } else {
+          var key = Number(wrap.dataset.key);
+          if (!isNaN(key)) {
+            key = Math.max(0, Math.min(12, key | 0));
+            var e0 = blob[si] & 0x3f;
+            if (e0 > PITCH_MAX) e0 = PITCH_MAX;
+            var oct = Math.floor(e0 / 13);
+            pk = Math.min(key + 13 * oct, PITCH_MAX);
+          }
+        }
+        if (pk !== undefined) {
+          if (blob[si] !== 0xff) blob[si] = pk | flags;
+          else blob[si] = pk;
+        }
+      }
+    }
+  }
+
+  function layoutPitchKnob(wrap, nameEl, blob, s, len) {
+    var thumb = wrap.querySelector('.pitch-knob-thumb');
+    var fill  = wrap.querySelector('.pitch-knob-fill');
+    var pct;
+    if (pitchEditorFullRange) {
+      var lin = Number(wrap.dataset.lin);
+      if (isNaN(lin)) lin = clampFullLinear(unpackLinear(blob[s] & 0x3f));
+      else lin = clampFullLinear(lin);
+      wrap.dataset.lin = String(lin);
+      var spanF = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
+      pct = spanF > 0 ? ((lin - PITCH_FULL_LIN_MIN) / spanF) * 100 : 0;
+    } else {
+      var keyIdx = Number(wrap.dataset.key);
+      if (isNaN(keyIdx)) keyIdx = (blob[s] & 0x3f) % 13;
+      keyIdx = Math.max(0, Math.min(12, keyIdx | 0));
+      wrap.dataset.key = String(keyIdx);
+      pct = (keyIdx / 12) * 100;
+    }
+    thumb.style.bottom = pct + '%';
+    fill.style.height  = pct + '%';
+    if (blob && nameEl) updateDisplayLabels(blob, s, len, nameEl);
+    if (pitchEditorFullRange && blob && wrap && getTime(blob, s) === 1 && !getStepLock(blob, s))
+      syncOctRowFromBlob(wrap, blob, s);
+  }
+
+  /** Live-update down/norm/up/2× highlights while dragging full-range slider (renderGrid only sets them once). */
+  function syncOctRowFromBlob(wrap, blob, s) {
+    if (!wrap || !blob) return;
+    var card = wrap.closest('.step-card');
+    if (!card) return;
+    var row = card.querySelector('.step-oct-row');
+    if (!row) return;
+    var raw = blob[s];
+    if (raw === 0xff) return;
+    var sel = octButtonFromPacked(raw & 0x3f, true);
+    var btns = row.querySelectorAll('.f-btn-o');
+    for (var i = 0; i < btns.length; i++)
+      btns[i].classList.toggle('is-on', i === sel);
+  }
+
+  function bindPitchKnob(wrap, track, step, nameEl) {
+    function valueFromY(clientY) {
+      var r = track.getBoundingClientRect();
+      var t = r.height > 0 ? (r.bottom - clientY) / r.height : 0;
+      if (pitchEditorFullRange) {
+        var spanF = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
+        return clampFullLinear(Math.round(PITCH_FULL_LIN_MIN + t * spanF));
+      }
+      return Math.max(0, Math.min(12, Math.round(t * 12)));
+    }
+    var dragging = false;
+    function onDown(ev) {
+      if (getStepLock(activeBlob(), step)) return;
+      track.setPointerCapture(ev.pointerId);
+      dragging = true;
+      applyDrag(ev.clientY);
+    }
+    function onMove(ev) {
+      if (!track.hasPointerCapture(ev.pointerId)) return;
+      applyDrag(ev.clientY);
+    }
+    function onUp(ev) {
+      try { track.releasePointerCapture(ev.pointerId); } catch(e) {}
+      if (dragging) {
+        pushHistory(activeGroup, activePat);
+        saveGroupsToLS();
+        recomputeDirty();
+        scheduleLiveSend();
+        dragging = false;
+      }
+    }
+    function applyDrag(clientY) {
+      var blob2 = activeBlob();
+      var L = currentPatLen();
+      if (getStepLock(blob2, step) || getTime(blob2, step) === 2) return;
+      var pk, v = valueFromY(clientY);
+      var flags = blob2[step] & 0xc0;
+      if (pitchEditorFullRange) {
+        pk = linearToPacked(v);
+        wrap.dataset.lin = String(v);
+      } else {
+        var e0 = blob2[step] & 0x3f;
+        if (e0 > PITCH_MAX) e0 = PITCH_MAX;
+        var oct = Math.floor(e0 / 13);
+        pk = Math.min(v + 13 * oct, PITCH_MAX);
+        wrap.dataset.key = String(v);
+      }
+      if (scaleLockEnabled) {
+        // Update snapshot with intended (unsnapped) value so lock-off restores it
+        if (scaleLockSnaps[activeGroup] && scaleLockSnaps[activeGroup][activePat]) {
+          scaleLockSnaps[activeGroup][activePat][step] = (blob2[step] !== 0xff) ? (pk | flags) : pk;
+        }
+        pk = linearToPacked(snapLinToScale(unpackLinear(pk & 0x3f)));
+      }
+      blob2[step] = (blob2[step] !== 0xff) ? (pk | flags) : pk;
+      layoutPitchKnob(wrap, nameEl, blob2, step, L);
+    }
+    track.addEventListener('pointerdown', onDown);
+    track.addEventListener('pointermove', onMove);
+    track.addEventListener('pointerup',   onUp);
+    track.addEventListener('pointercancel', onUp);
+  }
+
+  // ── Playing step update (SysEx 0x15) ──────────────────────────────
+  function updatePlayingStep(pat, step) {
+    if (pat !== playingPat) {
+      playingPat = pat;
+      // Clear web-queued-single indicator when hardware starts playing that pattern
+      if (pat === queuedPat) queuedPat = -1;
+
+      // Auto-follow hardware: switch editor grid to the playing pattern.
+      // Suppress in chain view (all patterns already visible) and Edit Live mode.
+      if (activeGroup === hwGroup && !editLiveMode && queuedPat === -1 && patChain.length <= 1) {
+        switchToPat(pat);
+      }
+
+      refreshAllPills();
+    }
+    playingStep = step;
+    // Update chain header playing indicator
+    var chainSections = document.querySelectorAll('.chain-pat-section');
+    for (var ci = 0; ci < chainSections.length; ci++) {
+      chainSections[ci].classList.toggle('is-playing-pat', parseInt(chainSections[ci].dataset.chainPat, 10) === pat);
+    }
+    // Show playing-step dot in the correct card
+    var old = document.querySelector('.step-card.is-playing-step');
+    if (old) old.classList.remove('is-playing-step');
+    var dotRoot;
+    if (patChain.length > 1) {
+      dotRoot = document.querySelector('.chain-pat-section[data-chain-pat="' + pat + '"]') || null;
+    } else if (pat === activePat) {
+      dotRoot = document;
+    }
+    if (dotRoot) {
+      var cards = dotRoot.querySelectorAll('.step-card');
+      for (var i = 0; i < cards.length; i++) {
+        if (parseInt(cards[i].dataset.s, 10) === step) {
+          cards[i].classList.add('is-playing-step');
+          var dot = cards[i].querySelector('.step-play-dot');
+          dot.style.animation = 'none';
+          void dot.offsetWidth;
+          dot.style.animation = '';
+          break;
+        }
+      }
+    }
+    if (buddyRunning) {
+      buddyStepCount++;
+      var buddyTarget = parseInt(document.getElementById('buddyInterval').value, 10) || 8;
+      if (buddyStepCount >= buddyTarget) {
+        buddyStepCount = 0;
+        buddyTick();
+      }
+    }
+  }
+
+  // ── MIDI send helpers ──────────────────────────────────────────────
+  function sendSysex(inner) {
+    if (!midiOut) { log('sendSysex: no midiOut port — connect MIDI first', 'log-err'); return; }
+    var msg = new Uint8Array(2 + inner.length);
+    msg[0] = 0xf0; msg.set(inner, 1); msg[msg.length - 1] = 0xf7;
+    var hex = Array.from(msg.subarray(0, Math.min(msg.length, 12))).map(function(b){ return b.toString(16).padStart(2,'0'); }).join(' ');
+    log('TX SysEx [' + msg.length + ' bytes]: ' + hex + (msg.length > 12 ? ' ...' : ''), 'log-syx');
+    midiOut.send(msg);
+  }
+  function requestPattern(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15])); }
+  function sendPattern(pat, raw) {
+    var x = xorBlob(raw), packed = pack7(raw);
+    var inner = new Uint8Array(5 + packed.length);
+    inner[0] = 0x7d; inner[1] = 0x12; inner[2] = pat & 15;
+    inner[3] = x & 0x7f; inner[4] = (x >> 7) & 1;
+    inner.set(packed, 5);
+    sendSysex(inner);
+  }
+  var currentDirection = 0;
+  var kDirNames = ['Fwd', 'Rev', 'Ping', 'Rnd', 'Half'];
+
+  function setActiveDirection(dir) {
+    currentDirection = dir & 0x07;
+    var btns = document.querySelectorAll('.dir-btn');
+    btns.forEach(function(b, i) {
+      b.classList.toggle('btn-primary', i === currentDirection);
+    });
+  }
+
+  function sendCfgRead()  { sendSysex(new Uint8Array([0x7d, 0x20])); }
+  function sendCfgWrite(ch, flags, dir, bri) {
+    var d = (dir === undefined) ? currentDirection : (dir & 0x07);
+    var b = (bri === undefined) ? 8 : (bri & 0x7f);
+    sendSysex(new Uint8Array([0x7d, 0x22, ch & 0x7f, flags & 0x7f, d & 0x7f, b]));
+  }
+
+  function sendStepUpdate(pat, step, pitchByte, timeNibble) {
+    sendSysex(new Uint8Array([
+      0x7d, 0x16,
+      pat & 0x0f,
+      step & 0x3f,
+      pitchByte & 0x7f,
+      (pitchByte >> 7) & 0x01,
+      timeNibble & 0x0f
+    ]));
+  }
+  function sendLengthUpdate(pat, len) {
+    sendSysex(new Uint8Array([0x7d, 0x18, pat & 0x0f, len & 0x7f]));
+  }
+  function sendStepLockUpdate(pat, step, locked) {
+    sendSysex(new Uint8Array([0x7d, 0x19, pat & 0x0f, step & 0x3f, locked ? 1 : 0]));
+  }
+  function sendRatchetUpdate(pat, step, val) {
+    sendSysex(new Uint8Array([0x7d, 0x1b, pat & 0x0f, step & 0x3f, val & 0x03]));
+  }
+
+  /** Send per-step deltas to the 303 by diffing current blob against lastSentBlob. */
+  function sendDelta(pat, blob) {
+    var len = blob[127];
+    // Send changed steps (pitch byte + time nibble)
+    for (var i = 0; i < len; i++) {
+      var pitchChanged = !lastSentBlob || blob[i] !== lastSentBlob[i];
+      var timeChanged  = !lastSentBlob || getTime(blob, i) !== getTime(lastSentBlob, i);
+      if (pitchChanged || timeChanged) {
+        sendStepUpdate(pat, i, blob[i], getTime(blob, i));
+      }
+    }
+    // Send step lock changes
+    for (var i = 0; i < len; i++) {
+      var curLock  = getStepLock(blob, i);
+      var prevLock = lastSentBlob ? getStepLock(lastSentBlob, i) : false;
+      if (curLock !== prevLock) {
+        sendStepLockUpdate(pat, i, curLock);
+      }
+    }
+    // Send ratchet changes
+    for (var i = 0; i < len; i++) {
+      var curRat  = getRatchet(blob, i);
+      var prevRat = lastSentBlob ? getRatchet(lastSentBlob, i) : 0;
+      if (curRat !== prevRat) {
+        sendRatchetUpdate(pat, i, curRat);
+      }
+    }
+    // Send length change
+    if (!lastSentBlob || len !== lastSentBlob[127]) {
+      sendLengthUpdate(pat, len);
+    }
+    // Update snapshot
+    lastSentBlob = new Uint8Array(blob);
+    lastSentPat  = pat;
+  }
+
+  function scheduleLiveSend() {
+    if (!liveEnabled || !midiOut) return;
+    syncBlob();
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = setTimeout(function() {
+      liveTimer = null;
+      var pat  = activePat & 15;
+      var blob = activeBlob();
+      if (activeGroup !== hwGroup) {
+        // Editing a group not loaded on hardware — skip send to avoid corrupting the wrong group
+        return;
+      }
+      if (hwRunning) {
+        // Hardware is playing — send individual step updates to avoid disrupting the sequencer
+        if (lastSentPat !== pat) {
+          // Pattern changed — need a fresh baseline, send full blob
+          sendPattern(pat, blob);
+          lastSentBlob = new Uint8Array(blob);
+          lastSentPat  = pat;
+        } else {
+          sendDelta(pat, blob);
+        }
+      } else {
+        // Clock stopped — safe to send full pattern blob
+        sendPattern(pat, blob);
+        lastSentBlob = new Uint8Array(blob);
+        lastSentPat  = pat;
+      }
+    }, 100);
+  }
+
+  // ── Bank download (.syx) ───────────────────────────────────────────
+  // ── SysEx parser ───────────────────────────────────────────────────
+  function syxInner(bytes) {
+    if (bytes.length < 2 || bytes[0] !== 0x7d) {
+      log('syxInner: ignored — length=' + bytes.length + (bytes.length ? ' first=0x' + bytes[0].toString(16) : ''), 'log-err');
+      return;
+    }
+    var cmd = bytes[1];
+    log('syxInner: cmd=0x' + cmd.toString(16) + ' len=' + bytes.length + ' expectDump=' + expectDump, 'log-syx');
+
+    if (cmd === 0x11) {
+      if (bytes.length < 5 + 147) { log('0x11 too short', 'log-err'); return; }
+      var pat = bytes[2];
+      var cx  = bytes[3] | (bytes[4] << 7);
+      var raw = unpack7(bytes.subarray(5), PATTERN_SIZE);
+      if (!raw)         { log('0x11 unpack failed', 'log-err'); return; }
+      if (xorBlob(raw) !== cx) { log('0x11 checksum mismatch', 'log-err'); return; }
+
+      var inBulk = expectDump > 0;
+      var bulkDone = false;
+      if (inBulk) {
+        expectDump--;
+        log('Pattern ' + (pat+1) + ' received (' + (16 - expectDump) + '/16)', 'log-syx');
+        if (expectDump === 0) {
+          bulkDone = true;
+          bulkNextPat = -1;
+        } else {
+          // Request next pattern immediately
+          sendSysex(new Uint8Array([0x7d, 0x10, bulkNextPat & 15]));
+          bulkNextPat++;
+        }
+      } else {
+        log('Pattern ' + (pat+1) + ' received', 'log-syx');
+      }
+      // Bulk dump: fill the group that was active when the request started. Single request / save
+      // echo: use the group currently being edited.
+      var g = inBulk ? patternBulkTargetGroup : activeGroup;
+      sanitizeStashAfterLoad(raw);
+      normalizePatternTimes(raw, raw[127]);
+      groups[g][pat].set(raw);
+      // Keep delta baseline in sync with what the hardware has
+      if (g === hwGroup) {
+        lastSentBlob = new Uint8Array(raw);
+        lastSentPat  = pat;
+      }
+      pushHistory(g, pat);
+      commitIdx[g][pat] = histIdx[g][pat];
+      saveGroupsToLS();
+
+      if (activeGroup === g && pat === activePat) {
+        document.getElementById('patLen').value = String(raw[127]);
+        renderGrid();
+      }
+      recomputeDirty();
+
+      // All 16 received: show banner and re-render active pattern (now all data is stored).
+      if (bulkDone) {
+        var dlBanner = document.getElementById('downloadToast');
+        dlBanner.textContent = '\u2714 All 16 patterns synced — Group ' + (patternBulkTargetGroup + 1);
+        dlBanner.classList.add('visible');
+        setTimeout(function() { dlBanner.classList.remove('visible'); }, 3000);
+        switchToPat(activePat);
+      }
+
+      // After a full read from 303 (single pattern or last of bulk), refresh config so
+      // Device Config shows Synced and matches the unit.
+      if (expectDump === 0) sendCfgRead();
+
+      return;
+    }
+
+    if (cmd === 0x14 && bytes.length >= 3) {
+      var names = ['ok','bad_checksum','bad_pattern','blocked_clock'];
+      var st = bytes[2];
+      log('ACK: ' + (names[st] || 'status=' + st), st === 0 ? 'log-ack' : 'log-err');
+      if (saveAckPending && st === 0) {
+        saveAckPending = false;
+        commitIdx[activeGroup][activePat] = histIdx[activeGroup][activePat];
+        recomputeDirty();
+        log('Saved to 303 \u2714', 'log-ack');
+      }
+      return;
+    }
+
+    if (cmd === 0x15 && bytes.length >= 4) {
+      var hPat = bytes[2] & 0x0f, hStep = bytes[3] & 0x3f;
+      hwRunning = true;
+      if (hwRunningTimer) clearTimeout(hwRunningTimer);
+      hwRunningTimer = setTimeout(function() { hwRunning = false; }, 500);
+      if (bytes.length >= 5) {
+        var grp = bytes[4] & 0x03;
+        if (grp !== hwGroup) {
+          hwGroup = grp;
+          switchGroup(grp);
+          if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(grp); }
+        }
+      }
+      updatePlayingStep(hPat, hStep);
+      return;
+    }
+
+    if (cmd === 0x1e && bytes.length >= 4) {
+      var aPat = bytes[2] & 0x0f;
+      var aGrp = bytes.length >= 4 ? bytes[3] & 0x03 : 0;
+      if (aGrp !== hwGroup) {
+        hwGroup = aGrp;
+        switchGroup(aGrp);
+        if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(aGrp); }
+      }
+      updatePlayingStep(aPat, -1);
+      return;
+    }
+
+    if (cmd === 0x1c && bytes.length >= 3) {
+      var newGrp = bytes[2] & 0x03;
+      var grpChanged = (newGrp !== hwGroup) || !initialSyncDone;
+      hwGroup = newGrp;
+      log('Hardware group: ' + (newGrp + 1) + (grpChanged ? (initialSyncDone ? ' (changed)' : ' (initial sync)') : ' (echo)'), 'log-ack');
+      switchGroup(newGrp);
+      // Download on first connect (initialSyncDone=false) or whenever group changes.
+      // Skip on the post-dump sendCfgRead() echo (initialSyncDone=true, same group).
+      if (grpChanged) {
+        initialSyncDone = true;
+        startBulkRequest(newGrp);
+      }
+      return;
+    }
+
+    if (cmd === 0x16 && bytes.length >= 7) {
+      if (!reflect303Enabled) return;
+      var rPat  = bytes[2] & 0x0f;
+      var rStep = bytes[3] & 0x3f;
+      var pitchByte = (bytes[4] & 0x7f) | ((bytes[5] & 0x01) << 7);
+      var timeNibble = bytes[6] & 0x0f;
+      var rBlob = groups[hwGroup][rPat];
+      rBlob[rStep] = pitchByte;
+      setTime(rBlob, rStep, timeNibble);
+      // Keep delta baseline in sync so we don't re-send hardware's own edits
+      if (lastSentBlob && lastSentPat === rPat) {
+        lastSentBlob[rStep] = pitchByte;
+        setTime(lastSentBlob, rStep, timeNibble);
+      }
+      saveGroupsToLS();
+      // Re-render if this is the currently visible pattern
+      if (activeGroup === hwGroup && rPat === activePat) {
+        renderGrid();
+      }
+      recomputeDirty();
+      if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
+      reflect303HistTimer = setTimeout(function() {
+        reflect303HistTimer = null;
+        pushHistory(hwGroup, rPat);
+        recomputeDirty();
+      }, 1200);
+      return;
+    }
+
+    if (cmd === 0x19 && bytes.length >= 5) {
+      if (!reflect303Enabled) return;
+      var rPat  = bytes[2] & 0x0f;
+      var rStep = bytes[3] & 0x3f;
+      var rLock = bytes[4] & 0x01;
+      var rBlob = groups[hwGroup][rPat];
+      var byteIdx = 96 + (rStep >> 3);
+      if (byteIdx < 104) {
+        if (rLock) rBlob[byteIdx] |= (1 << (rStep & 7));
+        else rBlob[byteIdx] &= ~(1 << (rStep & 7));
+      }
+      if (lastSentBlob && lastSentPat === rPat && byteIdx < 104) {
+        if (rLock) lastSentBlob[byteIdx] |= (1 << (rStep & 7));
+        else lastSentBlob[byteIdx] &= ~(1 << (rStep & 7));
+      }
+      saveGroupsToLS();
+      if (activeGroup === hwGroup && rPat === activePat) renderGrid();
+      recomputeDirty();
+      if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
+      reflect303HistTimer = setTimeout(function() {
+        reflect303HistTimer = null;
+        pushHistory(hwGroup, rPat);
+        recomputeDirty();
+      }, 1200);
+      return;
+    }
+
+    if (cmd === 0x1b && bytes.length >= 5) {
+      if (!reflect303Enabled) return;
+      var rPat  = bytes[2] & 0x0f;
+      var rStep = bytes[3] & 0x3f;
+      var rVal  = bytes[4] & 0x03;
+      var rBlob = groups[hwGroup][rPat];
+      setRatchet(rBlob, rStep, rVal);
+      if (lastSentBlob && lastSentPat === rPat) setRatchet(lastSentBlob, rStep, rVal);
+      saveGroupsToLS();
+      if (activeGroup === hwGroup && rPat === activePat) renderGrid();
+      recomputeDirty();
+      return;
+    }
+
+    if (cmd === 0x17 && bytes.length >= 3) {
+      setActiveDirection(bytes[2] & 0x07);
+      log('Direction: ' + (kDirNames[currentDirection] || currentDirection), 'log-ack');
+      return;
+    }
+
+    if (cmd === 0x18 && bytes.length >= 4) {
+      var newLen = bytes[3] & 0x7f;
+      if (newLen < 1) newLen = 1;
+      if (newLen > 16) newLen = 16;
+      var lPat = bytes[2] & 0x0f;
+      if (lPat < 16) groups[hwGroup][lPat][127] = newLen;
+      if (lastSentBlob && lastSentPat === lPat) lastSentBlob[127] = newLen;
+      if (lPat === activePat) {
+        document.getElementById('patLen').value = String(newLen);
+        renderGrid();
+      }
+      log('Length update pat ' + (lPat+1) + ' \u2192 ' + newLen, 'log-ack');
+      return;
+    }
+
+    if (cmd === 0x1a && bytes.length >= 12) {
+      var aLen = bytes[2] & 7;
+      var newActive = [];
+      for (var i = 0; i < aLen && i < 4; i++) newActive.push(bytes[3 + i] & 15);
+      var qLen = bytes[7] & 7;
+      var newQueued = [];
+      for (var i = 0; i < qLen && i < 4; i++) newQueued.push(bytes[8 + i] & 15);
+      var prevChainLen = patChain.length;
+      patChain    = newActive;
+      queuedChain = newQueued;
+      // If chain state changed (entered or exited chain), re-render to show/hide chain view
+      if (patChain.length !== prevChainLen) {
+        if (patChain.length > 1 && patChain.indexOf(activePat) === -1) {
+          activePat = patChain[0];
+          document.getElementById('patLen').value = String(groups[activeGroup][activePat][127] || 16);
+        }
+        renderGrid();
+      }
+      refreshAllPills();
+      return;
+    }
+
+    if (cmd === 0x21 && bytes.length >= 4) {
+      var ch = bytes[2], fl = bytes[3];
+      document.getElementById('cfgMidiCh').value   = String(ch);
+      document.getElementById('cfgMidiClk').value  = String(fl & 1);
+      document.getElementById('cfgMidiThru').value = String((fl >> 1) & 1);
+      if (bytes.length >= 5) setActiveDirection(bytes[4] & 0x07);
+      var briStr = '';
+      if (bytes.length >= 6) {
+        var br = bytes[5];
+        if (br >= 1 && br <= 8) {
+          document.getElementById('cfgLedBri').value = String(br);
+          briStr = ' bri=' + br;
+        }
+      }
+      document.getElementById('configStatus').textContent = 'Synced';
+      document.getElementById('cfgFeedback').textContent  = 'Loaded from 303';
+      log('Config read: ch=' + ch + ' clock_rx=' + (fl & 1) + ' thru=' + ((fl >> 1) & 1) + ' dir=' + (kDirNames[currentDirection] || currentDirection) + briStr, 'log-ack');
+      return;
+    }
+  }
+
+  // ── MIDI channel message handler ───────────────────────────────────
+  var lastStatus = 0, chanBuf = [];
+  function dispatchChannel(status, b1, b2) {
+    var type = status & 0xF0, ch = (status & 0x0F) + 1;
+    if (type === 0x90 && b2 > 0)
+      log('Note On  ch'+ch+'  '+midiNoteNameForLog(b1)+'  vel '+b2, 'log-note');
+    else if (type === 0x80 || (type === 0x90 && b2 === 0))
+      log('Note Off ch'+ch+'  '+midiNoteNameForLog(b1), 'log-ack');
+  }
+  function feedChannelByte(b) {
+    if (b & 0x80) { lastStatus = b; chanBuf = [b]; return; }
+    if (chanBuf.length === 0 && lastStatus) chanBuf = [lastStatus];
+    chanBuf.push(b);
+    var type = chanBuf[0] & 0xF0, need = (type === 0xC0 || type === 0xD0) ? 2 : 3;
+    if (chanBuf.length >= need) { dispatchChannel(chanBuf[0], chanBuf[1], chanBuf[2]); chanBuf = [chanBuf[0]]; }
+  }
+
+  function onMidi(ev) {
+    var d = ev.data;
+    if (!d || !d.length) return;
+    if (d[0] >= 0x80 && d[0] < 0xf0) { for (var k = 0; k < d.length; k++) feedChannelByte(d[k]); return; }
+    if (d[0] >= 0xf8) return;
+    if (d[0] === 0xf0) {
+      rxBuf = [];
+      for (var i = 0; i < d.length; i++) rxBuf.push(d[i]);
+      var hex0 = Array.from(d.subarray(0, Math.min(d.length, 8))).map(function(b){ return b.toString(16).padStart(2,'0'); }).join(' ');
+      log('RX SysEx chunk [' + d.length + ' bytes]: ' + hex0 + (d.length > 8 ? ' ...' : ''), 'log-syx');
+      if (rxBuf[rxBuf.length-1] === 0xf7) { syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length-1)); rxBuf = []; }
+      return;
+    }
+    if (rxBuf.length > 0) {
+      if (d[0] < 0x80 || d[0] === 0xf7) {
+        for (var j = 0; j < d.length; j++) rxBuf.push(d[j]);
+        log('RX SysEx continuation [' + d.length + ' bytes, buf=' + rxBuf.length + ']', 'log-syx');
+        if (rxBuf[rxBuf.length-1] === 0xf7) { syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length-1)); rxBuf = []; }
+      } else if (d[0] < 0xf8) { log('RX SysEx aborted by status byte 0x' + d[0].toString(16), 'log-err'); rxBuf = []; }
+    }
+  }
+
+  function onKeyboard(ev) {
+    var d = ev.data;
+    if (!d || !d.length || d[0] < 0x80 || d[0] >= 0xf0) return;
+    if (midiOut) midiOut.send(d);
+    var type = d[0] & 0xF0, ch = (d[0] & 0x0F) + 1;
+    if (d.length >= 3 && (type === 0x90 || type === 0x80)) {
+      var name = midiNoteNameForLog(d[1]);
+      if (type === 0x90 && d[2] > 0) log('\u2192 303  Note On  ch'+ch+'  '+name+'  vel '+d[2], 'log-note');
+      else log('\u2192 303  Note Off ch'+ch+'  '+name, 'log-ack');
+    }
+  }
+
+  // ── Port binding ───────────────────────────────────────────────────
+  function fillSel(sel, ports) {
+    sel.innerHTML = '';
+    ports.forEach(function(p) {
+      var o = document.createElement('option');
+      o.value = p.id; o.textContent = p.name || p.id;
+      sel.appendChild(o);
+    });
+    sel.disabled = !ports.length;
+  }
+
+  function bindPorts(access) {
+    var outs = Array.from(access.outputs.values());
+    var ins  = Array.from(access.inputs.values());
+    var selOut = document.getElementById('selOut');
+    var selIn  = document.getElementById('selIn');
+    var selKbd = document.getElementById('selKbd');
+
+    // Preserve current selections (and prior chosen ids) before rebuilding options.
+    var prevOutId = selOut.value || (midiOut && midiOut.id) || '';
+    var prevInId  = selIn.value  || (midiIn  && midiIn.id)  || '';
+    var prevKbdId = selKbd.value || (midiKbd && midiKbd.id) || '';
+
+    fillSel(selOut, outs);
+    fillSel(selIn,  ins);
+    selKbd.innerHTML = '<option value="">— None —</option>';
+    ins.forEach(function(p) {
+      var o = document.createElement('option'); o.value = p.id; o.textContent = p.name || p.id;
+      selKbd.appendChild(o);
+    });
+    selKbd.disabled = !ins.length;
+
+    // Restore selections if those ports still exist.
+    if (prevOutId && outs.some(function(p){ return p.id === prevOutId; })) selOut.value = prevOutId;
+    if (prevInId  && ins.some(function(p){ return p.id === prevInId;  })) selIn.value  = prevInId;
+    if (prevKbdId && ins.some(function(p){ return p.id === prevKbdId; })) selKbd.value = prevKbdId;
+
+    if (midiIn)  midiIn.onmidimessage  = null;
+    if (midiKbd) midiKbd.onmidimessage = null;
+
+    var newOut = outs.find(function(p){ return p.id === selOut.value; }) || outs[0] || null;
+    var newIn  = ins.find(function(p) { return p.id === selIn.value;  }) || ins[0]  || null;
+    // Reset hardware sync only when the actual port identity changes.
+    if ((newOut && newOut.id) !== (midiOut && midiOut.id) ||
+        (newIn  && newIn.id)  !== (midiIn  && midiIn.id)) {
+      hwGroup = -1;
+      initialSyncDone = false;
+      autoConnectDone = false;
+    }
+    midiOut = newOut;
+    midiIn  = newIn;
+    var kbdId = selKbd.value;
+    midiKbd = kbdId ? (ins.find(function(p){ return p.id === kbdId; }) || null) : null;
+
+    if (midiIn)  midiIn.onmidimessage  = onMidi;
+    if (midiKbd) midiKbd.onmidimessage = onKeyboard;
+
+    var kbdEl = document.getElementById('kbdStatus');
+    if (midiKbd && midiIn && midiKbd.id === midiIn.id) {
+      kbdEl.textContent = 'Loop!'; kbdEl.style.color = '#c00';
+      log('WARNING: Keyboard port same as 303 In — loop!', 'log-err');
+    } else if (midiKbd) {
+      kbdEl.textContent = 'Active'; kbdEl.style.color = '#000';
+    } else {
+      kbdEl.textContent = 'Off'; kbdEl.style.color = '#aaa';
+    }
+
+    var statusEl = document.getElementById('midiStatus');
+    var btn      = document.getElementById('btnMidi');
+    var ok       = !!midiOut && !!midiIn;
+
+    if (ok) {
+      statusEl.textContent = midiOut.name + ' / ' + midiIn.name;
+      statusEl.className   = 'is-ok';
+      btn.classList.add('is-connected');
+      btn.textContent = 'Connected';
+      if (!autoConnectDone && !autoPatternDumpTimer) {
+        autoPatternDumpTimer = setTimeout(function() {
+          autoPatternDumpTimer = null;
+          autoConnectDone = true;
+          log('Auto-connect: requesting config + all 16 patterns', 'log-syx');
+          sendCfgRead();
+          startBulkRequest(activeGroup);
+        }, 500);
+      }
+    }
+    if (!ok) { autoConnectDone = false; }
+    if (!ok && midiOut && !midiIn) {
+      statusEl.textContent = midiOut.name + ' — select input'; statusEl.className = 'is-warn';
+    } else if (!ok) {
+      statusEl.textContent = 'No ports found'; statusEl.className = '';
+    }
+    updateButtons();
+  }
+
+  // ── Save JSON ──────────────────────────────────────────────────────
+  var JSON_VERSION = 2;
+  function nowISO() { return new Date().toISOString(); }
+
+  function patternToJSON(g, p) {
+    var blob = groups[g][p];
+    var len = blob[127];
+    var steps = [];
+    for (var s = 0; s < len; s++) {
+      var raw = blob[s], t = getTime(blob, s);
+      steps.push({
+        time:   t,
+        pitch:  (raw === 0xff) ? null : (raw & 0x3f),
+        accent: (raw !== 0xff) ? !!(raw & 0x40) : false,
+        slide:  (raw !== 0xff) ? !!(raw & 0x80) : false
+      });
+    }
+    var sc = getStashCount(blob);
+    var stash = [];
+    for (var k = 0; k < sc; k++) stash.push(blob[len + k] & 0xff);
+    return {
+      group: g + 1, pattern: p + 1, length: len, steps: steps,
+      pitch_stash_count: sc, pitch_stash: stash
+    };
+  }
+
+  function saveJSON(obj, fname) {
+    var payload = JSON.stringify(obj, null, 2);
+    var url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+    var a = document.createElement('a'); a.href = url; a.download = fname; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  document.getElementById('btnSavePattern').onclick = function() {
+    var obj = {
+      version: JSON_VERSION, type: 'pattern',
+      saved_at: nowISO(),
+      data: [patternToJSON(activeGroup, activePat)]
+    };
+    saveJSON(obj, 'superos-g' + (activeGroup+1) + '-p' + (activePat+1) + '-' + nowISO().replace(/[:.]/g,'-') + '.json');
+  };
+
+  document.getElementById('btnSaveBank').onclick = function() {
+    var bank = activePat < 8 ? 0 : 1;
+    var start = bank * 8, pats = [];
+    for (var p = start; p < start + 8; p++) pats.push(patternToJSON(activeGroup, p));
+    var obj = { version: JSON_VERSION, type: 'bank', saved_at: nowISO(),
+                group: activeGroup + 1, bank: bank === 0 ? 'A' : 'B', data: pats };
+    saveJSON(obj, 'superos-g' + (activeGroup+1) + '-bank' + (bank===0?'A':'B') + '-' + nowISO().replace(/[:.]/g,'-') + '.json');
+  };
+
+  document.getElementById('btnSaveGroup').onclick = function() {
+    var pats = [];
+    for (var p = 0; p < PATS_PER_GROUP; p++) pats.push(patternToJSON(activeGroup, p));
+    var obj = { version: JSON_VERSION, type: 'group', saved_at: nowISO(),
+                group: activeGroup + 1, data: pats };
+    saveJSON(obj, 'superos-g' + (activeGroup+1) + '-' + nowISO().replace(/[:.]/g,'-') + '.json');
+  };
+
+  document.getElementById('btnSaveAll').onclick = function() {
+    var allPats = [];
+    for (var g = 0; g < NUM_GROUPS; g++)
+      for (var p = 0; p < PATS_PER_GROUP; p++)
+        allPats.push(patternToJSON(g, p));
+    var obj = { version: JSON_VERSION, type: 'all', saved_at: nowISO(), data: allPats };
+    saveJSON(obj, 'superos-all-groups-' + nowISO().replace(/[:.]/g,'-') + '.json');
+  };
+
+  // ── Load JSON (with strict validation) ────────────────────────────
+  function validateStep(step, stepIdx) {
+    if (typeof step !== 'object' || step === null)
+      throw new Error('Step ' + stepIdx + ': not an object');
+    if (![0,1,2].includes(step.time))
+      throw new Error('Step ' + stepIdx + ': invalid time ' + step.time);
+    if (step.pitch !== null) {
+      if (typeof step.pitch !== 'number' || !Number.isInteger(step.pitch) || step.pitch < 0 || step.pitch > PITCH_MAX)
+        throw new Error('Step ' + stepIdx + ': invalid pitch ' + step.pitch);
+    }
+    if (typeof step.accent !== 'boolean')
+      throw new Error('Step ' + stepIdx + ': accent must be boolean');
+    if (typeof step.slide  !== 'boolean')
+      throw new Error('Step ' + stepIdx + ': slide must be boolean');
+  }
+  function validatePatJSON(pd, patIdx) {
+    if (typeof pd !== 'object' || pd === null)
+      throw new Error('Pattern ' + patIdx + ': not an object');
+    if (typeof pd.group   !== 'number' || pd.group   < 1 || pd.group   > NUM_GROUPS)
+      throw new Error('Pattern ' + patIdx + ': group out of range');
+    if (typeof pd.pattern !== 'number' || pd.pattern < 1 || pd.pattern > PATS_PER_GROUP)
+      throw new Error('Pattern ' + patIdx + ': pattern out of range');
+    if (typeof pd.length  !== 'number' || pd.length  < 1 || pd.length  > MAX_STEPS)
+      throw new Error('Pattern ' + patIdx + ': invalid length');
+    if (!Array.isArray(pd.steps) || pd.steps.length !== pd.length)
+      throw new Error('Pattern ' + patIdx + ': steps length mismatch');
+    for (var si = 0; si < pd.steps.length; si++) validateStep(pd.steps[si], si + 1);
+    if (pd.pitch_stash_count != null || pd.pitch_stash != null) {
+      if (typeof pd.pitch_stash_count !== 'number' || pd.pitch_stash_count < 0 || pd.pitch_stash_count > MAX_STEPS)
+        throw new Error('Pattern ' + patIdx + ': invalid pitch_stash_count');
+      if (!Array.isArray(pd.pitch_stash))
+        throw new Error('Pattern ' + patIdx + ': pitch_stash must be an array');
+      if (pd.pitch_stash.length !== pd.pitch_stash_count)
+        throw new Error('Pattern ' + patIdx + ': pitch_stash length mismatch');
+      for (var pj = 0; pj < pd.pitch_stash.length; pj++) {
+        var ps = pd.pitch_stash[pj];
+        if (typeof ps !== 'number' || !Number.isInteger(ps) || ps < 0 || ps > 255)
+          throw new Error('Pattern ' + patIdx + ': invalid pitch_stash[' + pj + ']');
+      }
+    }
+  }
+  function applyPatJSON(pd) {
+    var g = pd.group - 1, p = pd.pattern - 1;
+    var blob = groups[g][p];
+    var len = pd.length;
+    blob[127] = len;
+    // Clear time data
+    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    for (var s = 0; s < len; s++) {
+      var st = pd.steps[s];
+      setTime(blob, s, st.time);
+      if (st.pitch !== null) {
+        var flags = (st.accent ? 0x40 : 0) | (st.slide ? 0x80 : 0);
+        blob[s] = (st.pitch & 0x3f) | flags;
+      } else {
+        blob[s] = 0xff;
+      }
+    }
+    for (var sc = 0; sc < len; sc++)
+      if (blob[sc] !== 0xff) blob[sc] = clampPackedByte(blob[sc]);
+    normalizePatternTimes(blob, len);
+    setStashCount(blob, 0);
+    if (pd.pitch_stash_count != null && Array.isArray(pd.pitch_stash) && pd.pitch_stash.length > 0) {
+      var scn = clampStashToBlob(blob, len, pd.pitch_stash_count);
+      setStashCount(blob, scn);
+      for (var ks = 0; ks < scn; ks++)
+        blob[len + ks] = clampPackedByte(pd.pitch_stash[ks] & 0xff);
+    }
+    pushHistory(g, p);
+    saveGroupsToLS();
+    if (g === activeGroup && p === activePat) {
+      document.getElementById('patLen').value = String(len);
+      renderGrid();
+    }
+    recomputeDirty();
+  }
+
+  document.getElementById('btnLoadJson').onclick = function() {
+    document.getElementById('fileInput').click();
+  };
+  document.getElementById('fileInput').onchange = function(ev) {
+    var file = ev.target.files[0]; if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        var obj = JSON.parse(e.target.result);
+        // Top-level validation
+        if (typeof obj !== 'object' || obj === null)          throw new Error('Root is not an object');
+        if (obj.version !== 1 && obj.version !== 2)           throw new Error('Version mismatch: expected 1 or 2, got ' + obj.version);
+        if (!['pattern','bank','group','all'].includes(obj.type)) throw new Error('Unknown type: ' + obj.type);
+        if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('data array missing or empty');
+        // Validate all patterns before applying any
+        for (var i = 0; i < obj.data.length; i++) validatePatJSON(obj.data[i], i + 1);
+        // Apply
+        for (var j = 0; j < obj.data.length; j++) applyPatJSON(obj.data[j]);
+        log('Loaded ' + obj.data.length + ' pattern(s) from JSON (' + obj.type + ', saved ' + (obj.saved_at || 'unknown') + ')', 'log-syx');
+      } catch(err) {
+        alert('JSON load error: ' + err.message);
+        log('JSON load error: ' + err.message, 'log-err');
+      }
+      ev.target.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  // ── Edit Live ──────────────────────────────────────────────────────
+  document.getElementById('btnEditLive').onclick = function() {
+    editLiveMode = !editLiveMode;
+    this.classList.toggle('is-on', editLiveMode);
+    if (!editLiveMode && playingPat >= 0 && activeGroup === hwGroup) {
+      switchToPat(playingPat);
+    }
+  };
+
+  // ── Copy / paste ───────────────────────────────────────────────────
+  document.getElementById('btnCopy').onclick = function() {
+    clipboard = cloneU8(activeBlob());
+    copiedFrom = { g: activeGroup, p: activePat };
+    document.getElementById('btnPaste').disabled = false;
+    document.getElementById('copyStatus').textContent =
+        'Copied G' + (activeGroup + 1) + ' \u00b7 P' + (activePat + 1);
+    refreshAllPills();
+    log('Copied pattern ' + (activePat+1) + ' (group ' + (activeGroup+1) + ')', 'log-ack');
+  };
+  document.getElementById('btnPaste').onclick = function() {
+    if (!clipboard) return;
+    activeBlob().set(clipboard);
+    document.getElementById('patLen').value = String(clipboard[127]);
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    scheduleLiveSend();
+    log('Pasted to pattern ' + (activePat+1) + ' (group ' + (activeGroup+1) + ')', 'log-ack');
+  };
+
+  // ── Undo / redo / reset ────────────────────────────────────────────
+  document.getElementById('btnUndo').onclick = function() {
+    doUndo(activeGroup, activePat);
+    document.getElementById('patLen').value = String(activeBlob()[127]);
+    renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+  };
+  document.getElementById('btnRedo').onclick = function() {
+    doRedo(activeGroup, activePat);
+    document.getElementById('patLen').value = String(activeBlob()[127]);
+    renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+  };
+  document.getElementById('btnResetBefore').onclick = function() {
+    // Jump to commit baseline
+    var ci = commitIdx[activeGroup][activePat];
+    var h  = history[activeGroup][activePat];
+    if (h[ci]) {
+      histIdx[activeGroup][activePat] = ci;
+      groups[activeGroup][activePat].set(h[ci]);
+      document.getElementById('patLen').value = String(activeBlob()[127]);
+      renderGrid(); recomputeDirty();
+    }
+  };
+  document.getElementById('btnResetAfter').onclick = function() {
+    // Jump to latest (end of history)
+    var h  = history[activeGroup][activePat];
+    histIdx[activeGroup][activePat] = h.length - 1;
+    groups[activeGroup][activePat].set(h[h.length - 1]);
+    document.getElementById('patLen').value = String(activeBlob()[127]);
+    renderGrid(); recomputeDirty();
+  };
+  document.getElementById('btnClearPat').onclick = function() {
+    clearPatternMinimalRest(activeBlob());
+    document.getElementById('patLen').value = '1';
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    if (midiOut) {
+      var pat = activePat & 15;
+      var blob = activeBlob();
+      sendPattern(pat, blob);
+      lastSentBlob = new Uint8Array(blob);
+      lastSentPat  = pat;
+    }
+    log('Cleared pattern \u2192 1 step (rest)', 'log-ack');
+  };
+
+  // ── Randomize ──────────────────────────────────────────────────────
+  /** Returns true if the step-lock bit is set for step s (blob bytes 96–103). */
+  function isStepLocked(blob, s) {
+    return !!(blob[96 + (s >> 3)] & (1 << (s & 7)));
+  }
+  /**
+   * Apply random packed pitches (0–38, 3 TB-303 octaves) to all NOTE steps.
+   * Accent and slide flags on existing steps are preserved unless clearFlags is true.
+   */
+  function applyRandomPitches(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      if (getTime(blob, s) === 1) {
+        var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : 0;
+        blob[s] = (Math.floor(Math.random() * 39)) | flags; // 0..38 = 3 octaves
+      }
+    }
+  }
+  /**
+   * Randomly assign time values (note/rest/tie) across all steps, then normalize
+   * and reflow pitch bytes to keep the pitch stream intact.
+   */
+  function applyRandomTime(blob, len) {
+    var timesBefore = snapshotTimes(blob, len);
+    var pitchState = snapshotPitchState(blob, len);
+    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) { setTime(blob, s, timesBefore[s]); continue; }
+      var r = Math.random();
+      setTime(blob, s, r < 0.55 ? 1 : r < 0.80 ? 0 : 2); // ~55% note, ~25% rest, ~20% tie
+    }
+    normalizePatternTimes(blob, len);
+    reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+  }
+  /**
+   * Randomize octave button (down/norm/up/2×up) on each NOTE step,
+   * keeping the note letter and accent/slide flags unchanged.
+   */
+  function applyRandomOctave(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
+        var flags = blob[s] & 0xc0;
+        var p6 = blob[s] & 0x3f;
+        var key = p6 % 13;                        // note within octave (0-12)
+        var newOct = Math.floor(Math.random() * 4); // 0=down 1=norm 2=up 3=2xup
+        var newPacked = key + 13 * newOct;
+        if (newPacked > PITCH_MAX) newPacked = PITCH_MAX;
+        blob[s] = newPacked | flags;
+      }
+    }
+  }
+  /**
+   * Randomly assign ratchet values to unlocked NOTE steps without slide.
+   * Distribution: ~50% no ratchet (1x), ~33% 2x, ~17% 3x.
+   * Clears ratchet on all other steps.
+   */
+  function applyRandomRatchets(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      var slide = blob[s] !== 0xff && (blob[s] & 0x80);
+      if (getTime(blob, s) === 1 && !slide) {
+        var r = Math.random();
+        var rv = r < 0.50 ? 0 : r < 0.83 ? 1 : 2;
+        setRatchet(blob, s, rv);
+      } else {
+        setRatchet(blob, s, 0);
+      }
+    }
+  }
+
+  /**
+   * Randomly set accent (~20% probability) on existing NOTE steps, preserving pitch and slide.
+   */
+  function applyRandomAccent(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
+        blob[s] = (blob[s] & 0xbf) | (Math.random() < 0.20 ? 0x40 : 0);
+      }
+    }
+  }
+
+  /**
+   * Randomly set slide (~15% probability) on existing NOTE steps, preserving pitch and accent.
+   * Clears ratchet on any step that gains a slide flag.
+   */
+  function applyRandomSlide(blob, len) {
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s)) continue;
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
+        var slide = Math.random() < 0.15;
+        blob[s] = (blob[s] & 0x7f) | (slide ? 0x80 : 0);
+        if (slide) setRatchet(blob, s, 0);
+      }
+    }
+  }
+
+  function syncScaleSnapAndApply(g, p, len) {
+    if (!scaleLockEnabled) return;
+    ensureScaleSnap(g, p);
+    var blob = groups[g][p], snap = scaleLockSnaps[g][p];
+    for (var s = 0; s < len; s++) snap[s] = blob[s];
+    applySnapToBlob(g, p);
+  }
+
+  document.getElementById('btnRandPitch').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomPitches(blob, len);
+    syncScaleSnapAndApply(activeGroup, activePat, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized pitches', 'log-ack');
+  };
+  document.getElementById('btnRandOctave').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomOctave(blob, len);
+    syncScaleSnapAndApply(activeGroup, activePat, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized octaves', 'log-ack');
+  };
+  document.getElementById('btnRandTime').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomTime(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized time', 'log-ack');
+  };
+  document.getElementById('btnRandAccent').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomAccent(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized accent', 'log-ack');
+  };
+  document.getElementById('btnRandSlide').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomSlide(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized slide', 'log-ack');
+  };
+  document.getElementById('btnRandRatchet').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomRatchets(blob, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized ratchets', 'log-ack');
+  };
+  document.getElementById('btnRandAll').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyRandomTime(blob, len);
+    applyRandomPitches(blob, len);
+    applyRandomOctave(blob, len);
+    applyRandomAccent(blob, len);
+    applyRandomSlide(blob, len);
+    applyRandomRatchets(blob, len);
+    syncScaleSnapAndApply(activeGroup, activePat, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Randomized all', 'log-ack');
+  };
+
+  // ── Brownian pitch generator ────────────────────────────────────────
+  /**
+   * Brownian (random-walk) pitch generator.
+   * Each unlocked NOTE step drifts ±1–4 semitones (linear) from the previous NOTE pitch.
+   * Locked steps act as anchors — walk resumes from their pitch.
+   * Accent/slide flags preserved.
+   */
+  function applyBrownianPitches(blob, len) {
+    var STEP_MAX = 4;
+    var curLin = 12; // seed: C3
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff) { curLin = unpackLinear(blob[s] & 0x3f); break; }
+    }
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) !== 1) continue;
+      if (isStepLocked(blob, s)) {
+        if (blob[s] !== 0xff) curLin = unpackLinear(blob[s] & 0x3f);
+        continue;
+      }
+      curLin = Math.max(0, Math.min(48, curLin + Math.round((Math.random() * 2 - 1) * STEP_MAX)));
+      var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : 0;
+      blob[s] = linearToPacked(curLin) | flags;
+    }
+  }
+  document.getElementById('btnRandBrownian').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    applyBrownianPitches(blob, len);
+    syncScaleSnapAndApply(activeGroup, activePat, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Brownian pitches applied', 'log-ack');
+  };
+
+  // ── Scale Lock ─────────────────────────────────────────────────────
+  function scaleNoteClasses() {
+    return scaleLockIntervals.map(function(i) { return (scaleLockRoot + i) % 12; });
+  }
+
+  function snapLinToScale(lin) {
+    var cls = scaleNoteClasses();
+    if (cls.length === 0) return lin;
+    var best = lin, bestDist = Infinity;
+    for (var i = 0; i < cls.length; i++) {
+      for (var o = 0; o <= 4; o++) {
+        var c = o * 12 + cls[i];
+        if (c > 48) break;
+        var d = Math.abs(c - lin);
+        if (d < bestDist) { bestDist = d; best = c; }
+      }
+    }
+    return Math.max(0, Math.min(48, best));
+  }
+
+  function snapPackedToScale(raw) {
+    if (raw === 0xff) return raw;
+    return linearToPacked(snapLinToScale(unpackLinear(raw & 0x3f))) | (raw & 0xc0);
+  }
+
+  function ensureScaleSnap(g, p) {
+    if (scaleLockSnaps[g][p] === null) {
+      var src = groups[g][p], snap = new Uint8Array(64);
+      for (var i = 0; i < 64; i++) snap[i] = src[i];
+      scaleLockSnaps[g][p] = snap;
+    }
+  }
+
+  function applySnapToBlob(g, p) {
+    var blob = groups[g][p], snap = scaleLockSnaps[g][p];
+    if (!snap) return;
+    var len = blob[127] || 16;
+    for (var s = 0; s < len; s++) {
+      if (isStepLocked(blob, s) || getTime(blob, s) !== 1) continue;
+      if (snap[s] === 0xff) { blob[s] = 0xff; continue; }
+      // Preserve current accent/slide flags; only snap the pitch bits.
+      var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : (snap[s] & 0xc0);
+      blob[s] = linearToPacked(snapLinToScale(unpackLinear(snap[s] & 0x3f))) | flags;
+    }
+  }
+
+  function restoreSnapForBlob(g, p) {
+    var snap = scaleLockSnaps[g][p];
+    if (!snap) return;
+    var blob = groups[g][p];
+    for (var i = 0; i < 64; i++) {
+      if (snap[i] === 0xff || blob[i] === 0xff) {
+        blob[i] = snap[i]; // PITCH_EMPTY state: restore as-is
+      } else {
+        // Restore pre-lock pitch bits only; keep current accent/slide flags.
+        blob[i] = (snap[i] & 0x3f) | (blob[i] & 0xc0);
+      }
+    }
+    scaleLockSnaps[g][p] = null;
+  }
+
+  function initScaleLockSnaps() {
+    scaleLockSnaps = [];
+    for (var g = 0; g < NUM_GROUPS; g++) {
+      scaleLockSnaps[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++) scaleLockSnaps[g][p] = null;
+    }
+  }
+
+  function enableScaleLock() {
+    scaleLockEnabled = true;
+    ensureScaleSnap(activeGroup, activePat);
+    applySnapToBlob(activeGroup, activePat);
+    updateScaleLockUI();
+    saveScaleLockToLS();
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Scale lock on — ' + NOTE_NAMES[scaleLockRoot] + ' ' + scaleLockName, 'log-ack');
+  }
+
+  function disableScaleLock() {
+    scaleLockEnabled = false;
+    for (var g = 0; g < NUM_GROUPS; g++)
+      for (var p = 0; p < PATS_PER_GROUP; p++) restoreSnapForBlob(g, p);
+    updateScaleLockUI();
+    saveScaleLockToLS();
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    log('Scale lock off — pitches restored', 'log-ack');
+  }
+
+  function reapplyScaleLock() {
+    if (!scaleLockEnabled) return;
+    ensureScaleSnap(activeGroup, activePat);
+    applySnapToBlob(activeGroup, activePat);
+    saveGroupsToLS(); renderGrid(); recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+  }
+
+  function updateScaleLockUI() {
+    var toggleBtn = document.getElementById('btnScaleLockToggle');
+    toggleBtn.textContent = scaleLockEnabled ? 'On' : 'Off';
+    toggleBtn.classList.toggle('is-on', scaleLockEnabled);
+    var rootBtns = document.getElementById('scaleRootBtns').querySelectorAll('.scale-root-btn');
+    rootBtns.forEach(function(b) {
+      b.classList.toggle('active', parseInt(b.dataset.root, 10) === scaleLockRoot);
+    });
+    var sel = document.getElementById('scaleSelect');
+    if (sel.value !== scaleLockName) sel.value = scaleLockName;
+    rebuildScaleNoteBtns();
+  }
+
+  function rebuildScaleNoteBtns() {
+    var container = document.getElementById('scaleNoteBtns');
+    container.innerHTML = '';
+    var cls = scaleNoteClasses();
+    for (var n = 0; n < 12; n++) {
+      var isBlack  = BLACK_KEY_INDICES.indexOf(n) !== -1;
+      var isActive = cls.indexOf(n) !== -1;
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scale-note-btn' + (isBlack ? ' is-black' : '') + (isActive ? ' active' : '');
+      btn.textContent = NOTE_NAMES[n];
+      btn.dataset.note = String(n);
+      btn.title = NOTE_NAMES[n] + (isActive ? ' (in scale — click to remove)' : ' (click to add)');
+      btn.addEventListener('click', (function(nc) {
+        return function() {
+          var interval = (nc - scaleLockRoot + 12) % 12;
+          var idx = scaleLockIntervals.indexOf(interval);
+          if (idx !== -1) scaleLockIntervals.splice(idx, 1);
+          else { scaleLockIntervals.push(interval); scaleLockIntervals.sort(function(a,b){return a-b;}); }
+          saveScaleLockToLS();
+          rebuildScaleNoteBtns();
+          reapplyScaleLock();
+        };
+      })(n));
+      container.appendChild(btn);
+    }
+  }
+
+  function saveScaleLockToLS() {
+    try {
+      localStorage.setItem(LS_SCALE_LOCK, JSON.stringify({
+        root: scaleLockRoot, name: scaleLockName, intervals: scaleLockIntervals
+      }));
+    } catch(_e) {}
+  }
+
+  function loadScaleLockFromLS() {
+    try {
+      var raw = localStorage.getItem(LS_SCALE_LOCK);
+      if (!raw) return;
+      var d = JSON.parse(raw);
+      if (typeof d.root === 'number' && d.root >= 0 && d.root < 12) scaleLockRoot = d.root;
+      if (typeof d.name === 'string' && SCALES[d.name]) {
+        scaleLockName = d.name;
+        scaleLockIntervals = SCALES[d.name].slice();
+      }
+      if (Array.isArray(d.intervals) && d.intervals.length > 0)
+        scaleLockIntervals = d.intervals.filter(function(x) { return Number.isInteger(x) && x >= 0 && x < 12; });
+    } catch(_e) {}
+  }
+
+  function initScaleLockUI() {
+    loadScaleLockFromLS();
+    initScaleLockSnaps();
+    // Root buttons
+    var rootContainer = document.getElementById('scaleRootBtns');
+    for (var n = 0; n < 12; n++) {
+      (function(root) {
+        var isBlack = BLACK_KEY_INDICES.indexOf(root) !== -1;
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'scale-root-btn' + (isBlack ? ' is-black' : '');
+        btn.textContent = NOTE_NAMES[root];
+        btn.dataset.root = String(root);
+        btn.addEventListener('click', function() {
+          scaleLockRoot = root;
+          saveScaleLockToLS();
+          updateScaleLockUI();
+          reapplyScaleLock();
+        });
+        rootContainer.appendChild(btn);
+      })(n);
+    }
+    // Scale dropdown
+    var sel = document.getElementById('scaleSelect');
+    SCALE_NAMES.forEach(function(name) {
+      var opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    sel.value = scaleLockName;
+    sel.addEventListener('change', function() {
+      scaleLockName = sel.value;
+      scaleLockIntervals = SCALES[scaleLockName].slice();
+      saveScaleLockToLS();
+      updateScaleLockUI();
+      reapplyScaleLock();
+    });
+    // Toggle
+    document.getElementById('btnScaleLockToggle').addEventListener('click', function() {
+      if (scaleLockEnabled) disableScaleLock(); else enableScaleLock();
+    });
+    updateScaleLockUI();
+  }
+  initScaleLockUI();
+
+  // ── Nudge ──────────────────────────────────────────────────────────
+  /**
+   * Nudge the pattern by one step.
+   * mode: 'pitch' | 'octave' | 'accent' | 'slide' | 'ratchet' | 'time' | 'all'
+   * direction: +1 = forward (content shifts right, last step wraps to first)
+   *            -1 = backward (content shifts left, first step wraps to last)
+   * Locked steps are fixed anchors; unlocked steps rotate among themselves.
+   *
+   * NOTE-step modes (pitch/octave/accent/slide/ratchet): operate only on unlocked NOTE steps.
+   * time:  rotates time values + ratchets among all unlocked steps; pitches reflow.
+   * all:   rotates every attribute (time + pitch byte + ratchet) as a unit.
+   */
+  function nudgePattern(blob, len, mode, direction) {
+    if (len < 2) return;
+
+    // ── Helpers shared by NOTE-step modes ──────────────────────────
+    function noteUnlocked() {
+      var a = [];
+      for (var s = 0; s < len; s++)
+        if (getTime(blob, s) === 1 && !getStepLock(blob, s)) a.push(s);
+      return a;
+    }
+    function rotate(arr) {
+      if (direction > 0) arr.unshift(arr.pop());
+      else               arr.push(arr.shift());
+    }
+
+    if (mode === 'pitch') {
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var pitches  = ns.map(function(s) { return blob[s]; });
+      var ratchets = ns.map(function(s) { return getRatchet(blob, s); });
+      rotate(pitches); rotate(ratchets);
+      for (var i = 0; i < ns.length; i++) {
+        blob[ns[i]] = pitches[i];
+        setRatchet(blob, ns[i], ratchets[i]);
+      }
+
+    } else if (mode === 'octave') {
+      // Rotate the packed octave button (0–3) among NOTE steps; key and flags stay put.
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var octs = ns.map(function(s) { return Math.floor((blob[s] & 0x3f) / 13); });
+      rotate(octs);
+      for (var i = 0; i < ns.length; i++) {
+        var key   = (blob[ns[i]] & 0x3f) % 13;
+        var flags = blob[ns[i]] & 0xc0;
+        blob[ns[i]] = (key + 13 * octs[i]) | flags;
+      }
+
+    } else if (mode === 'accent') {
+      // Rotate accent flags (bit 6) among NOTE steps.
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var accs = ns.map(function(s) { return (blob[s] >> 6) & 1; });
+      rotate(accs);
+      for (var i = 0; i < ns.length; i++)
+        blob[ns[i]] = (blob[ns[i]] & 0xbf) | (accs[i] << 6);
+
+    } else if (mode === 'slide') {
+      // Rotate slide flags (bit 7) among NOTE steps.
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var sls = ns.map(function(s) { return (blob[s] >> 7) & 1; });
+      rotate(sls);
+      for (var i = 0; i < ns.length; i++)
+        blob[ns[i]] = (blob[ns[i]] & 0x7f) | (sls[i] << 7);
+
+    } else if (mode === 'ratchet') {
+      // Rotate ratchet values among NOTE steps.
+      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var rats = ns.map(function(s) { return getRatchet(blob, s); });
+      rotate(rats);
+      for (var i = 0; i < ns.length; i++) setRatchet(blob, ns[i], rats[i]);
+
+    } else if (mode === 'time') {
+      // Rotate time values + ratchets among all unlocked steps; pitches reflow.
+      var ul = [];
+      for (var s = 0; s < len; s++) if (!getStepLock(blob, s)) ul.push(s);
+      if (ul.length < 2) return;
+      var timesBefore = snapshotTimes(blob, len);
+      var pitchState  = snapshotPitchState(blob, len);
+      var times    = ul.map(function(s) { return getTime(blob, s); });
+      var ratchets = ul.map(function(s) { return getRatchet(blob, s); });
+      rotate(times); rotate(ratchets);
+      for (var i = 0; i < ul.length; i++) {
+        setTime(blob, ul[i], times[i]);
+        setRatchet(blob, ul[i], ratchets[i]);
+      }
+      normalizePatternTimes(blob, len);
+      reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+      for (var s = 0; s < len; s++) if (getTime(blob, s) !== 1) setRatchet(blob, s, 0);
+
+    } else { // 'all' — rotate every attribute as a unit
+      var ul = [];
+      for (var s = 0; s < len; s++) if (!getStepLock(blob, s)) ul.push(s);
+      if (ul.length < 2) return;
+      var steps = ul.map(function(s) {
+        return { t: getTime(blob, s), p: blob[s], r: getRatchet(blob, s) };
+      });
+      rotate(steps);
+      for (var i = 0; i < ul.length; i++) {
+        setTime(blob, ul[i], steps[i].t);
+        blob[ul[i]] = steps[i].p;
+        setRatchet(blob, ul[i], steps[i].r);
+      }
+      normalizePatternTimes(blob, len);
+      for (var s = 0; s < len; s++) {
+        if (getTime(blob, s) !== 1) { blob[s] = 0xff; setRatchet(blob, s, 0); }
+      }
+    }
+  }
+
+  function doNudge(mode, direction) {
+    var blob = activeBlob(), len = currentPatLen();
+    nudgePattern(blob, len, mode, direction);
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    if (midiOut) scheduleLiveSend();
+    var arrow = direction > 0 ? '\u2192' : '\u2190';
+    log('Nudge ' + mode + ' ' + arrow, 'log-ack');
+  }
+
+  document.getElementById('btnNudgePitchL').onclick   = function() { doNudge('pitch',   -1); };
+  document.getElementById('btnNudgePitchR').onclick   = function() { doNudge('pitch',   +1); };
+  document.getElementById('btnNudgeOctaveL').onclick  = function() { doNudge('octave',  -1); };
+  document.getElementById('btnNudgeOctaveR').onclick  = function() { doNudge('octave',  +1); };
+  document.getElementById('btnNudgeAccentL').onclick  = function() { doNudge('accent',  -1); };
+  document.getElementById('btnNudgeAccentR').onclick  = function() { doNudge('accent',  +1); };
+  document.getElementById('btnNudgeSlideL').onclick   = function() { doNudge('slide',   -1); };
+  document.getElementById('btnNudgeSlideR').onclick   = function() { doNudge('slide',   +1); };
+  document.getElementById('btnNudgeRatchetL').onclick = function() { doNudge('ratchet', -1); };
+  document.getElementById('btnNudgeRatchetR').onclick = function() { doNudge('ratchet', +1); };
+  document.getElementById('btnNudgeTimeL').onclick    = function() { doNudge('time',    -1); };
+  document.getElementById('btnNudgeTimeR').onclick    = function() { doNudge('time',    +1); };
+  document.getElementById('btnNudgeAllL').onclick     = function() { doNudge('all',     -1); };
+  document.getElementById('btnNudgeAllR').onclick     = function() { doNudge('all',     +1); };
+
+  document.getElementById('btnSave303').onclick = function() {
+    if (!midiOut) return;
+    syncBlob();
+    saveAckPending = true;
+    sendPattern(activePat & 15, activeBlob());
+    log('\u2190 Save pattern ' + (activePat+1) + ' to 303 (SysEx)', 'log-syx');
+  };
+
+  // ── Request ────────────────────────────────────────────────────────
+  document.getElementById('btnReq').onclick = function() {
+    if (!midiIn) { log('Select MIDI input first', 'log-err'); return; }
+    expectDump = 0;
+    requestPattern(activePat & 15);
+    log('\u2192 Request pattern ' + (activePat+1), 'log-syx');
+  };
+  function startBulkRequest(g) {
+    patternBulkTargetGroup = g;
+    expectDump = 16;
+    bulkNextPat = 1; // after pattern 0 arrives, request 1, then 2, etc.
+    sendSysex(new Uint8Array([0x7d, 0x10, 0x00])); // request pattern 0 first
+  }
+  document.getElementById('btnReqAll').onclick = function() {
+    if (!midiOut) { log('All 16: no midiOut — connect MIDI first', 'log-err'); return; }
+    if (!midiIn)  { log('All 16: no midiIn — select input port', 'log-err'); return; }
+    log('All 16: requesting patterns 0-15 sequentially', 'log-syx');
+    startBulkRequest(activeGroup);
+  };
+
+  function syncLiveIndicator() {
+    var cb = document.getElementById('chkLive');
+    var label = document.getElementById('liveToggleLabel');
+    liveEnabled = cb && cb.checked;
+    var on = liveEnabled ? 'Live on — pattern pushes to 303 while playing' : 'Live off — tap to push edits while the sequencer runs';
+    if (label) {
+      label.classList.toggle('is-on', !!liveEnabled);
+      label.title = on;
+      label.setAttribute('aria-label', on);
+    }
+  }
+  document.getElementById('chkLive').addEventListener('change', syncLiveIndicator);
+  syncLiveIndicator();
+
+  function syncReflectIndicator() {
+    var cb = document.getElementById('chkReflect');
+    var label = document.getElementById('reflectToggleLabel');
+    reflect303Enabled = cb && cb.checked;
+    var tip = reflect303Enabled
+      ? 'Reflect on — hardware edits are mirrored here in real time'
+      : 'Reflect off — tap to mirror 303 hardware edits into the web editor';
+    if (label) {
+      label.classList.toggle('is-on', !!reflect303Enabled);
+      label.title = tip;
+      label.setAttribute('aria-label', tip);
+    }
+  }
+  document.getElementById('chkReflect').addEventListener('change', syncReflectIndicator);
+  syncReflectIndicator();
+
+  document.getElementById('patLen').addEventListener('change', function() {
+    var blob = activeBlob();
+    var oldLen = Math.min(groupMaxSteps(), Math.max(1, blob[127] | 0));
+    var newLen = Math.min(groupMaxSteps(), Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    migratePitchStashOnResize(blob, oldLen, newLen);
+    blob[127] = newLen;
+    syncBlob();
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid(); recomputeDirty(); scheduleLiveSend();
+  });
+
+  // ── patLen +/- buttons ────────────────────────────────────────────
+  function nudgePatLen(delta) {
+    var el = document.getElementById('patLen');
+    var cur = Math.min(groupMaxSteps(), Math.max(1, Number(el.value) | 0));
+    var next = Math.min(groupMaxSteps(), Math.max(1, cur + delta));
+    if (next === cur) return;
+    el.value = String(next);
+    el.dispatchEvent(new Event('change'));
+  }
+  document.getElementById('patLenDec').addEventListener('click', function() { nudgePatLen(-1); });
+  document.getElementById('patLenInc').addEventListener('click', function() { nudgePatLen(1); });
+
+  // ── patLen drag-to-scrub ───────────────────────────────────────────
+  (function() {
+    var el = document.getElementById('patLen');
+    var dragStartY = 0, dragStartVal = 0, dragging = false, moved = false;
+    el.style.cursor = 'ns-resize';
+    el.addEventListener('pointerdown', function(e) {
+      if (e.button !== 0) return;
+      dragStartY   = e.clientY;
+      dragStartVal = Math.min(groupMaxSteps(), Math.max(1, Number(el.value) | 0));
+      dragging = true;
+      moved    = false;
+      el.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    el.addEventListener('pointermove', function(e) {
+      if (!dragging) return;
+      var delta = Math.round((dragStartY - e.clientY) / 4); // 4px per step
+      if (delta !== 0) moved = true;
+      var next = Math.min(groupMaxSteps(), Math.max(1, dragStartVal + delta));
+      if (Number(el.value) !== next) {
+        el.value = String(next);
+        el.dispatchEvent(new Event('change'));
+      }
+    });
+    el.addEventListener('pointerup', function(e) {
+      dragging = false;
+      if (moved) e.preventDefault(); // suppress click-to-focus text cursor
+    });
+  })();
+  // ── Config panel ───────────────────────────────────────────────────
+  document.getElementById('btnCfgRead').onclick = function() {
+    sendCfgRead();
+    log('\u2192 Request config from 303', 'log-syx');
+  };
+  document.getElementById('btnCfgWrite').onclick = function() {
+    var ch   = parseInt(document.getElementById('cfgMidiCh').value,   10);
+    var clk  = parseInt(document.getElementById('cfgMidiClk').value,  10);
+    var thru = parseInt(document.getElementById('cfgMidiThru').value, 10);
+    var bri  = parseInt(document.getElementById('cfgLedBri').value,   10);
+    var fl   = (clk & 1) | ((thru & 1) << 1);
+    sendCfgWrite(ch, fl, currentDirection, bri);
+    log('\u2190 Set config: ch=' + ch + ' clock_rx=' + clk + ' thru=' + thru + ' dir=' + (kDirNames[currentDirection] || currentDirection) + ' bri=' + bri, 'log-syx');
+  };
+
+  // Direction buttons
+  document.querySelectorAll('.dir-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var dir = parseInt(btn.getAttribute('data-dir'), 10);
+      setActiveDirection(dir);
+      if (midiOut) {
+        var ch   = parseInt(document.getElementById('cfgMidiCh').value,   10);
+        var clk  = parseInt(document.getElementById('cfgMidiClk').value,  10);
+        var thru = parseInt(document.getElementById('cfgMidiThru').value, 10);
+        var bri  = parseInt(document.getElementById('cfgLedBri').value,   10);
+        var fl   = (clk & 1) | ((thru & 1) << 1);
+        sendCfgWrite(ch, fl, dir, bri);
+        log('\u2190 Direction: ' + (kDirNames[dir] || dir), 'log-syx');
+      }
+    });
+  });
+
+  // ── MIDI connect ───────────────────────────────────────────────────
+  document.getElementById('btnMidi').onclick = async function() {
+    if (!navigator.requestMIDIAccess) { log('Web MIDI unavailable (use Chrome/Edge)', 'log-err'); return; }
+    try {
+      midiAccess = await navigator.requestMIDIAccess({ sysex: true });
+      bindPorts(midiAccess);
+      midiAccess.onstatechange = function() { bindPorts(midiAccess); };
+      log('MIDI ready — Computer Out \u2192 303 MIDI In  |  303 MIDI Out \u2192 Computer In', 'log-ack');
+    } catch(e) { log('MIDI denied: ' + e, 'log-err'); }
+  };
+
+  document.getElementById('selOut').onchange =
+  document.getElementById('selIn').onchange  =
+  document.getElementById('selKbd').onchange = function() { if (midiAccess) bindPorts(midiAccess); };
+
+  (function initPitchModeUi() {
+    var cb = document.getElementById('pitchModeFull');
+    if (!cb) return;
+    cb.checked = pitchEditorFullRange;
+    cb.addEventListener('change', function() {
+      pitchEditorFullRange = !!cb.checked;
+      try { localStorage.setItem(LS_PITCH_MODE, pitchEditorFullRange ? 'full' : 'og'); } catch (e) {}
+      renderGrid();
+      recomputeDirty();
+      scheduleLiveSend();
+    });
+  })();
+
+  /** Re-apply pitch knob layout after viewport / grid size changes (resize, zoom). */
+  function reflowPitchKnobsInGrid() {
+    var blob = activeBlob();
+    var len = currentPatLen();
+    var cards = document.querySelectorAll('#seqGrid .step-card');
+    for (var i = 0; i < cards.length; i++) {
+      var wrap = cards[i].querySelector('.pitch-knob-wrap');
+      if (!wrap) continue;
+      var nameEl = cards[i].querySelector('.step-name');
+      var si = parseInt(cards[i].dataset.s, 10);
+      if (isNaN(si)) continue;
+      layoutPitchKnob(wrap, nameEl, blob, si, len);
+    }
+  }
+  (function bindGridResizeReflow() {
+    var gridWrap = document.querySelector('.seq-grid-wrap');
+    if (!gridWrap) return;
+    var raf = null;
+    function schedule() {
+      if (raf != null) return;
+      raf = requestAnimationFrame(function() {
+        raf = null;
+        reflowPitchKnobsInGrid();
+      });
+    }
+    if (typeof ResizeObserver !== 'undefined')
+      new ResizeObserver(schedule).observe(gridWrap);
+    window.addEventListener('resize', schedule, { passive: true });
+  })();
+
+  // ── Play Buddy ────────────────────────────────────────────────────────
+  // chance: probability (0-100%) this category fires for a given note
+  // amount: magnitude of change (0-100%)
+  var BUDDY_CAT_DEFS = [
+    { id: 'pitch',   label: 'Pitch',   on: true,  chance: 60, amount: 40 },
+    { id: 'octave',  label: 'Octave',  on: true,  chance: 30, amount: 30 },
+    { id: 'timing',  label: 'Timing',  on: true,  chance: 30, amount: 40 },
+    { id: 'accent',  label: 'Accent',  on: true,  chance: 20, amount: 20 },
+    { id: 'slide',   label: 'Slide',   on: true,  chance: 15, amount: 15 },
+    { id: 'ratchet', label: 'Ratchet', on: false, chance: 20, amount: 50 },
+    { id: 'length',  label: 'Length',  on: false, chance: 30, amount: 30 }
+  ];
+  var buddyCatEnabled = {};
+  var buddyCatChance  = {};
+  var buddyCatAmount  = {};
+  BUDDY_CAT_DEFS.forEach(function(d) {
+    buddyCatEnabled[d.id] = d.on;
+    buddyCatChance[d.id]  = d.chance;
+    buddyCatAmount[d.id]  = d.amount;
+  });
+
+  var buddyRunning    = false;
+  var buddyStepCount  = 0;
+  var buddyBaseline   = null;
+  var buddyBaselineG  = -1;
+  var buddyBaselineP  = -1;
+
+  // Build two-slider category rows
+  (function() {
+    var catsEl = document.getElementById('buddyCatsEl');
+    BUDDY_CAT_DEFS.forEach(function(def) {
+      var row = document.createElement('div');
+      row.className = 'buddy-cat';
+
+      var chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.id = 'bchk_' + def.id;
+      chk.checked = def.on;
+
+      var nameLbl = document.createElement('label');
+      nameLbl.htmlFor = 'bchk_' + def.id;
+      nameLbl.className = 'buddy-cat-name' + (def.on ? '' : ' is-off');
+      nameLbl.textContent = def.label;
+
+      function makeSliderPair(labelText, initVal, storageKey, storeObj) {
+        var pair = document.createElement('div');
+        pair.className = 'buddy-cat-pair';
+
+        var lbl = document.createElement('span');
+        lbl.className = 'buddy-cat-pair-lbl';
+        lbl.textContent = labelText;
+
+        var slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = '0'; slider.max = '100'; slider.step = '5';
+        slider.value = String(initVal);
+        slider.disabled = !def.on;
+
+        var valLbl = document.createElement('span');
+        valLbl.className = 'buddy-cat-val';
+        valLbl.textContent = initVal + '%';
+
+        slider.addEventListener('input', function() {
+          storeObj[storageKey] = parseInt(this.value, 10);
+          valLbl.textContent = this.value + '%';
+        });
+
+        pair.appendChild(lbl);
+        pair.appendChild(slider);
+        pair.appendChild(valLbl);
+        return { el: pair, slider: slider };
+      }
+
+      var chancePair = makeSliderPair('Chance', def.chance, def.id, buddyCatChance);
+      var amountPair = makeSliderPair('Amount', def.amount, def.id, buddyCatAmount);
+
+      chk.addEventListener('change', function() {
+        buddyCatEnabled[def.id] = this.checked;
+        nameLbl.classList.toggle('is-off', !this.checked);
+        chancePair.slider.disabled = !this.checked;
+        amountPair.slider.disabled = !this.checked;
+      });
+
+      row.appendChild(chk);
+      row.appendChild(nameLbl);
+      row.appendChild(chancePair.el);
+      row.appendChild(amountPair.el);
+      catsEl.appendChild(row);
+    });
+  })();
+
+  // Per-step apply functions (step is pre-selected by buddyTick)
+  function buddyApplyPitchToStep(blob, step, amount) {
+    var maxDrift = Math.max(1, Math.round(amount / 100 * 8));
+    var curLin = unpackLinear(blob[step] & 0x3f);
+    var drift = Math.round((Math.random() * 2 - 1) * maxDrift);
+    if (drift === 0) drift = Math.random() < 0.5 ? 1 : -1;
+    var newLin = Math.max(0, Math.min(48, curLin + drift));
+    if (scaleLockEnabled) newLin = snapLinToScale(newLin);
+    blob[step] = linearToPacked(newLin) | (blob[step] & 0xc0);
+    return true;
+  }
+
+  function buddyApplyOctaveToStep(blob, step, amount) {
+    var e = blob[step] & 0x3f;
+    var key = e % 13, oct = Math.floor(e / 13);
+    var newOct = amount > 60
+      ? Math.floor(Math.random() * 4)
+      : Math.max(0, Math.min(3, oct + (Math.random() < 0.5 ? -1 : 1)));
+    blob[step] = Math.min(key + 13 * newOct, PITCH_MAX) | (blob[step] & 0xc0);
+    return true;
+  }
+
+  function buddyApplyTimingToStep(blob, len, step, amount) {
+    var timesBefore = snapshotTimes(blob, len);
+    var pitchState  = snapshotPitchState(blob, len);
+    var cur = getTime(blob, step);
+    // Low amount: note↔tie only; high amount: include rest
+    var opts = amount < 40
+      ? (cur === 1 ? [2] : cur === 2 ? [1] : [1])
+      : [0, 1, 2].filter(function(v) { return v !== cur; });
+    setTime(blob, step, opts[Math.floor(Math.random() * opts.length)]);
+    normalizePatternTimes(blob, len);
+    reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+    return true;
+  }
+
+  function buddyApplyAccentToStep(blob, step, amount) {
+    // Amount biases towards on (>50) or off (<50); 50 = pure toggle
+    var wantOn = Math.random() * 100 < amount;
+    var isOn   = !!(blob[step] & 0x40);
+    if (wantOn === isOn) return false;
+    blob[step] ^= 0x40;
+    return true;
+  }
+
+  function buddyApplySlideToStep(blob, step, amount) {
+    var wantOn = Math.random() * 100 < amount;
+    var isOn   = !!(blob[step] & 0x80);
+    if (wantOn === isOn) return false;
+    blob[step] ^= 0x80;
+    return true;
+  }
+
+  function buddyApplyRatchetToStep(blob, step, amount) {
+    if (blob[step] & 0x80) return false; // skip slide steps
+    var maxVal = amount > 50 ? 2 : 1;    // high amount allows 3x
+    setRatchet(blob, step, (getRatchet(blob, step) + 1) % (maxVal + 1));
+    return true;
+  }
+
+  function buddyApplyLength(blob, amount) {
+    var len = blob[127] | 0;
+    var maxDelta = Math.max(1, Math.round(amount / 100 * 8));
+    var delta = Math.round((Math.random() * 2 - 1) * maxDelta);
+    if (delta === 0) delta = Math.random() < 0.5 ? 1 : -1;
+    var newLen = Math.max(1, Math.min(groupMaxSteps(), len + delta));
+    if (newLen === len) return false;
+    migratePitchStashOnResize(blob, len, newLen);
+    blob[127] = newLen;
+    normalizePatternTimes(blob, newLen);
+    return true;
+  }
+
+  function buddyTick() {
+    var blob = activeBlob();
+    var len  = blob[127] | 0;
+    var changesPerNote = parseInt(document.getElementById('buddyChangesPerTick').value, 10) || 1;
+    var notesPerTick   = Math.max(1, Math.min(len, parseInt(document.getElementById('buddyNotesPerTick').value, 10) || 1));
+
+    var changed = false;
+
+    // Length is pattern-level: one chance per tick regardless of note selection
+    if (buddyCatEnabled['length'] && Math.random() * 100 < buddyCatChance['length']) {
+      if (buddyApplyLength(blob, buddyCatAmount['length'])) {
+        len = blob[127] | 0;
+        changed = true;
+      }
+    }
+
+    // Collect eligible note steps
+    var noteSteps = [];
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) === 1 && blob[s] !== 0xff && !isStepLocked(blob, s)) noteSteps.push(s);
+    }
+
+    // For timing changes we also want non-note steps (any unlocked step)
+    var anySteps = [];
+    for (var s = 0; s < len; s++) {
+      if (!isStepLocked(blob, s)) anySteps.push(s);
+    }
+
+    if (noteSteps.length === 0 && anySteps.length === 0) {
+      if (changed) { document.getElementById('patLen').value = String(blob[127]); pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty(); if (liveEnabled && midiOut) scheduleLiveSend(); }
+      return;
+    }
+
+    // Shuffle note steps and pick notesPerTick
+    var shuffled = noteSteps.slice();
+    for (var i = shuffled.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = shuffled[i]; shuffled[i] = shuffled[j]; shuffled[j] = tmp;
+    }
+    var picked = shuffled.slice(0, Math.min(notesPerTick, shuffled.length));
+
+    var noteCats = BUDDY_CAT_DEFS.filter(function(d) { return d.id !== 'length' && d.id !== 'timing' && buddyCatEnabled[d.id]; });
+    var timingEnabled = buddyCatEnabled['timing'];
+
+    picked.forEach(function(step) {
+      // Hard lock guard: skip this note if locked (defensive re-check after possible reflow)
+      if (isStepLocked(blob, step)) return;
+
+      // Shuffle non-length note categories for this note
+      var cats = noteCats.slice();
+      for (var i = cats.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var tmp = cats[i]; cats[i] = cats[j]; cats[j] = tmp;
+      }
+      var applied = 0;
+
+      // Timing: re-collect unlocked steps fresh so we never land on a locked step
+      if (timingEnabled && applied < changesPerNote && Math.random() * 100 < buddyCatChance['timing']) {
+        var unlockedNow = [];
+        for (var s = 0; s < len; s++) { if (!isStepLocked(blob, s)) unlockedNow.push(s); }
+        if (unlockedNow.length > 0) {
+          var tStep = unlockedNow[Math.floor(Math.random() * unlockedNow.length)];
+          if (buddyApplyTimingToStep(blob, len, tStep, buddyCatAmount['timing'])) {
+            len = blob[127] | 0;
+            changed = true;
+            applied++;
+          }
+        }
+      }
+
+      for (var ci = 0; ci < cats.length && applied < changesPerNote; ci++) {
+        // Re-check lock before each variable change in case reflow shifted things
+        if (isStepLocked(blob, step)) break;
+        var cat = cats[ci].id;
+        if (Math.random() * 100 >= buddyCatChance[cat]) continue;
+        var amt = buddyCatAmount[cat];
+        var ok  = false;
+        switch (cat) {
+          case 'pitch':   ok = buddyApplyPitchToStep(blob, step, amt);   break;
+          case 'octave':  ok = buddyApplyOctaveToStep(blob, step, amt);  break;
+          case 'accent':  ok = buddyApplyAccentToStep(blob, step, amt);  break;
+          case 'slide':   ok = buddyApplySlideToStep(blob, step, amt);   break;
+          case 'ratchet': ok = buddyApplyRatchetToStep(blob, step, amt); break;
+        }
+        if (ok) { changed = true; applied++; }
+      }
+    });
+
+    if (changed) {
+      document.getElementById('patLen').value = String(blob[127]);
+      pushHistory(activeGroup, activePat);
+      saveGroupsToLS();
+      renderGrid();
+      recomputeDirty();
+      if (liveEnabled && midiOut) scheduleLiveSend();
+      log('Play Buddy: tick', 'log-ack');
+    }
+  }
+
+  function buddyUpdateUI() {
+    var btn = document.getElementById('btnBuddyToggle');
+    var runLbl = document.getElementById('buddyRunLbl');
+    btn.textContent = buddyRunning ? 'Stop' : 'Start';
+    btn.classList.toggle('btn-primary', !buddyRunning);
+    runLbl.textContent = buddyRunning ? 'Running' : 'Off';
+    runLbl.classList.toggle('is-on', buddyRunning);
+    document.getElementById('btnBuddyRestore').disabled = !buddyBaseline;
+  }
+
+  document.getElementById('btnBuddyToggle').addEventListener('click', function() {
+    if (buddyRunning) {
+      buddyRunning = false;
+      buddyStepCount = 0;
+      buddyUpdateUI();
+      log('Play Buddy stopped', 'log-ack');
+    } else {
+      buddyBaseline  = cloneU8(activeBlob());
+      buddyBaselineG = activeGroup;
+      buddyBaselineP = activePat;
+      buddyStepCount = 0;
+      buddyRunning   = true;
+      buddyUpdateUI();
+      log('Play Buddy started (every ' + (parseInt(document.getElementById('buddyInterval').value, 10) || 8) + ' steps)', 'log-ack');
+    }
+  });
+
+  document.getElementById('btnBuddyRestore').addEventListener('click', function() {
+    if (!buddyBaseline) return;
+    var g = buddyBaselineG, p = buddyBaselineP;
+    groups[g][p].set(buddyBaseline);
+    if (g === activeGroup && p === activePat) {
+      document.getElementById('patLen').value = String(buddyBaseline[127]);
+      pushHistory(activeGroup, activePat);
+      saveGroupsToLS();
+      renderGrid();
+      recomputeDirty();
+      if (liveEnabled && midiOut) scheduleLiveSend();
+    }
+    log('Play Buddy: restored original G' + (g+1) + ' P' + (p+1), 'log-ack');
+  });
+
+  // Draggable number inputs
+  (function() {
+    function makeDraggable(id, min, max, fallback) {
+      var el = document.getElementById(id);
+      var dragStartY, dragStartVal, dragging = false;
+      el.addEventListener('pointerdown', function(e) {
+        if (e.button !== 0) return;
+        dragStartY   = e.clientY;
+        dragStartVal = parseInt(el.value, 10) || fallback;
+        dragging     = true;
+        el.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
+      el.addEventListener('pointermove', function(e) {
+        if (!dragging) return;
+        var v = Math.max(min, Math.min(max, dragStartVal + Math.round((dragStartY - e.clientY) / 4)));
+        if (parseInt(el.value, 10) !== v) { el.value = String(v); buddyStepCount = 0; }
+      });
+      el.addEventListener('pointerup',     function() { dragging = false; });
+      el.addEventListener('pointercancel', function() { dragging = false; });
+      el.addEventListener('change', function() {
+        var v = Math.max(min, Math.min(max, parseInt(this.value, 10) || fallback));
+        this.value = String(v);
+        buddyStepCount = 0;
+      });
+    }
+    makeDraggable('buddyInterval',    1, 64, 8);
+    makeDraggable('buddyNotesPerTick', 1, 64, 1);
+  })();
+
+  document.getElementById('buddyBar').addEventListener('click', function() {
+    var body = document.getElementById('buddyBody');
+    var open = body.classList.toggle('is-open');
+    this.classList.toggle('is-open', open);
+  });
+
+  // ── Init ────────────────────────────────────────────────────────────
+  refreshAllPills();
+  renderGrid();
+  recomputeDirty();
+
+})();
+</script>
+</body>
+</html>

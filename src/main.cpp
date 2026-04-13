@@ -977,11 +977,10 @@ void loop() {
             if (inputs[DOWN_KEY].rising()) {
               // NOTE
               sequence_set_time_at(seq, si, 1);
-              if (seq.pitch_is_empty(si)) seq.pitch[si] = PITCH_DEFAULT;
               engine.stale = true; tchanged = true;
             }
             if (inputs[UP_KEY].rising()) {
-              // TIE — blocked if previous step is a rest (no note to tie from)
+              // TIE -- blocked if previous step is a rest (no note to tie from)
               const uint8_t prev_t = (si > 0) ? seq.time(uint8_t(si - 1)) : 0;
               if (prev_t != 0) {
                 sequence_set_time_at(seq, si, 2);
@@ -1001,14 +1000,16 @@ void loop() {
             }
             if (tchanged) {
               if (!clk_run) {
-                // Stopped: reflow pitches and send full pattern update.
-                const uint8_t saved_tp = seq.time_pos;
-                seq.time_pos = si;
-                seq.reflow_pitches_after_time_change(old_t);
-                seq.time_pos = saved_tp;
+                seq.reflow_pitches_at(si, old_t);
+                if (seq.time(si) == 1 && seq.pitch_is_empty(si))
+                  seq.pitch[si] = PITCH_DEFAULT;
                 midi_send_pattern_update(engine.get_patsel());
               } else {
-                // Running: lightweight single-step update only.
+                // Running: just send the edited step. No reflow, no heavy
+                // computation. Matches how the web GUI edits work --
+                // the web GUI does its own reflow in JS.
+                if (seq.time(si) == 1 && seq.pitch_is_empty(si))
+                  seq.pitch[si] = PITCH_DEFAULT;
                 midi_send_step_update(engine.get_patsel(), si,
                     seq.pitch[si], seq.time(si));
               }

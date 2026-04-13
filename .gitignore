@@ -8,7 +8,5 @@
 docs/
 release/
 
-tools/web-pattern-edit/
-
 # macOS
 .DS_Store

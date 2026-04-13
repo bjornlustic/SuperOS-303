@@ -301,7 +301,9 @@ struct Sequence {
   /// Stream includes non-NOTE slots with user-written pitch data so pitches written
   /// via PITCH_MODE survive the first TIME_MODE reflow.
   bool reflow_pitches_after_time_change(uint8_t old_time) {
-    const uint8_t tp = uint8_t(time_pos & (MAX_STEPS - 1));
+    return reflow_pitches_at(uint8_t(time_pos & (MAX_STEPS - 1)), old_time);
+  }
+  bool reflow_pitches_at(uint8_t tp, uint8_t old_time) {
     const uint8_t new_t = time(tp);
     if ((old_time == 1) == (new_t == 1)) return false; // NOTE↔NOTE or non↔non: nothing to do
 
