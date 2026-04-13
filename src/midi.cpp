@@ -573,6 +573,12 @@ void midi_send_pattern_update(uint8_t pat) {
   enqueue_pattern_reply(pat & 0x0F);
 }
 
+void midi_send_pattern_steps(uint8_t pat, const Sequence &seq, uint8_t len) {
+  pat &= 0x0F;
+  for (uint8_t k = 0; k < len; ++k)
+    midi_send_step_update(pat, k, seq.pitch[k], seq.time(k));
+}
+
 // --- Step lock broadcast (SysEx 0x19) -------------------------------------------
 void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked) {
   const uint8_t inner[5] = {0x7D, 0x19, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), locked ? 1u : 0u};

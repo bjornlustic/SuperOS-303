@@ -16,6 +16,17 @@
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 #define CONSTRAIN(x, lb, ub) do { if (x < (lb)) x = lb; else if (x > (ub)) x = ub; } while (0)
 
+// Fast 16-bit xorshift PRNG — avoids the expensive 32-bit random() on AVR
+// which can block the main loop long enough to miss DIN sync clock pulses.
+static uint16_t s_fast_rng = 1;
+static inline void fast_rand_seed() { s_fast_rng = uint16_t(micros()) | 1; }
+static inline uint8_t fast_rand(uint8_t n) {
+  s_fast_rng ^= s_fast_rng << 7;
+  s_fast_rng ^= s_fast_rng >> 9;
+  s_fast_rng ^= s_fast_rng << 8;
+  return uint8_t(s_fast_rng % n);
+}
+
 static constexpr int MAX_STEPS = 64;
 static constexpr int MAX_USER_STEPS = 16;
 static constexpr int NUM_GROUPS = 4;
@@ -983,7 +994,7 @@ struct Engine {
 
   /// Ratchet distribution: ~50% none (1x), ~33% 2x, ~17% 3x.
   static uint8_t random_ratchet_val() {
-    const uint8_t r = uint8_t(random(12));
+    const uint8_t r = fast_rand(12);
     return r < 6 ? 0 : r < 10 ? 1 : 2;
   }
 
@@ -991,26 +1002,25 @@ struct Engine {
   void RandomizeFullPattern() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
+    fast_rand_seed();
     // First pass: random time data, no ties after rests, no leading tie
     uint8_t prev = 1;
     for (uint8_t i = 0; i < len; i++) {
       uint8_t t;
-      if (i == 0)       t = uint8_t(random(2)) ? 1 : 0;  // note or rest
-      else if (prev==0) t = uint8_t(random(2)) ? 1 : 0;  // after rest: note or rest
-      else              t = uint8_t(random(3));            // note, tie, or rest
-      s.time_pos = i;
-      s.SetTime(t);
+      if (i == 0)       t = fast_rand(2) ? 1 : 0;  // note or rest
+      else if (prev==0) t = fast_rand(2) ? 1 : 0;  // after rest: note or rest
+      else              t = fast_rand(3);            // note, tie, or rest
+      sequence_set_time_at(s, i, t);
       prev = t;
     }
     normalize_pattern_times(s);
     // Second pass: random pitches for NOTE steps; also randomize ratchets
     for (uint8_t i = 0; i < len; i++) {
       if (s.time(i) == 1) {
-        const uint8_t pk  = uint8_t(random(PITCH_PACK_MAX + 1));
-        const uint8_t acc = uint8_t(random(2)) ? 0x40 : 0;
-        const uint8_t sl  = uint8_t(random(2)) ? 0x80 : 0;
+        const uint8_t pk  = fast_rand(PITCH_PACK_MAX + 1);
+        const uint8_t acc = fast_rand(2) ? 0x40 : 0;
+        const uint8_t sl  = fast_rand(2) ? 0x80 : 0;
         s.pitch[i] = pk | acc | sl;
-        // Ratchet: 0=1x (most common), 1=2x, 2=3x, 3=4x; skip if slide
         s.set_ratchet_val(i, sl ? 0 : random_ratchet_val());
       } else {
         s.pitch[i] = PITCH_DEFAULT;
@@ -1060,11 +1070,12 @@ struct Engine {
   void RandomizePitchData() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
+    fast_rand_seed();
     for (uint8_t i = 0; i < len; i++) {
       if (s.time(i) == 1) {
-        const uint8_t pk  = uint8_t(random(PITCH_PACK_MAX + 1));
-        const uint8_t acc = uint8_t(random(2)) ? 0x40 : 0;
-        const uint8_t sl  = uint8_t(random(2)) ? 0x80 : 0;
+        const uint8_t pk  = fast_rand(PITCH_PACK_MAX + 1);
+        const uint8_t acc = fast_rand(2) ? 0x40 : 0;
+        const uint8_t sl  = fast_rand(2) ? 0x80 : 0;
         s.pitch[i] = pk | acc | sl;
         s.set_ratchet_val(i, sl ? 0 : random_ratchet_val());
       }
@@ -1076,15 +1087,14 @@ struct Engine {
   void RandomizeTimeData() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
+    fast_rand_seed();
     uint8_t prev = 1;
     for (uint8_t i = 0; i < len; i++) {
       uint8_t t;
-      if (i == 0)       t = uint8_t(random(2)) ? 1 : 0;
-      else if (prev==0) t = uint8_t(random(2)) ? 1 : 0;
-      else              t = uint8_t(random(3));
-      s.time_pos = i;
-      s.SetTime(t);
-      // Clear ratchet on any step that is no longer a plain NOTE
+      if (i == 0)       t = fast_rand(2) ? 1 : 0;
+      else if (prev==0) t = fast_rand(2) ? 1 : 0;
+      else              t = fast_rand(3);
+      sequence_set_time_at(s, i, t);
       if (t != 1) s.set_ratchet_val(i, 0);
       prev = t;
     }
@@ -1096,6 +1106,7 @@ struct Engine {
   void RandomizeRatchetData() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
+    fast_rand_seed();
     for (uint8_t i = 0; i < len; i++) {
       if (s.time(i) == 1 && !(s.pitch[i] & 0x80)) {
         // NOTE step without slide: randomize ratchet
@@ -1111,9 +1122,10 @@ struct Engine {
   void RandomizeAccentData() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
+    fast_rand_seed();
     for (uint8_t i = 0; i < len; i++) {
       if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
-        if (random(5) == 0)  // ~20%
+        if (fast_rand(5) == 0)  // ~20%
           s.pitch[i] |=  0x40;
         else
           s.pitch[i] &= ~0x40;
@@ -1129,15 +1141,15 @@ struct Engine {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
     if (len < 1) return;
-    const uint8_t passes = uint8_t(2 + random(3)); // 2..4 tweaks
+    fast_rand_seed();
+    const uint8_t passes = uint8_t(2 + fast_rand(3)); // 2..4 tweaks
     for (uint8_t n = 0; n < passes; ++n) {
-      const uint8_t i = uint8_t(random(len));
-      const uint8_t action = uint8_t(random(5));
+      const uint8_t i = fast_rand(len);
+      const uint8_t action = fast_rand(5);
       switch (action) {
         case 0: {
-          // Re-roll pitch on a NOTE step
           if (s.time(i) == 1) {
-            const uint8_t pk = uint8_t(random(PITCH_PACK_MAX + 1));
+            const uint8_t pk = fast_rand(PITCH_PACK_MAX + 1);
             s.pitch[i] = (s.pitch[i] & 0xC0) | pk;
           }
           break;
@@ -1160,15 +1172,14 @@ struct Engine {
           // Nudge time nibble: rest<->note (avoid creating rest->tie issues)
           const uint8_t t = s.time(i);
           const uint8_t nt = (t == 0) ? 1 : (t == 1) ? 0 : 1;
-          s.time_pos = i;
-          s.SetTime(nt);
+          sequence_set_time_at(s, i, nt);
           break;
         }
         case 4: {
           // Nudge semitone up or down on a NOTE step
           if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
             uint8_t lin = unpack_pitch_linear(s.pitch[i] & 0x3F);
-            const int dir = (random(2) ? 1 : -1);
+            const int dir = (fast_rand(2) ? 1 : -1);
             int nlin = int(lin) + dir;
             if (nlin < 0) nlin = 0;
             if (nlin > 48) nlin = 48;
@@ -1394,11 +1405,12 @@ struct Engine {
   void RandomizeSemitones() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
+    fast_rand_seed();
     for (uint8_t i = 0; i < len; ++i) {
       if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
         const uint8_t pk_old = s.pitch[i] & 0x3F;
         const uint8_t oct    = pk_old / 13;
-        const uint8_t new_k  = uint8_t(random(PITCH_KEY_HIGH_C + 1));
+        const uint8_t new_k  = fast_rand(PITCH_KEY_HIGH_C + 1);
         const uint8_t pk_new = pack_pitch(new_k, oct);
         s.pitch[i] = (s.pitch[i] & 0xC0) | pk_new;
       }
@@ -1410,11 +1422,12 @@ struct Engine {
   void RandomizeOctaves() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
+    fast_rand_seed();
     for (uint8_t i = 0; i < len; ++i) {
       if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
         const uint8_t pk_old = s.pitch[i] & 0x3F;
         const uint8_t key_i  = pk_old % 13;
-        const uint8_t new_o  = uint8_t(random(4));
+        const uint8_t new_o  = fast_rand(4);
         const uint8_t pk_new = pack_pitch(key_i, new_o);
         s.pitch[i] = (s.pitch[i] & 0xC0) | pk_new;
       }
@@ -1470,9 +1483,10 @@ struct Engine {
   void RandomizeSlideData() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
+    fast_rand_seed();
     for (uint8_t i = 0; i < len; i++) {
       if (s.time(i) == 1 && !s.pitch_is_empty(i)) {
-        if (random(20) < 3) { // ~15%
+        if (fast_rand(20) < 3) { // ~15%
           s.pitch[i] |=  0x80;
           s.set_ratchet_val(i, 0);
         } else {

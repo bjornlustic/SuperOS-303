@@ -1374,64 +1374,76 @@ void loop() {
 
     // ── Global CLEAR combos (clear_mod held, no FN) ──
     if (clear_mod && !fn_mod) {
+      bool pat_changed = false;
       // CLEAR + ACCENT rising: randomize pattern but keep ratchets.
       if (inputs[ACCENT_KEY].rising()) {
         engine.RandomizeFullPatternKeepRatchets();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // CLEAR + DOWN rising: rotate time data one step LEFT within length.
       if (inputs[DOWN_KEY].rising()) {
         engine.RotateTimeLeft();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // CLEAR + UP rising: rotate time data one step RIGHT within length.
       if (inputs[UP_KEY].rising()) {
         engine.RotateTimeRight();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // CLEAR + SLIDE rising: Mutate current pattern (small random perturbation).
       if (inputs[SLIDE_KEY].rising()) {
         engine.Mutate();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // CLEAR + BACK rising: shift whole pattern (pitch+time) one step LEFT.
       if (inputs[BACK_KEY].rising()) {
         engine.ShiftPatternLeft();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // CLEAR + TAP_NEXT rising: shift whole pattern (pitch+time) one step RIGHT.
       if (inputs[TAP_NEXT].rising()) {
         engine.ShiftPatternRight();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // CLEAR + F# rising: reverse entire pattern (pitch+time) within length.
       if (inputs[FSHARP_KEY].rising()) {
         engine.ReversePattern();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // CLEAR + G# rising: clear pitches only (keep time data).
       if (inputs[GSHARP_KEY].rising()) {
         engine.ClearPitchesOnly();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // CLEAR + A# rising: clear time data only (keep pitches).
       if (inputs[ASHARP_KEY].rising()) {
         engine.ClearTimesOnly();
-        midi_send_pattern_update(engine.get_patsel());
+        pat_changed = true;
       }
       // Individual-attribute randomize (CLEAR + mode-key held + white key rising):
       //   CLEAR + PITCH_KEY + C = semitones, + D = octaves, + E = accents,
       //                     + F = slides,    + G = full pitch data (sem+oct+acc+slide)
       //   CLEAR + TIME_KEY  + C = time data, + D = ratchets
       if (pitch_mod && !time_mod) {
-        if (inputs[C_KEY].rising()) { engine.RandomizeSemitones(); midi_send_pattern_update(engine.get_patsel()); }
-        if (inputs[D_KEY].rising()) { engine.RandomizeOctaves();   midi_send_pattern_update(engine.get_patsel()); }
-        if (inputs[E_KEY].rising()) { engine.RandomizeAccentData();midi_send_pattern_update(engine.get_patsel()); }
-        if (inputs[F_KEY].rising()) { engine.RandomizeSlideData(); midi_send_pattern_update(engine.get_patsel()); }
-        if (inputs[G_KEY].rising()) { engine.RandomizePitchData(); midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[C_KEY].rising()) { engine.RandomizeSemitones(); pat_changed = true; }
+        if (inputs[D_KEY].rising()) { engine.RandomizeOctaves();   pat_changed = true; }
+        if (inputs[E_KEY].rising()) { engine.RandomizeAccentData();pat_changed = true; }
+        if (inputs[F_KEY].rising()) { engine.RandomizeSlideData(); pat_changed = true; }
+        if (inputs[G_KEY].rising()) { engine.RandomizePitchData(); pat_changed = true; }
       } else if (time_mod && !pitch_mod) {
-        if (inputs[C_KEY].rising()) { engine.RandomizeTimeData();   midi_send_pattern_update(engine.get_patsel()); }
-        if (inputs[D_KEY].rising()) { engine.RandomizeRatchetData();midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[C_KEY].rising()) { engine.RandomizeTimeData();   pat_changed = true; }
+        if (inputs[D_KEY].rising()) { engine.RandomizeRatchetData();pat_changed = true; }
+      }
+      if (pat_changed) {
+        if (clk_run) {
+          // Start incremental sync -- drains 2 steps per loop iteration
+          // so no single tick is burdened with heavy MIDI work.
+          s_pat_sync_pat = engine.get_patsel();
+          s_pat_sync_pos = 0;
+          s_pat_sync_len = engine.get_length();
+        } else {
+          midi_send_pattern_update(engine.get_patsel());
+        }
       }
       // CLEAR + C# held + pat key rising: copy pattern (current bank) to clipboard.
       // CLEAR + D# held + pat key rising: paste clipboard into that pattern slot.
@@ -1738,6 +1750,16 @@ void loop() {
       emit_chain_state();
     }
     midi_send_step_position(engine.get_patsel(), 0);
+  }
+
+  // Incremental pattern sync: send 2 step updates per loop iteration.
+  if (s_pat_sync_len > 0) {
+    const Sequence &sseq = engine.get_sequence();
+    for (uint8_t i = 0; i < 2 && s_pat_sync_pos < s_pat_sync_len; ++i, ++s_pat_sync_pos)
+      midi_send_step_update(s_pat_sync_pat, s_pat_sync_pos,
+          sseq.pitch[s_pat_sync_pos], sseq.time(s_pat_sync_pos));
+    if (s_pat_sync_pos >= s_pat_sync_len)
+      s_pat_sync_len = 0; // done
   }
 
   ++ticks;

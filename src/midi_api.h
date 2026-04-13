@@ -47,6 +47,11 @@ void midi_send_step_position(uint8_t pat, uint8_t step);
 /// Call after any operation that rewrites the whole pattern (e.g. Clear).
 void midi_send_pattern_update(uint8_t pat);
 
+/// Lightweight pattern broadcast: sends per-step 0x16 messages instead of
+/// the heavy 0x11 packed blob. No memcpy/xor/pack_7bit -- just ring buffer
+/// writes. Use when the clock is running to avoid delaying gate timing.
+void midi_send_pattern_steps(uint8_t pat, const struct Sequence &seq, uint8_t len);
+
 /// Broadcast a single step edit to host (SysEx 0x16).
 /// Called after every pitch or time write in pattern-write mode so the
 /// web editor can reflect 303 hardware edits in real time.
