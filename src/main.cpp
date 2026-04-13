@@ -73,6 +73,11 @@ static bool    s_step_sel_edit = false;
 static bool    s_step_sel_time = false; // true = time sub-mode, false = pitch sub-mode
 static bool    s_step_sel_mode = false; // toggled: FN+PITCH enters, FN exits
 
+// Incremental pattern sync state (drains 2 steps/loop while running)
+static uint8_t s_pat_sync_pat = 0;
+static uint8_t s_pat_sync_pos = 0;
+static uint8_t s_pat_sync_len = 0;
+
 // FN+write length entry state
 static bool    s_len_extended     = false;
 static uint8_t s_len_black_base   = 0;
@@ -413,7 +418,7 @@ static const OutputIndex kDirLeds[DIR_COUNT] = {C_KEY_LED, D_KEY_LED, E_KEY_LED,
 static const char *const kDirNames[DIR_COUNT] = {"Fwd","Rev","Ping","Rnd","Half","Brn"};
 
 void ProcessDirectionMode() {
-  Leds::Set(PITCH_MODE_LED, clk_count & 4);
+  Leds::Set(TIME_MODE_LED, clk_count & 4);
   for (uint8_t d = 0; d < DIR_COUNT; ++d) {
     const bool active = (engine.get_direction() == SequenceDirection(d));
     // Active direction blinks, others solid

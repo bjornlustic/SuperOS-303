@@ -908,7 +908,6 @@ struct Engine {
           // REVERSE always wraps at step 0, which already aligns correctly, so
           // no adjustment is needed there.
           if (old_dir == DIR_PINGPONG) {
-            const int len = int(get_sequence().length);
             if (direction_ == DIR_FORWARD) {
               // The direction change fires on a pingpong endpoint retrigger step.
               // Pre-positioning at len-1 + first_step would add a phantom step before
