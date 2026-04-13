@@ -999,12 +999,18 @@ void loop() {
               midi_send_step_lock_update(engine.get_patsel(), si, seq.step_locked(si));
             }
             if (tchanged) {
-              // Reflow pitches so NOTE/TIE/REST changes redistribute pitch data
-              const uint8_t saved_tp = seq.time_pos;
-              seq.time_pos = si;
-              seq.reflow_pitches_after_time_change(old_t);
-              seq.time_pos = saved_tp;
-              midi_send_pattern_update(engine.get_patsel());
+              if (!clk_run) {
+                // Stopped: reflow pitches and send full pattern update.
+                const uint8_t saved_tp = seq.time_pos;
+                seq.time_pos = si;
+                seq.reflow_pitches_after_time_change(old_t);
+                seq.time_pos = saved_tp;
+                midi_send_pattern_update(engine.get_patsel());
+              } else {
+                // Running: lightweight single-step update only.
+                midi_send_step_update(engine.get_patsel(), si,
+                    seq.pitch[si], seq.time(si));
+              }
             }
             // Show time info for the selected step
             const uint8_t st = seq.time(si);
@@ -1266,6 +1272,7 @@ void loop() {
       s_step_sel_mode = false;
       s_step_sel_edit = false;
       s_step_sel_time = false;
+      engine.SetMode(NORMAL_MODE, !clk_run);
     } else if (s_dir_mode) {
       s_dir_mode = false;
     } else if (s_cfg_menu == CfgMenu::Midi) {
