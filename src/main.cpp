@@ -292,31 +292,29 @@ uint8_t input_pitch(bool mod = false, bool clk_run = false) {
 void input_time(bool mod = false, bool clk_run = false) {
   if (clk_run && engine.is_step_locked()) return;
   uint8_t written_time = 0xFF;
-  bool reflowed = false;
   if (inputs[DOWN_KEY].rising()) {
     if (!mod) { engine.Advance(); ++s_time_edit_steps; }
     uint8_t old_t = engine.get_time();
     engine.SetTime(1); written_time = 1; // note
-    reflowed = engine.get_sequence().reflow_pitches_after_time_change(old_t);
+    if (!clk_run) engine.get_sequence().reflow_pitches_after_time_change(old_t);
   } else if (inputs[UP_KEY].rising()) {
     if (!mod) { engine.Advance(); ++s_time_edit_steps; }
     uint8_t old_t = engine.get_time();
     engine.SetTime(2); written_time = 2; // tie
-    reflowed = engine.get_sequence().reflow_pitches_after_time_change(old_t);
+    if (!clk_run) engine.get_sequence().reflow_pitches_after_time_change(old_t);
   } else if (inputs[ACCENT_KEY].rising()) {
     if (!mod) { engine.Advance(); ++s_time_edit_steps; }
     uint8_t old_t = engine.get_time();
     engine.SetTime(0); written_time = 0; // rest
-    reflowed = engine.get_sequence().reflow_pitches_after_time_change(old_t);
+    if (!clk_run) engine.get_sequence().reflow_pitches_after_time_change(old_t);
   }
   if (written_time != 0xFF) {
     const uint8_t tp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
-    if (reflowed && !clk_run) {
-      // Stopped: safe to send the whole pattern after reflow.
+    if (!clk_run) {
+      // Stopped: send the whole pattern (reflow may have moved pitches).
       midi_send_pattern_update(engine.get_patsel());
     } else {
-      // Running or no reflow: lightweight single-step update only.
-      // Keeps the TX buffer small so clock-driven note output is never delayed.
+      // Running: lightweight single-step update only.
       midi_send_step_update(engine.get_patsel(), tp,
           engine.get_sequence().pitch[tp], written_time);
     }
