@@ -69,6 +69,7 @@ static bool s_dir_mode = false;
 static int     s_step_sel      = -1;
 static uint8_t s_step_sel_base = 0; // 0, 8, 16, or 24
 static bool    s_step_sel_edit = false;
+static bool    s_step_sel_time = false; // true = time sub-mode, false = pitch sub-mode
 static bool    s_step_sel_mode = false; // toggled: FN+PITCH enters, FN exits
 
 // FN+write length entry state
@@ -890,7 +891,7 @@ void loop() {
     ProcessDirectionMode();
   } else {
     // Reset step-select detail-editor sub-state whenever we're not currently in step-select.
-    if (!s_step_sel_mode && s_step_sel_edit) s_step_sel_edit = false;
+    if (!s_step_sel_mode && s_step_sel_edit) { s_step_sel_edit = false; s_step_sel_time = false; }
     // FN + TIME_KEY rising → enter direction mode (allowed in pattern write mode; the
     // TIME_MODE set at line ~1050 is gated by !fn_mod).
     if (fn_mod && inputs[TIME_KEY].rising()) {
@@ -898,32 +899,47 @@ void loop() {
     } else if (fn_mod && inputs[PITCH_KEY].rising() && !s_step_sel_mode) {
       s_step_sel_mode = true;
     } else if (s_step_sel_mode) {
-      // Step-select mode: C#/D#/F#/G# pick 8-step base, white keys pick a NOTE step in bank.
-      // ACCENT_KEY rising on a valid selection enters the per-step detail editor;
-      // BACK_KEY rising exits the editor or clears the selection. Only NOTE steps
-      // (time == 1) are selectable; REST/TIE steps are skipped and shown unlit.
+      // Step-select mode: two sub-modes — pitch (default) and time.
+      // PITCH_KEY switches to pitch sub-mode, TIME_KEY switches to time sub-mode.
+      // Pitch sub-mode: only NOTE steps selectable, TAP_NEXT enters detail editor.
+      // Time sub-mode: ALL steps selectable, no enter needed — just select & edit.
       Leds::Set(FUNCTION_MODE_LED, true);
+      Leds::Set(PITCH_MODE_LED, !s_step_sel_time);
+      Leds::Set(TIME_MODE_LED,   s_step_sel_time);
       const uint8_t blen = engine.get_length();
       Sequence &seq = engine.get_sequence();
 
+      // Sub-mode switching (outside detail editor to avoid accidental mode changes).
       if (!s_step_sel_edit) {
-        // Bank pick (only outside the detail editor so the editor's own ACCENT/etc.
-        // input doesn't get re-interpreted as bank selection).
+        if (inputs[TIME_KEY].rising() && !s_step_sel_time) {
+          s_step_sel_time = true;
+          s_step_sel = -1; // clear selection on mode switch
+        }
+        if (inputs[PITCH_KEY].rising() && s_step_sel_time) {
+          s_step_sel_time = false;
+          s_step_sel = -1;
+        }
+      }
+
+      // ── Picker (shared between pitch and time sub-modes) ──
+      if (!s_step_sel_edit) {
+        // Bank pick
         if (inputs[CSHARP_KEY].rising()) s_step_sel_base = 0;
         if (inputs[DSHARP_KEY].rising()) s_step_sel_base = 8;
         if (inputs[FSHARP_KEY].rising()) s_step_sel_base = 16;
         if (inputs[GSHARP_KEY].rising()) s_step_sel_base = 24;
-        // Pick a step within the visible bank — only if it's a NOTE step.
-        // Read time nibbles without mutating seq.time_pos so the running playhead is unaffected.
+        // Step pick
         for (uint8_t wi = 0; wi < 8; ++wi) {
           if (inputs[kCfgWhiteKeys[wi]].rising()) {
             const uint8_t cand = uint8_t(s_step_sel_base + wi);
-            if (cand < blen && seq.time(cand) == 1) s_step_sel = int(cand);
+            if (cand < blen) {
+              // Pitch sub-mode: only NOTE steps. Time sub-mode: any step.
+              if (s_step_sel_time || seq.time(cand) == 1)
+                s_step_sel = int(cand);
+            }
           }
         }
-        // NOTE steps full bright; TIE steps half-dim via the dim framebuffer
-        // (same flicker-free PWM as the global brightness setting).
-        // REST steps unlit so the user can see which slots hold pitches.
+        // Step LEDs: NOTE=bright, TIE=dim, REST=off
         for (uint8_t wi = 0; wi < 8; ++wi) {
           const uint8_t idx = uint8_t(s_step_sel_base + wi);
           if (idx >= blen) break;
@@ -931,14 +947,13 @@ void loop() {
           if (tn == 1) Leds::Set(OutputIndex(wi), true);
           else if (tn == 2) Leds::SetDim(OutputIndex(wi), true);
         }
-        // Chase only while playhead is inside the currently visible bank.
+        // Chase LED
         if (clk_run) {
           const uint8_t tp = engine.get_time_pos();
-          if ((tp & ~uint8_t(7)) == s_step_sel_base) {
+          if ((tp & ~uint8_t(7)) == s_step_sel_base)
             Leds::Set(OutputIndex(tp & 0x7), bool(clk_count & 4));
-          }
         }
-        // Cover-bank LEDs: selected base blinks, other reachable bases solid.
+        // Cover-bank LEDs
         const bool blinkb = bool((millis() >> 8) & 1);
         const OutputIndex sel_base_led =
             (s_step_sel_base == 0)  ? CSHARP_KEY_LED :
@@ -948,29 +963,72 @@ void loop() {
         Leds::Set(DSHARP_KEY_LED, (blen > 8)  && (sel_base_led == DSHARP_KEY_LED ? blinkb : true));
         Leds::Set(FSHARP_KEY_LED, (blen > 16) && (sel_base_led == FSHARP_KEY_LED ? blinkb : true));
         Leds::Set(GSHARP_KEY_LED, (blen > 24) && (sel_base_led == GSHARP_KEY_LED ? blinkb : true));
-        // Flashing LED for the current selection (only when its bank is visible),
-        // overriding the solid NOTE-step LED so the user sees which step is picked.
-        if (s_step_sel >= 0 && (uint8_t(s_step_sel) & ~uint8_t(7)) == s_step_sel_base) {
+        // Selection flash
+        if (s_step_sel >= 0 && (uint8_t(s_step_sel) & ~uint8_t(7)) == s_step_sel_base)
           Leds::Set(OutputIndex(s_step_sel & 0x7), bool((millis() >> 7) & 1));
+
+        if (s_step_sel_time) {
+          // ── Time sub-mode: edit directly from picker, no enter needed ──
+          if (s_step_sel >= 0) {
+            const uint8_t si = uint8_t(s_step_sel);
+            bool tchanged = false;
+            uint8_t old_t = seq.time(si);
+            if (inputs[DOWN_KEY].rising()) {
+              // NOTE
+              sequence_set_time_at(seq, si, 1);
+              if (seq.pitch_is_empty(si)) seq.pitch[si] = PITCH_DEFAULT;
+              engine.stale = true; tchanged = true;
+            }
+            if (inputs[UP_KEY].rising()) {
+              // TIE — blocked if previous step is a rest (no note to tie from)
+              const uint8_t prev_t = (si > 0) ? seq.time(uint8_t(si - 1)) : 0;
+              if (prev_t != 0) {
+                sequence_set_time_at(seq, si, 2);
+                engine.stale = true; tchanged = true;
+              }
+            }
+            if (inputs[ACCENT_KEY].rising()) {
+              // REST
+              sequence_set_time_at(seq, si, 0);
+              engine.stale = true; tchanged = true;
+            }
+            if (inputs[SLIDE_KEY].rising()) {
+              // Toggle step lock
+              seq.ToggleStepLock(si);
+              engine.stale = true;
+              midi_send_step_lock_update(engine.get_patsel(), si, seq.step_locked(si));
+            }
+            if (tchanged) {
+              // Reflow pitches so NOTE/TIE/REST changes redistribute pitch data
+              const uint8_t saved_tp = seq.time_pos;
+              seq.time_pos = si;
+              seq.reflow_pitches_after_time_change(old_t);
+              seq.time_pos = saved_tp;
+              midi_send_pattern_update(engine.get_patsel());
+            }
+            // Show time info for the selected step
+            const uint8_t st = seq.time(si);
+            Leds::Set(DOWN_KEY_LED,   st == 1);
+            Leds::Set(UP_KEY_LED,     st == 2);
+            Leds::Set(ACCENT_KEY_LED, st == 0);
+            Leds::Set(SLIDE_KEY_LED,  seq.step_locked(si));
+          }
+          if (inputs[BACK_KEY].rising()) s_step_sel = -1;
+        } else {
+          // ── Pitch sub-mode picker ──
+          // Enter detail editor on TAP_NEXT rising with a valid selection.
+          if (s_step_sel >= 0 && inputs[TAP_NEXT].rising()) s_step_sel_edit = true;
+          // BACK clears selection.
+          else if (inputs[BACK_KEY].rising()) s_step_sel = -1;
         }
-        // Enter detail editor on TAP_NEXT rising with a valid selection.
-        if (s_step_sel >= 0 && inputs[TAP_NEXT].rising()) s_step_sel_edit = true;
-        // BACK clears selection while not in the editor.
-        else if (inputs[BACK_KEY].rising()) s_step_sel = -1;
       } else {
-        // Detail editor: pitch keys / UP / DOWN / ACCENT / SLIDE edit the selected step.
-        // BACK_KEY rising returns to the bank/step picker.
+        // ── Pitch detail editor (unchanged — only reachable from pitch sub-mode) ──
         if (s_step_sel < 0) {
           s_step_sel_edit = false;
         } else {
-          // Save and temporarily move pitch_pos to the selected step so the engine's
-          // edit ops (which read pitch_pos) target the right slot. Restore immediately
-          // so background playback reads its own pitch_pos — no mystery notes.
           const int saved_pp = seq.pitch_pos;
           seq.pitch_pos = s_step_sel;
           bool changed = false;
-          // Engine::ToggleAccent/Slide are gated on PITCH_MODE; bypass via direct
-          // bit-flip on the selected pitch byte so they work in NORMAL_MODE too.
           if (inputs[ACCENT_KEY].rising()) {
             seq.pitch[s_step_sel] ^= (1 << 6); engine.stale = true; changed = true;
           }
@@ -993,9 +1051,6 @@ void loop() {
           }
           if (inputs[BACK_KEY].rising()) s_step_sel_edit = false;
 
-          // Render pitch info for the SELECTED step directly from pitch[s_step_sel].
-          // Don't call PrintPitch(): it goes through Sequence::get_pitch() which is
-          // time_pos-dependent (TIE walk-back) and would flicker as playback advances.
           const uint8_t pb = seq.pitch[s_step_sel];
           if (pb != PITCH_EMPTY) {
             const uint8_t e        = pb & 0x3f;
@@ -1210,6 +1265,7 @@ void loop() {
     if (s_step_sel_mode) {
       s_step_sel_mode = false;
       s_step_sel_edit = false;
+      s_step_sel_time = false;
     } else if (s_dir_mode) {
       s_dir_mode = false;
     } else if (s_cfg_menu == CfgMenu::Midi) {
