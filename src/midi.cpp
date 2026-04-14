@@ -585,6 +585,18 @@ void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked) {
   tx_push_message(inner, 5);
 }
 
+// --- Ratchet broadcast (SysEx 0x1B) ---------------------------------------------
+// Same format as host-to-device 0x1B. Web editor listens symmetrically.
+void midi_send_ratchet_update(uint8_t pat, uint8_t step, uint8_t val) {
+  const uint8_t inner[5] = {
+    0x7D, 0x1B,
+    static_cast<uint8_t>(pat & 0x0F),
+    static_cast<uint8_t>(step & 0x3F),
+    static_cast<uint8_t>(val & 0x03)
+  };
+  tx_push_message(inner, 5);
+}
+
 // --- Step edit broadcast (SysEx 0x16) -------------------------------------------
 void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble) {
   const uint8_t inner[7] = {

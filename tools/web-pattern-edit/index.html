@@ -2485,14 +2485,15 @@
     sel.disabled = !ports.length;
   }
 
-  function bindPorts(access) {
+  // Rebuild the <select> options. Called on init and MIDIAccess statechange only.
+  // NEVER call this from an onchange handler -- innerHTML='' drops the user's pick.
+  function populatePortSelects(access) {
     var outs = Array.from(access.outputs.values());
     var ins  = Array.from(access.inputs.values());
     var selOut = document.getElementById('selOut');
     var selIn  = document.getElementById('selIn');
     var selKbd = document.getElementById('selKbd');
 
-    // Preserve current selections (and prior chosen ids) before rebuilding options.
     var prevOutId = selOut.value || (midiOut && midiOut.id) || '';
     var prevInId  = selIn.value  || (midiIn  && midiIn.id)  || '';
     var prevKbdId = selKbd.value || (midiKbd && midiKbd.id) || '';
@@ -2506,10 +2507,17 @@
     });
     selKbd.disabled = !ins.length;
 
-    // Restore selections if those ports still exist.
     if (prevOutId && outs.some(function(p){ return p.id === prevOutId; })) selOut.value = prevOutId;
     if (prevInId  && ins.some(function(p){ return p.id === prevInId;  })) selIn.value  = prevInId;
     if (prevKbdId && ins.some(function(p){ return p.id === prevKbdId; })) selKbd.value = prevKbdId;
+  }
+
+  function bindPorts(access) {
+    var outs = Array.from(access.outputs.values());
+    var ins  = Array.from(access.inputs.values());
+    var selOut = document.getElementById('selOut');
+    var selIn  = document.getElementById('selIn');
+    var selKbd = document.getElementById('selKbd');
 
     if (midiIn)  midiIn.onmidimessage  = null;
     if (midiKbd) midiKbd.onmidimessage = null;
@@ -3513,8 +3521,12 @@
     if (!navigator.requestMIDIAccess) { log('Web MIDI unavailable (use Chrome/Edge)', 'log-err'); return; }
     try {
       midiAccess = await navigator.requestMIDIAccess({ sysex: true });
+      populatePortSelects(midiAccess);
       bindPorts(midiAccess);
-      midiAccess.onstatechange = function() { bindPorts(midiAccess); };
+      midiAccess.onstatechange = function() {
+        populatePortSelects(midiAccess);
+        bindPorts(midiAccess);
+      };
       log('MIDI ready — Computer Out \u2192 303 MIDI In  |  303 MIDI Out \u2192 Computer In', 'log-ack');
     } catch(e) { log('MIDI denied: ' + e, 'log-err'); }
   };

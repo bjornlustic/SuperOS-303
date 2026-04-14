@@ -81,6 +81,11 @@ void midi_send_active_pattern(uint8_t pat);
 /// Format: F0 7D 19 <pat:0-15> <step:0-63> <locked:0|1> F7
 void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
 
+/// Broadcast a single ratchet value change to host (SysEx 0x1B).
+/// Format: F0 7D 1B <pat:0-15> <step:0-63> <val:0-2> F7
+/// Targeted replacement for midi_send_pattern_update() on single-step ratchet edits.
+void midi_send_ratchet_update(uint8_t pat, uint8_t step, uint8_t val);
+
 /// Play a metronome tick note via MIDI (E3 on first beat of pattern, E4 otherwise).
 void midi_metronome_tick(bool first_beat);
 /// Stop the open metronome note (on mode exit / clock stop).

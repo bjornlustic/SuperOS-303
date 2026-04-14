@@ -33,7 +33,6 @@ static uint8_t s_group_debounce_count = 0;    // consecutive frames seen
 static constexpr uint8_t GROUP_DEBOUNCE_FRAMES = 5;
 static bool step_counter = false;
 static bool midi_clk = false;
-static bool wrap_edit = false;
 static uint8_t s_time_edit_steps = 0; // counts writes in the current TIME_MODE edit session
 
 /// Stopped-clock CV preview: audition paths set these; unified DAC block applies them.
@@ -48,7 +47,6 @@ static constexpr uint16_t PATTERN_CLEARED_FLASH_MS = 400;
 
 // Metronome tap-write state (CLEAR+write+clk_run in NORMAL_MODE)
 static bool s_metronome_active                  = false;
-static bool s_metro_tap_held_this_beat          = false;
 static bool s_metro_tap_released_since_last_beat = false; // TAP fell during this beat → next press = NOTE, not TIE
 static bool s_metro_prev_note                   = false;
 static bool s_metro_has_activity                = false;  // any TAP seen this pass; exit at wrap if true
@@ -318,8 +316,11 @@ void input_time(bool mod = false, bool clk_run = false) {
   if (written_time != 0xFF) {
     const uint8_t tp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
     if (!clk_run) {
-      // Stopped: send the whole pattern (reflow may have moved pitches).
-      midi_send_pattern_update(engine.get_patsel());
+      // Stopped: reflow may have moved pitches, so resync all steps.
+      // Incremental sync drains 2 steps/loop to stay gentle on the MIDI TX ring.
+      s_pat_sync_pat = engine.get_patsel();
+      s_pat_sync_pos = 0;
+      s_pat_sync_len = engine.get_length();
     } else {
       // Running: lightweight single-step update only.
       midi_send_step_update(engine.get_patsel(), tp,
@@ -464,9 +465,9 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       if (ratchet_mod) {
         // Ratchet view: DOWN=1x(0), UP=2x(1), ACCENT=3x(2). LED shows current value.
         const uint8_t tp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
-        if (inputs[DOWN_KEY].rising())   { engine.SetRatchetAtCurrent(0); midi_send_pattern_update(engine.get_patsel()); }
-        if (inputs[UP_KEY].rising())     { engine.SetRatchetAtCurrent(1); midi_send_pattern_update(engine.get_patsel()); }
-        if (inputs[ACCENT_KEY].rising()) { engine.SetRatchetAtCurrent(2); midi_send_pattern_update(engine.get_patsel()); }
+        if (inputs[DOWN_KEY].rising())   { engine.SetRatchetAtCurrent(0); midi_send_ratchet_update(engine.get_patsel(), tp, 0); }
+        if (inputs[UP_KEY].rising())     { engine.SetRatchetAtCurrent(1); midi_send_ratchet_update(engine.get_patsel(), tp, 1); }
+        if (inputs[ACCENT_KEY].rising()) { engine.SetRatchetAtCurrent(2); midi_send_ratchet_update(engine.get_patsel(), tp, 2); }
         const uint8_t r = engine.get_sequence().get_ratchet_val(tp);
         Leds::Set(DOWN_KEY_LED,   r == 0);
         Leds::Set(UP_KEY_LED,     r == 1);
@@ -1008,7 +1009,11 @@ void loop() {
                 seq.reflow_pitches_at(si, old_t);
                 if (seq.time(si) == 1 && seq.pitch_is_empty(si))
                   seq.pitch[si] = PITCH_DEFAULT;
-                midi_send_pattern_update(engine.get_patsel());
+                // Reflow may have shuffled pitches; use incremental sync to
+                // avoid the heavy 147-byte blob on every step-select edit.
+                s_pat_sync_pat = engine.get_patsel();
+                s_pat_sync_pos = 0;
+                s_pat_sync_len = engine.get_length();
               } else {
                 // Running: just send the edited step. No reflow, no heavy
                 // computation. Matches how the web GUI edits work --
@@ -1261,7 +1266,6 @@ void loop() {
   }
   // Per-frame: latch TAP state for metronome recording at next beat boundary
   if (s_metronome_active) {
-    if (inputs[TAP_NEXT].held())    s_metro_tap_held_this_beat          = true;
     if (inputs[TAP_NEXT].falling()) s_metro_tap_released_since_last_beat = true;
   }
 
@@ -1332,7 +1336,6 @@ void loop() {
         if (!s_metronome_active) {
           midi_metronome_stop();
         } else {
-          s_metro_tap_held_this_beat = false;
           s_metro_prev_note          = false;
           s_metro_has_activity       = false;
           // Collect all NOTE pitches + existing stash into stash area, then
@@ -1440,15 +1443,12 @@ void loop() {
         if (inputs[D_KEY].rising()) { engine.RandomizeRatchetData();pat_changed = true; }
       }
       if (pat_changed) {
-        if (clk_run) {
-          // Start incremental sync -- drains 2 steps per loop iteration
-          // so no single tick is burdened with heavy MIDI work.
-          s_pat_sync_pat = engine.get_patsel();
-          s_pat_sync_pos = 0;
-          s_pat_sync_len = engine.get_length();
-        } else {
-          midi_send_pattern_update(engine.get_patsel());
-        }
+        // Incremental sync drains 2 steps per loop iteration so rapid
+        // randomize presses can't saturate the MIDI TX ring. The 147-byte
+        // 0x11 blob was blocking clock RX and causing timing drift.
+        s_pat_sync_pat = engine.get_patsel();
+        s_pat_sync_pos = 0;
+        s_pat_sync_len = engine.get_length();
       }
       // CLEAR + C# held + pat key rising: copy pattern (current bank) to clipboard.
       // CLEAR + D# held + pat key rising: paste clipboard into that pattern slot.
@@ -1514,7 +1514,6 @@ void loop() {
               : 0;                                                     // not held at boundary: REST
           if (tval != 0) s_metro_has_activity = true;
           s_metro_prev_note = (tval != 0);
-          s_metro_tap_held_this_beat          = false;
           s_metro_tap_released_since_last_beat = false;
           Sequence &wseq = engine.get_sequence();
           sequence_set_time_at(wseq, write_step, tval);
@@ -1636,7 +1635,7 @@ void loop() {
             int(engine.get_sequence().first_note_idx()))
           engine.SetMode(NORMAL_MODE, true);
       }
-      if (!wrap_edit && !clk_run && engine.get_mode() == TIME_MODE &&
+      if (!clk_run && engine.get_mode() == TIME_MODE &&
           engine.get_time_pos() >= engine.get_length() - 1)
         engine.SetMode(NORMAL_MODE, true);
     }
