@@ -1005,23 +1005,16 @@ void loop() {
               midi_send_step_lock_update(engine.get_patsel(), si, seq.step_locked(si));
             }
             if (tchanged) {
-              if (!clk_run) {
-                seq.reflow_pitches_at(si, old_t);
-                if (seq.time(si) == 1 && seq.pitch_is_empty(si))
-                  seq.pitch[si] = PITCH_DEFAULT;
-                // Reflow may have shuffled pitches; use incremental sync to
-                // avoid the heavy 147-byte blob on every step-select edit.
-                s_pat_sync_pat = engine.get_patsel();
-                s_pat_sync_pos = 0;
-                s_pat_sync_len = engine.get_length();
-              } else {
-                // Running: just send the edited step. No reflow, no heavy
-                // computation. Matches how the web GUI edits work --
-                // the web GUI does its own reflow in JS.
-                if (seq.time(si) == 1 && seq.pitch_is_empty(si))
-                  seq.pitch[si] = PITCH_DEFAULT;
-                midi_send_step_update(engine.get_patsel(), si,
-                    seq.pitch[si], seq.time(si));
+              const uint8_t plen = engine.get_length();
+              uint8_t before[MAX_STEPS];
+              for (uint8_t i = 0; i < plen; ++i) before[i] = seq.pitch[i];
+              seq.reflow_pitches_at(si, old_t);
+              if (seq.time(si) == 1 && seq.pitch_is_empty(si))
+                seq.pitch[si] = PITCH_DEFAULT;
+              const uint8_t pat = engine.get_patsel();
+              for (uint8_t i = 0; i < plen; ++i) {
+                if (i == si || before[i] != seq.pitch[i])
+                  midi_send_step_update(pat, i, seq.pitch[i], seq.time(i));
               }
             }
             // Show time info for the selected step
