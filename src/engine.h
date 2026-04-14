@@ -286,18 +286,19 @@ struct Engine {
       prev = t;
     }
     normalize_pattern_times(s);
-    // Second pass: random pitches for NOTE steps; also randomize ratchets
+    // Second pass: random pitches for NOTE steps. Ratchets are never
+    // randomized here — all steps reset to 1x. Use RandomizeRatchetData
+    // explicitly if you want random ratchets.
     for (uint8_t i = 0; i < len; i++) {
       if (s.time(i) == 1) {
         const uint8_t pk  = fast_rand(PITCH_PACK_MAX + 1);
         const uint8_t acc = fast_rand(2) ? 0x40 : 0;
         const uint8_t sl  = fast_rand(2) ? 0x80 : 0;
         s.pitch[i] = pk | acc | sl;
-        s.set_ratchet_val(i, sl ? 0 : random_ratchet_val());
       } else {
         s.pitch[i] = PITCH_DEFAULT;
-        s.set_ratchet_val(i, 0);
       }
+      s.set_ratchet_val(i, 0);
     }
     stale = true;
   }
@@ -339,6 +340,8 @@ struct Engine {
   }
 
   /// Randomize pitches only — keeps time data intact (PITCH_MODE).
+  /// Ratchets are left alone (or cleared when a new slide is rolled, since
+  /// slide steps cannot ratchet). Use RandomizeRatchetData for random ratchets.
   void RandomizePitchData() {
     Sequence &s = get_sequence();
     const uint8_t len = s.length;
@@ -349,7 +352,7 @@ struct Engine {
         const uint8_t acc = fast_rand(2) ? 0x40 : 0;
         const uint8_t sl  = fast_rand(2) ? 0x80 : 0;
         s.pitch[i] = pk | acc | sl;
-        s.set_ratchet_val(i, sl ? 0 : random_ratchet_val());
+        if (sl) s.set_ratchet_val(i, 0);
       }
     }
     stale = true;
@@ -402,6 +405,15 @@ struct Engine {
       s.pitch[len + k] = stream[note_count + k];
     s.set_stash_count(excess);
 
+    stale = true;
+  }
+
+  /// Reset all ratchet values to 1x (0) — keeps all other data intact.
+  void ClearRatchetsOnly() {
+    Sequence &s = get_sequence();
+    const uint8_t len = s.length;
+    for (uint8_t i = 0; i < len; i++)
+      s.set_ratchet_val(i, 0);
     stale = true;
   }
 

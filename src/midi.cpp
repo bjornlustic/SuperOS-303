@@ -47,6 +47,9 @@ static bool g_clk_run = false;
 static uint8_t s_in_channel = 0; // 0 = omni
 static bool s_midi_clock_rx = true;
 static bool s_midi_thru = false;
+// Deferred settings persistence: set by the 0x22 handler, flushed by
+// midi_flush_pending_saves() so EEPROM writes don't stall RX inside SysEx parsing.
+static bool s_settings_dirty = false;
 
 static uint8_t out_ch() {
   return s_in_channel == 0 ? 1 : s_in_channel;
@@ -231,10 +234,13 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     uint8_t raw[PATTERN_SIZE];
     if (!unpack_7bit(p + 5, static_cast<uint16_t>(n - 5), raw, PATTERN_SIZE)) { send_ack(1); return; }
     if (xor_blob128(raw) != cx) { send_ack(1); return; }
-    const bool persist = !g_clk_run;
-    if (!g_eng->import_pattern_blob(pat, raw, persist)) { send_ack(2); return; }
+    // Never persist inline: a 32-byte EEPROM write blocks ~100ms and overflows
+    // the UART RX buffer, dropping whatever the web sends next. RAM update
+    // only; engine.stale causes the natural save points (RUN stop, WRITE
+    // exit) to persist.
+    if (!g_eng->import_pattern_blob(pat, raw, /*persist_eeprom=*/false)) { send_ack(2); return; }
+    g_eng->stale = true;
     send_ack(0);
-    if (persist) enqueue_pattern_reply(pat);
     break;
   }
   case 0x13: // request all
@@ -343,7 +349,9 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
       if (br >= 1 && br <= 8) GlobalSettings.led_brightness = br;
       // main.cpp loop syncs Leds::brightness from GlobalSettings each tick.
     }
-    GlobalSettings.save_midi_to_storage();
+    // Defer EEPROM write to idle; inline save blocks UART RX long enough
+    // to drop the next SysEx the web sends.
+    s_settings_dirty = true;
     midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
     send_ack(0);
     // Echo back new config
@@ -762,4 +770,14 @@ void midi_ratchet_retrigger(Engine &engine, uint8_t transpose) {
   MIDI.sendNoteOff(s_seq_note, 0, och);
   MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
   s_seq_note = static_cast<uint8_t>(n);
+}
+
+// Flush pending EEPROM writes accumulated by SysEx handlers.
+// Called from the main loop at natural save points (RUN stop, WRITE exit) so
+// the 3–100 ms EEPROM stall happens outside the SysEx fast path.
+void midi_flush_pending_saves() {
+  if (s_settings_dirty) {
+    GlobalSettings.save_midi_to_storage();
+    s_settings_dirty = false;
+  }
 }

@@ -829,6 +829,7 @@ void loop() {
   if ((inputs[WRITE_MODE].falling() && !clk_run) ||
       (inputs[RUN].falling() && !midi_clk)) {
     engine.Save();
+    midi_flush_pending_saves();
     // On clock stop: if browsing a different group, switch to it
     if (inputs[RUN].falling() && !midi_clk && s_display_group != engine.get_group()) {
       engine.SetGroup(s_display_group);
@@ -1421,19 +1422,19 @@ void loop() {
         engine.ClearTimesOnly();
         pat_changed = true;
       }
-      // Individual-attribute randomize (CLEAR + mode-key held + white key rising):
-      //   CLEAR + PITCH_KEY + C = semitones, + D = octaves, + E = accents,
-      //                     + F = slides,    + G = full pitch data (sem+oct+acc+slide)
-      //   CLEAR + TIME_KEY  + C = time data, + D = ratchets
+      // Individual-attribute randomize (CLEAR + PITCH_KEY held + white key rising):
+      //   C = semitones, D = octaves, E = accents, F = slides,
+      //   G = full pitch data (sem+oct+acc+slide), A = time data,
+      //   B = randomize ratchets, C2 = reset all ratchets to 1x
       if (pitch_mod && !time_mod) {
-        if (inputs[C_KEY].rising()) { engine.RandomizeSemitones(); pat_changed = true; }
-        if (inputs[D_KEY].rising()) { engine.RandomizeOctaves();   pat_changed = true; }
-        if (inputs[E_KEY].rising()) { engine.RandomizeAccentData();pat_changed = true; }
-        if (inputs[F_KEY].rising()) { engine.RandomizeSlideData(); pat_changed = true; }
-        if (inputs[G_KEY].rising()) { engine.RandomizePitchData(); pat_changed = true; }
-      } else if (time_mod && !pitch_mod) {
-        if (inputs[C_KEY].rising()) { engine.RandomizeTimeData();   pat_changed = true; }
-        if (inputs[D_KEY].rising()) { engine.RandomizeRatchetData();pat_changed = true; }
+        if (inputs[C_KEY].rising())     { engine.RandomizeSemitones();   pat_changed = true; }
+        if (inputs[D_KEY].rising())     { engine.RandomizeOctaves();     pat_changed = true; }
+        if (inputs[E_KEY].rising())     { engine.RandomizeAccentData();  pat_changed = true; }
+        if (inputs[F_KEY].rising())     { engine.RandomizeSlideData();   pat_changed = true; }
+        if (inputs[G_KEY].rising())     { engine.RandomizePitchData();   pat_changed = true; }
+        if (inputs[A_KEY].rising())     { engine.RandomizeTimeData();    pat_changed = true; }
+        if (inputs[B_KEY].rising())     { engine.RandomizeRatchetData(); pat_changed = true; }
+        if (inputs[C_KEY2].rising())    { engine.ClearRatchetsOnly();    pat_changed = true; }
       }
       if (pat_changed) {
         // Incremental sync drains 2 steps per loop iteration so rapid

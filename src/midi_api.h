@@ -101,3 +101,8 @@ void midi_send_chain_state(uint8_t active_len, const uint8_t *active_pats,
 /// Returns true and fills out parameters if a new chain state arrived since last call.
 bool midi_get_received_chain(uint8_t *out_active_len, uint8_t out_active_pats[4],
                               uint8_t *out_queued_len, uint8_t out_queued_pats[4]);
+
+/// Flush EEPROM writes deferred by SysEx handlers (0x22 config).
+/// Call from a main-loop save point; blocking EEPROM writes inside the SysEx
+/// fast path would overflow the UART RX buffer and drop subsequent messages.
+void midi_flush_pending_saves();

@@ -2987,7 +2987,8 @@
     applyRandomOctave(blob, len);
     applyRandomAccent(blob, len);
     applyRandomSlide(blob, len);
-    applyRandomRatchets(blob, len);
+    // Reset all ratchets to 1x; use the Ratchet button explicitly for random ratchets.
+    for (var s = 0; s < len; s++) setRatchet(blob, s, 0);
     syncScaleSnapAndApply(activeGroup, activePat, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
     if (midiOut) scheduleLiveSend();
