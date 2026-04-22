@@ -39,6 +39,7 @@ static uint8_t s_time_edit_steps = 0; // counts writes in the current TIME_MODE 
 static bool s_tap_pitch_preview_gate = false;
 static uint8_t s_tap_pitch_preview_cv = 0;
 static bool s_tap_pitch_preview_accent = false;
+static uint8_t s_tap_pitch_preview_retrig = 0; // ticks to force gate low for envelope retrigger
 static bool s_back_pitch_preview_gate = false;
 static uint8_t s_back_pitch_preview_cv = 0;
 
@@ -450,8 +451,10 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       if (!clk_run && updated_note) {
         uint16_t mn = uint16_t(updated_note) + transpose;
         if (mn > 127) mn = 127;
-        const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
+        const bool acc = engine.get_sequence().get_accent();
+        const uint8_t vel = acc ? 127 : 80;
         s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
+        s_tap_pitch_preview_accent = acc;
         midi_audition_note_on(uint8_t(mn), vel);
       }
     }
@@ -492,8 +495,10 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
         engine.get_sequence().get_time() != 0) {
       uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
       if (mn > 127) mn = 127;
-      const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
+      const bool acc = engine.get_sequence().get_accent();
+      const uint8_t vel = acc ? 127 : 80;
       s_back_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
+      s_tap_pitch_preview_accent = acc;
       s_back_pitch_preview_gate = true;
       midi_audition_note_on(uint8_t(mn), vel);
     }
@@ -849,6 +854,11 @@ void loop() {
   if (inputs[WRITE_MODE].falling()) {
     s_len_extended     = false;
     s_len_black_pressed = false;
+    // Exit step-select/detail-editor when dial leaves Pattern Write.
+    s_step_sel_mode = false;
+    s_step_sel_edit = false;
+    s_step_sel_time = false;
+    s_step_sel      = -1;
   }
 
   // Apply chain state received from web editor (SysEx 0x1A), or re-broadcast on config request
@@ -1046,14 +1056,11 @@ void loop() {
               const uint8_t pb = seq.pitch[s_step_sel];
               if (pb != PITCH_EMPTY) {
                 const uint8_t linear = unpack_pitch_linear(pb & 0x3f);
-                uint16_t mn = uint16_t(36 + linear) + transpose;
-                if (mn > 127) mn = 127;
                 const bool acc = (pb & (1 << 6)) != 0;
-                const uint8_t vel = acc ? 127 : 80;
+                if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
                 s_tap_pitch_preview_cv = uint8_t(linear + 4 + transpose);
                 s_tap_pitch_preview_accent = acc;
                 s_tap_pitch_preview_gate = true;
-                midi_audition_note_on(uint8_t(mn), vel);
               }
             }
           }
@@ -1068,18 +1075,21 @@ void loop() {
           const int saved_pp = seq.pitch_pos;
           seq.pitch_pos = s_step_sel;
           bool changed = false;
+          bool audition = false;
           if (inputs[ACCENT_KEY].rising()) {
             seq.pitch[s_step_sel] ^= (1 << 6); engine.stale = true; changed = true;
+            audition = true;
           }
           if (inputs[SLIDE_KEY].rising()) {
             seq.pitch[s_step_sel] ^= (1 << 7); engine.stale = true; changed = true;
           }
-          if (inputs[UP_KEY].rising())     { engine.NudgeOctave(+1);  changed = true; }
-          if (inputs[DOWN_KEY].rising())   { engine.NudgeOctave(-1);  changed = true; }
+          if (inputs[UP_KEY].rising())     { engine.NudgeOctave(+1);  changed = true; audition = true; }
+          if (inputs[DOWN_KEY].rising())   { engine.NudgeOctave(-1);  changed = true; audition = true; }
           for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
             if (inputs[pitched_keys[pi]].rising()) {
               engine.SetPitchSemitone(pi);
               changed = true;
+              audition = true;
               break;
             }
           }
@@ -1089,19 +1099,16 @@ void loop() {
                 seq.pitch[s_step_sel], seq.time(uint8_t(s_step_sel)));
           }
           if (inputs[BACK_KEY].rising()) s_step_sel_edit = false;
-          // Re-audition current step on TAP_NEXT while in the detail editor.
-          if (!clk_run && inputs[TAP_NEXT].rising()) {
+          // Audition on TAP_NEXT or on any pitch/octave/accent change while stopped.
+          if (!clk_run && (inputs[TAP_NEXT].rising() || audition)) {
             const uint8_t ab = seq.pitch[s_step_sel];
             if (ab != PITCH_EMPTY) {
               const uint8_t lin = unpack_pitch_linear(ab & 0x3f);
-              uint16_t mn = uint16_t(36 + lin) + transpose;
-              if (mn > 127) mn = 127;
               const bool acc = (ab & (1 << 6)) != 0;
-              const uint8_t vel = acc ? 127 : 80;
+              if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
               s_tap_pitch_preview_cv = uint8_t(lin + 4 + transpose);
               s_tap_pitch_preview_accent = acc;
               s_tap_pitch_preview_gate = true;
-              midi_audition_note_on(uint8_t(mn), vel);
             }
           }
 
@@ -1120,6 +1127,13 @@ void loop() {
             Leds::Set(SLIDE_KEY_LED,  (pb & (1 << 7)) != 0);
           }
         }
+      }
+      // Close step-select audition gate when all relevant keys are released.
+      if (!clk_run && s_tap_pitch_preview_gate &&
+          !check_pitch_inputs() &&
+          !inputs[UP_KEY].held() && !inputs[DOWN_KEY].held() &&
+          !inputs[ACCENT_KEY].held() && !inputs[TAP_NEXT].held()) {
+        s_tap_pitch_preview_gate = false;
       }
     } else if (pitch_mod && !fn_mod && !clear_mod && !write_mode) {
       ProcessPitchMod();
@@ -1331,7 +1345,7 @@ void loop() {
 
   if (s_cfg_menu == CfgMenu::Off) {
     if (inputs[TIME_KEY].rising()  && write_mode && !clear_mod && !fn_mod && !edit_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
-    if (inputs[PITCH_KEY].rising() && write_mode && !fn_mod && !edit_mode) engine.SetMode(PITCH_MODE, !clk_run);
+    if (inputs[PITCH_KEY].rising() && write_mode && !fn_mod && !edit_mode && !clear_mod) engine.SetMode(PITCH_MODE, !clk_run);
 
     // CLEAR + TIME_KEY: toggle metronome tap-write (running + write + NORMAL_MODE).
     if (clear_mod && inputs[TIME_KEY].rising() && !fn_mod &&
@@ -1393,13 +1407,17 @@ void loop() {
         pat_changed = true;
       }
       // CLEAR + DOWN rising: rotate time data one step LEFT within length.
+      // CLEAR + PITCH + DOWN rising: rotate pitch data only one step LEFT.
       if (inputs[DOWN_KEY].rising()) {
-        engine.RotateTimeLeft();
+        if (pitch_mod) engine.RotatePitchLeft();
+        else           engine.RotateTimeLeft();
         pat_changed = true;
       }
       // CLEAR + UP rising: rotate time data one step RIGHT within length.
+      // CLEAR + PITCH + UP rising: rotate pitch data only one step RIGHT.
       if (inputs[UP_KEY].rising()) {
-        engine.RotateTimeRight();
+        if (pitch_mod) engine.RotatePitchRight();
+        else           engine.RotateTimeRight();
         pat_changed = true;
       }
       // CLEAR + SLIDE rising: Mutate current pattern (small random perturbation).
@@ -1413,7 +1431,7 @@ void loop() {
         pat_changed = true;
       }
       // CLEAR + TAP_NEXT rising: shift whole pattern (pitch+time) one step RIGHT.
-      if (inputs[TAP_NEXT].rising()) {
+      if (inputs[TAP_NEXT].rising() && !pitch_mod) {
         engine.ShiftPatternRight();
         pat_changed = true;
       }
@@ -1616,8 +1634,10 @@ void loop() {
           if (engine.get_sequence().get_time() == 1) {
             uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
             if (mn > 127) mn = 127;
-            const uint8_t vel = engine.get_sequence().get_accent() ? 127 : 80;
+            const bool acc = engine.get_sequence().get_accent();
+            const uint8_t vel = acc ? 127 : 80;
             s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + 4 + transpose);
+            s_tap_pitch_preview_accent = acc;
             s_tap_pitch_preview_gate = true;
             midi_audition_note_on(uint8_t(mn), vel);
           }
@@ -1625,6 +1645,25 @@ void loop() {
           const bool send = engine.Advance();
           engine.SyncAfterManualAdvance(send);
         }
+      }
+    }
+    // BACK in regular write (TAP not held): step cursor back to the previous NOTE step.
+    // The next TAP will audition that step again.
+    if (inputs[BACK_KEY].rising() && !fn_mod && write_mode && !clk_run && !edit_mode &&
+        !s_step_sel_mode && engine.get_mode() == PITCH_MODE) {
+      Sequence &s = engine.get_sequence();
+      const uint8_t len = engine.get_length();
+      if (len > 0) {
+        for (uint8_t tries = 0; tries < len; ++tries) {
+          int pp = s.pitch_pos - 1;
+          if (pp < 0) pp = int(len) - 1;
+          s.pitch_pos = pp;
+          s.time_pos  = pp;
+          if (s.time(uint8_t(pp)) == 1) break;
+        }
+        // Guard against the "wrap-to-first-note auto-exits PITCH_MODE" rule below
+        // (line ~1728): BACK is a cursor move, not a completed loop.
+        s.first_step = true;
       }
     }
     if (inputs[TAP_NEXT].falling()) {
@@ -1657,8 +1696,13 @@ void loop() {
         const uint8_t ltp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
         midi_send_step_lock_update(engine.get_patsel(), ltp, engine.get_sequence().step_locked(ltp));
       }
-      if (clk_run || (!fn_mod && check_time_inputs())) {
-        input_time(clk_run, clk_run);
+      if (clk_run) {
+        input_time(true, true);
+      } else if (!fn_mod && check_time_inputs() &&
+                 s_time_edit_steps < engine.get_length()) {
+        input_time(false, false);
+        if (s_time_edit_steps >= engine.get_length())
+          engine.SetMode(NORMAL_MODE, true);
       } else if (!clk_run && s_time_edit_steps >= engine.get_length())
         engine.SetMode(NORMAL_MODE, true);
     }
@@ -1727,6 +1771,7 @@ void loop() {
     if (s_tap_pitch_preview_gate) {
       pitch_cv = s_tap_pitch_preview_cv;
       gate = true;
+      if (s_tap_pitch_preview_retrig) { gate = false; --s_tap_pitch_preview_retrig; }
     } else if (s_back_pitch_preview_gate) {
       pitch_cv = s_back_pitch_preview_cv;
       gate = true;
@@ -1743,7 +1788,7 @@ void loop() {
     DAC::SetPitch(pitch_cv);
     DAC::SetSlide(slide_cv);
     DAC::SetAccent(inputs[ACCENT_KEY].held() || midi_live_accent() ||
-                   (s_tap_pitch_preview_gate && s_tap_pitch_preview_accent));
+                   ((s_tap_pitch_preview_gate || s_back_pitch_preview_gate) && s_tap_pitch_preview_accent));
     DAC::SetGate(gate);
   }
 
