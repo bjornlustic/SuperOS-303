@@ -884,7 +884,10 @@ void loop() {
     }
   }
 
-  if (inputs[RUN].rising() || midi_clk_rose) {
+  // Ignore RUN button while MIDI clock is actively driving the sequencer:
+  // pressing RUN mid-playback would call engine.Reset() and stutter.
+  const bool run_rising_effective = inputs[RUN].rising() && !midi_clk;
+  if (run_rising_effective || midi_clk_rose) {
     // midi_poll already called engine.Reset() on MIDI Start; only reset for hardware button.
     if (!midi_clk_rose) engine.Reset();
     // Restart chain from first pattern on every start (hardware or MIDI clock).
