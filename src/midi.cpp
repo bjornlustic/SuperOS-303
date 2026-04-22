@@ -51,6 +51,17 @@ static bool s_midi_thru = false;
 // midi_flush_pending_saves() so EEPROM writes don't stall RX inside SysEx parsing.
 static bool s_settings_dirty = false;
 
+// Per-pattern dirty bitmap for deferred pattern-EEPROM persistence. Any
+// SysEx that mutates pattern RAM (0x12, 0x16, 0x18, 0x19, 0x1B) sets the
+// corresponding bit. midi_flush_pending_pattern_saves() writes one pattern
+// per call when idle so the EEPROM stall stays short.
+static uint16_t s_pat_dirty_mask = 0;
+static uint32_t s_last_web_edit_ms = 0;
+static inline void mark_pat_dirty(uint8_t pat) {
+  s_pat_dirty_mask |= uint16_t(1u << (pat & 0x0f));
+  s_last_web_edit_ms = millis();
+}
+
 static uint8_t out_ch() {
   return s_in_channel == 0 ? 1 : s_in_channel;
 }
@@ -240,6 +251,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     // exit) to persist.
     if (!g_eng->import_pattern_blob(pat, raw, /*persist_eeprom=*/false)) { send_ack(2); return; }
     g_eng->stale = true;
+    mark_pat_dirty(pat);
     send_ack(0);
     break;
   }
@@ -262,6 +274,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t shift = 4 * (step & 1);
     td = (td & ~(0x0F << shift)) | (timeNib << shift);
     g_eng->stale = true;
+    mark_pat_dirty(pat);
     break;
   }
   case 0x18: { // host → 303: set pattern length
@@ -271,6 +284,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     if (len < 1 || len > MAX_STEPS) return;
     g_eng->pattern[pat].length = len;
     g_eng->stale = true;
+    mark_pat_dirty(pat);
     break;
   }
   case 0x19: { // host → 303: set step lock
@@ -286,6 +300,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     else
       seq.step_lock[step >> 3] &= ~mask;
     g_eng->stale = true;
+    mark_pat_dirty(pat);
     break;
   }
   case 0x1B: { // host → 303: set step ratchet value
@@ -297,6 +312,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     if (step >= MAX_STEPS) return;
     seq.set_ratchet_val(step, val);
     g_eng->stale = true;
+    mark_pat_dirty(pat);
     break;
   }
   case 0x1A: { // set chain state from host
@@ -779,5 +795,24 @@ void midi_flush_pending_saves() {
   if (s_settings_dirty) {
     GlobalSettings.save_midi_to_storage();
     s_settings_dirty = false;
+  }
+}
+
+// Incremental persistence of web-edited patterns. Writes at most ONE pattern
+// per call. Only fires when: clock is stopped (EEPROM write halts the CPU and
+// would glitch playback audio) AND at least 2s have passed since the last
+// SysEx edit (so a burst of edits coalesces into one write per pattern).
+void midi_flush_pending_pattern_saves(Engine &engine) {
+  if (s_pat_dirty_mask == 0) return;
+  if (g_clk_run) return;
+  const uint32_t now = millis();
+  if (now - s_last_web_edit_ms < 2000) return;
+  for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+    const uint16_t bit = uint16_t(1u << i);
+    if (s_pat_dirty_mask & bit) {
+      WritePattern(engine.pattern[i], i, engine.get_group());
+      s_pat_dirty_mask &= ~bit;
+      return; // one per tick
+    }
   }
 }

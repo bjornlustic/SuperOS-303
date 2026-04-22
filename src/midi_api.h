@@ -106,3 +106,8 @@ bool midi_get_received_chain(uint8_t *out_active_len, uint8_t out_active_pats[4]
 /// Call from a main-loop save point; blocking EEPROM writes inside the SysEx
 /// fast path would overflow the UART RX buffer and drop subsequent messages.
 void midi_flush_pending_saves();
+
+/// Incrementally persist web-edited patterns to EEPROM. Writes at most one
+/// pattern per call, and only after a quiet period since the last SysEx edit
+/// so bursts of web edits coalesce. Call from the main loop.
+void midi_flush_pending_pattern_saves(Engine &engine);

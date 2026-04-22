@@ -813,6 +813,11 @@ void loop() {
   // iteration. Waiting for WRITE/RUN falling loses config if the user powers
   // off without ever entering edit/run (common with web-only workflows).
   midi_flush_pending_saves();
+  // Persist web-edited patterns in the background: one pattern per idle tick,
+  // only after a quiet period so rapid edits coalesce. Ensures patterns pushed
+  // from the web editor survive a power cycle without requiring a RUN/WRITE
+  // toggle. Safe during playback - EEPROM write is ~3-100ms per pattern.
+  midi_flush_pending_pattern_saves(engine);
   // Detect MIDI clock Start rising edge (midi_clk just became true this frame).
   const bool midi_clk_rose = (!prev_midi_clk && midi_clk && GlobalSettings.midi_clock_receive);
 
