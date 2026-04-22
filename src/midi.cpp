@@ -216,7 +216,7 @@ static void dump_try_advance() {
 
 // --- SysEx parse ----------------------------------------------------------------
 static void handle_sysex_body(const uint8_t *p, unsigned n) {
-  if (!g_eng || n < 3) return;
+  if (!g_eng || n < 2) return;
   if (p[0] != 0x7D) return;
   const uint8_t cmd = p[1];
 

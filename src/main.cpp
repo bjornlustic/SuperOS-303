@@ -297,35 +297,33 @@ uint8_t input_pitch(bool mod = false, bool clk_run = false) {
 void input_time(bool mod = false, bool clk_run = false) {
   if (clk_run && engine.is_step_locked()) return;
   uint8_t written_time = 0xFF;
-  if (inputs[DOWN_KEY].rising()) {
-    if (!mod) { engine.Advance(); ++s_time_edit_steps; }
-    uint8_t old_t = engine.get_time();
-    engine.SetTime(1); written_time = 1; // note
-    if (!clk_run) engine.get_sequence().reflow_pitches_after_time_change(old_t);
-  } else if (inputs[UP_KEY].rising()) {
-    if (!mod) { engine.Advance(); ++s_time_edit_steps; }
-    uint8_t old_t = engine.get_time();
-    engine.SetTime(2); written_time = 2; // tie
-    if (!clk_run) engine.get_sequence().reflow_pitches_after_time_change(old_t);
-  } else if (inputs[ACCENT_KEY].rising()) {
-    if (!mod) { engine.Advance(); ++s_time_edit_steps; }
-    uint8_t old_t = engine.get_time();
-    engine.SetTime(0); written_time = 0; // rest
-    if (!clk_run) engine.get_sequence().reflow_pitches_after_time_change(old_t);
-  }
-  if (written_time != 0xFF) {
-    const uint8_t tp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
-    if (!clk_run) {
-      // Stopped: reflow may have moved pitches, so resync all steps.
-      // Incremental sync drains 2 steps/loop to stay gentle on the MIDI TX ring.
-      s_pat_sync_pat = engine.get_patsel();
-      s_pat_sync_pos = 0;
-      s_pat_sync_len = engine.get_length();
-    } else {
-      // Running: lightweight single-step update only.
-      midi_send_step_update(engine.get_patsel(), tp,
-          engine.get_sequence().pitch[tp], written_time);
+  uint8_t new_t = 0;
+  if (inputs[DOWN_KEY].rising())        { new_t = 1; written_time = 1; }
+  else if (inputs[UP_KEY].rising())     { new_t = 2; written_time = 2; }
+  else if (inputs[ACCENT_KEY].rising()) { new_t = 0; written_time = 0; }
+  if (written_time == 0xFF) return;
+
+  if (!mod) { engine.Advance(); ++s_time_edit_steps; }
+  Sequence &s = engine.get_sequence();
+  const uint8_t len = engine.get_length();
+  uint8_t before[MAX_STEPS];
+  for (uint8_t i = 0; i < len; ++i) before[i] = s.pitch[i];
+  const uint8_t old_t = engine.get_time();
+  engine.SetTime(new_t);
+  s.reflow_pitches_after_time_change(old_t);
+
+  const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
+  if (!clk_run) {
+    s_pat_sync_pat = engine.get_patsel();
+    s_pat_sync_pos = 0;
+    s_pat_sync_len = len;
+  } else {
+    const uint8_t pat = engine.get_patsel();
+    for (uint8_t i = 0; i < len; ++i) {
+      if (s.pitch[i] != before[i] && i != tp)
+        midi_send_step_update(pat, i, s.pitch[i], s.time(i));
     }
+    midi_send_step_update(pat, tp, s.pitch[tp], written_time);
   }
 }
 
@@ -811,6 +809,10 @@ void loop() {
   midi_poll(engine, clk_run, midi_clk, midi_clock_pulses);
   // SysEx 0x22 may have updated led_brightness; mirror into the LED driver.
   Leds::brightness = GlobalSettings.led_brightness;
+  // Persist any pending SysEx config change to EEPROM on the very next idle
+  // iteration. Waiting for WRITE/RUN falling loses config if the user powers
+  // off without ever entering edit/run (common with web-only workflows).
+  midi_flush_pending_saves();
   // Detect MIDI clock Start rising edge (midi_clk just became true this frame).
   const bool midi_clk_rose = (!prev_midi_clk && midi_clk && GlobalSettings.midi_clock_receive);
 

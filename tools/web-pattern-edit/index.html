@@ -46,6 +46,14 @@
     /* ── Toast ── */
     #downloadToast { position: fixed; bottom: 18px; right: 18px; padding: 8px 14px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: #c00; color: var(--white); border: var(--rule); opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 999; }
     #downloadToast.visible { opacity: 1; }
+    #syncOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.82); display: none; align-items: center; justify-content: center; z-index: 10000; }
+    #syncOverlay.visible { display: flex; }
+    #syncOverlay .sync-card { background: var(--white); border: 2px solid var(--black); padding: 22px 28px; min-width: 320px; box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
+    #syncOverlay .sync-title { font-size: 12px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 8px; }
+    #syncOverlay .sync-msg { font-size: 11px; color: var(--gray-4); margin-bottom: 14px; font-family: var(--mono); }
+    #syncOverlay .sync-bar-outer { width: 100%; height: 12px; border: 1px solid var(--black); background: var(--gray-1); }
+    #syncOverlay .sync-bar-inner { height: 100%; background: var(--black); width: 0%; transition: width 0.15s; }
+    #syncOverlay .sync-count { font-size: 10px; color: var(--gray-3); margin-top: 6px; font-family: var(--mono); text-align: right; }
 
     /* ── Control strips ── */
     .strip { display: flex; flex-wrap: wrap; align-items: stretch; border: var(--rule); margin-bottom: 6px; min-width: 0; }
@@ -406,32 +414,28 @@
     .scale-root-btn.is-black:hover, .scale-note-btn.is-black:hover { background: var(--gray-3); }
     #btnScaleLockToggle.is-on { background: var(--black); color: var(--white); border-color: var(--black); }
 
-    /* ── Play Buddy ── */
-    .buddy-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
-    .buddy-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
-    .buddy-bar:hover { background: var(--gray-1); }
-    .buddy-bar.is-open { border-bottom: var(--rule-sm); }
-    .buddy-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
-    .buddy-bar-arrow { font-size: 8px; color: var(--gray-3); display: inline-block; transition: transform 0.12s; }
-    .buddy-bar.is-open .buddy-bar-arrow { transform: rotate(90deg); }
-    .buddy-run-lbl { font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; margin-left: auto; }
-    .buddy-run-lbl.is-on { color: var(--red); }
-    .buddy-body { display: none; }
-    .buddy-body.is-open { display: block; }
-    .buddy-inner { padding: 14px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
-    .buddy-ctrl-row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
-    .buddy-ctrl-lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray-4); }
-    .buddy-sep { border-bottom: var(--rule-sm); }
-    .buddy-cats { display: flex; flex-wrap: wrap; gap: 8px 28px; }
-    .buddy-cat { display: flex; align-items: center; gap: 6px; }
-    .buddy-cat input[type="checkbox"] { width: 13px; height: 13px; cursor: pointer; accent-color: var(--black); flex-shrink: 0; }
-    .buddy-cat-name { font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; min-width: 54px; cursor: pointer; color: var(--black); }
-    .buddy-cat-name.is-off { color: var(--gray-3); }
-    .buddy-cat-pair { display: flex; align-items: center; gap: 4px; }
-    .buddy-cat-pair-lbl { font-size: 8px; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray-4); }
-    .buddy-cat input[type="range"] { width: 72px; height: 4px; cursor: pointer; accent-color: var(--black); }
-    .buddy-cat input[type="range"]:disabled { opacity: 0.25; cursor: default; }
-    .buddy-cat-val { font-size: 9px; font-weight: 700; color: var(--gray-4); min-width: 26px; font-family: var(--mono); }
+    /* ── Library ── */
+    .lib-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
+    .lib-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .lib-bar:hover { background: var(--gray-1); }
+    .lib-bar.is-open { border-bottom: var(--rule-sm); }
+    .lib-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
+    .lib-bar-arrow { font-size: 8px; color: var(--gray-3); display: inline-block; transition: transform 0.12s; }
+    .lib-bar.is-open .lib-bar-arrow { transform: rotate(90deg); }
+    .lib-count { font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; margin-left: auto; font-family: var(--mono); }
+    .lib-body { display: none; }
+    .lib-body.is-open { display: block; }
+    .lib-inner { padding: 14px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .lib-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+    .lib-list { display: flex; flex-direction: column; gap: 4px; max-height: 280px; overflow-y: auto; border: var(--rule-sm); padding: 6px; }
+    .lib-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-bottom: 1px solid var(--gray-1); }
+    .lib-item:last-child { border-bottom: none; }
+    .lib-item-label { flex: 1; font-size: 11px; font-family: var(--mono); color: var(--black); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lib-empty { padding: 8px; font-size: 10px; color: var(--gray-3); text-align: center; }
+
+    /* ── Error toast ── */
+    #errorToast { position: fixed; right: 16px; bottom: 16px; background: #c80000; color: #fff; border: 2px solid #800; padding: 10px 14px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; border-radius: 2px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 9999; display: none; }
+    #errorToast.visible { display: block; }
   </style>
 </head>
 <body>
@@ -444,9 +448,21 @@
 
   <div id="downloadToast"></div>
 
+  <div id="syncOverlay">
+    <div class="sync-card">
+      <div class="sync-title">Syncing with 303</div>
+      <div class="sync-msg" id="syncMsg">Reading device config and patterns...</div>
+      <div class="sync-bar-outer"><div class="sync-bar-inner" id="syncBar"></div></div>
+      <div class="sync-count" id="syncCount">0 / 16</div>
+      <div class="sync-count" id="syncCfgLine" style="text-align:left;margin-top:4px;">Device config: waiting...</div>
+    </div>
+  </div>
+
   <div class="banner" id="httpBanner">
     &#9632;&nbsp; Serve over HTTP for Web MIDI — run: python3 -m http.server 8080 --directory tools/web-pattern-edit
   </div>
+
+  <div id="errorToast"></div>
 
   <!-- MIDI Connection -->
   <div class="strip">
@@ -512,19 +528,6 @@
   <!-- Live + Edits + clipboard (above step grid) -->
   <div class="strip strip--action-bar">
     <div class="group">
-      <span class="lbl">Live</span>
-      <div class="group-inner live-group-inner">
-        <label class="live-toggle" id="liveToggleLabel" title="Live off — tap to push edits while the sequencer runs">
-          <input type="checkbox" id="chkLive" />
-          <span>Push web edits to 303 while playing</span>
-        </label>
-        <label class="live-toggle" id="reflectToggleLabel" title="Reflect 303 edits off — tap to mirror hardware knob writes into the web editor in real time">
-          <input type="checkbox" id="chkReflect" />
-          <span>Pull 303 edits to web editor while playing</span>
-        </label>
-      </div>
-    </div>
-    <div class="group">
       <span class="lbl">Edits</span>
       <div class="group-inner group-inner--edits">
         <button class="btn" id="btnUndo" disabled>&#8592; Undo</button>
@@ -532,7 +535,6 @@
         <button class="btn" id="btnResetBefore" disabled>Reset to Saved</button>
         <button class="btn" id="btnResetAfter" disabled>Reset to Latest</button>
         <button class="btn" id="btnClearPat">Clear pattern</button>
-        <button class="btn btn-green" id="btnSave303" disabled>Commit &amp; Save to 303</button>
       </div>
     </div>
     <div class="group">
@@ -645,33 +647,21 @@
     </div>
   </div>
 
-  <!-- Play Buddy -->
-  <div class="buddy-panel" id="buddyPanel">
-    <div class="buddy-bar" id="buddyBar">
-      <span class="buddy-bar-arrow">&#9658;</span>
-      <span class="buddy-bar-label">Play Buddy</span>
-      <span class="buddy-run-lbl" id="buddyRunLbl">Off</span>
+  <!-- Library -->
+  <div class="lib-panel" id="libPanel">
+    <div class="lib-bar" id="libBar">
+      <span class="lib-bar-arrow">&#9658;</span>
+      <span class="lib-bar-label">Library</span>
+      <span class="lib-count" id="libCount">0 patterns</span>
     </div>
-    <div class="buddy-body" id="buddyBody">
-      <div class="buddy-inner">
-        <div class="buddy-ctrl-row">
-          <button class="btn btn-primary" id="btnBuddyToggle">Start</button>
-          <span class="buddy-ctrl-lbl">Interval</span>
-          <input type="number" id="buddyInterval" min="1" max="64" value="8" style="width:54px;cursor:ns-resize" />
-          <span class="buddy-ctrl-lbl">Notes / tick</span>
-          <input type="number" id="buddyNotesPerTick" min="1" max="64" value="1" style="width:54px;cursor:ns-resize" />
-          <span class="buddy-ctrl-lbl">Changes / note</span>
-          <select id="buddyChangesPerTick">
-            <option value="1" selected>1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="4">4</option>
-            <option value="8">8</option>
-          </select>
-          <button class="btn" id="btnBuddyRestore" disabled>Restore Original</button>
+    <div class="lib-body" id="libBody">
+      <div class="lib-inner">
+        <div class="lib-toolbar">
+          <button class="btn btn-primary" id="btnLibUpload">Upload JSON(s)</button>
+          <input type="file" id="libFileInput" accept=".json,application/json" multiple style="display:none" />
+          <button class="btn" id="btnLibClear">Clear Library</button>
         </div>
-        <div class="buddy-sep"></div>
-        <div class="buddy-cats" id="buddyCatsEl"></div>
+        <div class="lib-list" id="libList"></div>
       </div>
     </div>
   </div>
@@ -1262,14 +1252,15 @@
   var patternBulkTargetGroup = 0;
   var saveAckPending = false;
   var liveTimer = null;
-  var liveEnabled = false;
+  var liveEnabled = true;
   var hwGroup        = -1;     // pattern group currently loaded on hardware (0-3); -1 = not yet synced
+  var hwMidiChannel  = 0;      // 0 = omni / unknown; 1..16 = 303's configured MIDI input channel
   var initialSyncDone = false; // true after the first bulk download on connect
   var hwRunning = false;       // true while receiving 0x15 step position messages
   var hwRunningTimer = null;
   var lastSentBlob = null;     // snapshot of last blob sent to hardware (for diffing)
   var lastSentPat  = -1;       // pattern index of lastSentBlob
-  var reflect303Enabled = false;
+  var reflect303Enabled = true;
   var reflect303HistTimer = null;
 
   // ── Build UI ───────────────────────────────────────────────────────
@@ -1474,6 +1465,12 @@
     var lenEl = document.getElementById('patLen');
     lenEl.max = String(groupMaxSteps());
     lenEl.value = String(activeBlob()[127]);
+    // Refresh delta baseline so the first live edit on this pattern diffs
+    // against the correct pre-edit state (303 already has this data).
+    if (activeGroup === hwGroup) {
+      lastSentBlob = new Uint8Array(activeBlob());
+      lastSentPat  = activePat;
+    }
     refreshAllPills();
     recomputeDirty();
     renderGrid();
@@ -1514,7 +1511,7 @@
     document.getElementById('btnRedo').disabled        = !canRedo(activeGroup, activePat);
     document.getElementById('btnResetBefore').disabled = !canUndo(activeGroup, activePat);
     document.getElementById('btnResetAfter').disabled  = !canRedo(activeGroup, activePat);
-    document.getElementById('btnSave303').disabled     = !dirty || !midiOut;
+    void dirty;
     refreshAllPills();
   }
 
@@ -1677,11 +1674,11 @@
             var nxt = (si + 1) % L;
             var prv = (si + L - 1) % L;
             if (tv === 0 && getTime(blob2, nxt) === 2) {
-              alert('Cannot put rest before a tie.');
+              showErrorToast('Cannot put rest before a tie.');
               return;
             }
             if (tv === 2 && getTime(blob2, prv) === 0) {
-              alert('Cannot put rest before a tie.');
+              showErrorToast('Cannot put rest before a tie.');
               return;
             }
             var tb = snapshotTimes(blob2, L);
@@ -2028,14 +2025,6 @@
         }
       }
     }
-    if (buddyRunning) {
-      buddyStepCount++;
-      var buddyTarget = parseInt(document.getElementById('buddyInterval').value, 10) || 8;
-      if (buddyStepCount >= buddyTarget) {
-        buddyStepCount = 0;
-        buddyTick();
-      }
-    }
   }
 
   // ── MIDI send helpers ──────────────────────────────────────────────
@@ -2067,7 +2056,34 @@
     });
   }
 
-  function sendCfgRead()  { sendSysex(new Uint8Array([0x7d, 0x20])); }
+  var cfgReadRetryTimer = null, cfgReadAttempts = 0;
+  function cfgIsSynced() {
+    return document.getElementById('configStatus').textContent === 'Synced';
+  }
+  function clearCfgReadRetry() {
+    if (cfgReadRetryTimer) { clearTimeout(cfgReadRetryTimer); cfgReadRetryTimer = null; }
+    cfgReadAttempts = 0;
+  }
+  function sendCfgRead() {
+    if (!midiOut) return;
+    sendSysex(new Uint8Array([0x7d, 0x20]));
+    updateSyncOverlayConfig(cfgIsSynced() ? 'ok' : 'pending', cfgReadAttempts + 1);
+    if (cfgReadRetryTimer) clearTimeout(cfgReadRetryTimer);
+    cfgReadAttempts++;
+    cfgReadRetryTimer = setTimeout(function() {
+      cfgReadRetryTimer = null;
+      if (!midiOut) { cfgReadAttempts = 0; return; }
+      if (cfgIsSynced()) { cfgReadAttempts = 0; return; }
+      if (cfgReadAttempts >= 6) {
+        log('Config read: no 0x21 reply after ' + cfgReadAttempts + ' attempts', 'log-err');
+        updateSyncOverlayConfig('fail', cfgReadAttempts);
+        cfgReadAttempts = 0;
+        return;
+      }
+      log('Config read: no reply yet, retry ' + cfgReadAttempts, 'log-syx');
+      sendCfgRead();
+    }, 1500);
+  }
   function sendCfgWrite(ch, flags, dir, bri) {
     var d = (dir === undefined) ? currentDirection : (dir & 0x07);
     var b = (bri === undefined) ? 8 : (bri & 0x7f);
@@ -2130,35 +2146,84 @@
     lastSentPat  = pat;
   }
 
+  /** Push the full current pattern to 303 now (single 0x12 SysEx, no debounce).
+   * Used by actions that mutate every step (Random*, Clear, Paste, Brownian)
+   * so a missed diff or cancelled debounce timer cannot swallow the write. */
+  function pushFullPatternNow() {
+    if (!midiOut) { log('Push skipped: no MIDI output', 'log-err'); return; }
+    if (hwGroup >= 0 && activeGroup !== hwGroup) {
+      log('Push skipped: activeGroup ' + (activeGroup+1) + ' != hwGroup ' + (hwGroup+1), 'log-err');
+      return;
+    }
+    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+    syncBlob();
+    var pat  = activePat & 15;
+    var blob = activeBlob();
+    log('Push pattern ' + (pat + 1) + ' to 303 (' + blob[127] + ' steps)', 'log-syx');
+    sendPattern(pat, blob);
+    lastSentBlob = new Uint8Array(blob);
+    lastSentPat  = pat;
+  }
+
   function scheduleLiveSend() {
-    if (!liveEnabled || !midiOut) return;
+    if (!liveEnabled) return;
+    if (!midiOut) { log('Live send skipped: no MIDI output selected', 'log-err'); return; }
     syncBlob();
     if (liveTimer) clearTimeout(liveTimer);
     liveTimer = setTimeout(function() {
       liveTimer = null;
       var pat  = activePat & 15;
       var blob = activeBlob();
-      if (activeGroup !== hwGroup) {
-        // Editing a group not loaded on hardware — skip send to avoid corrupting the wrong group
+      // Only block when we *know* the hardware is on a different group. If
+      // hwGroup is -1 we haven't heard back from the 303 yet (MIDI IN not
+      // routed) — proceed anyway; dropping silently makes the editor look
+      // like it's doing nothing.
+      if (hwGroup >= 0 && activeGroup !== hwGroup) {
+        log('Live send skipped: activeGroup ' + (activeGroup+1) + ' != hwGroup ' + (hwGroup+1), 'log-err');
         return;
       }
-      if (hwRunning) {
-        // Hardware is playing — send individual step updates to avoid disrupting the sequencer
-        if (lastSentPat !== pat) {
-          // Pattern changed — need a fresh baseline, send full blob
-          sendPattern(pat, blob);
-          lastSentBlob = new Uint8Array(blob);
-          lastSentPat  = pat;
-        } else {
-          sendDelta(pat, blob);
+      var haveBaseline = !!lastSentBlob && lastSentPat === pat;
+      var len = blob[127] | 0;
+      var diffCount = 0;
+      if (haveBaseline) {
+        for (var d = 0; d < len; d++) {
+          if (blob[d] !== lastSentBlob[d]) diffCount++;
+          else if (getTime(blob, d) !== getTime(lastSentBlob, d)) diffCount++;
+          else if (getStepLock(blob, d) !== getStepLock(lastSentBlob, d)) diffCount++;
+          else if (getRatchet(blob, d) !== getRatchet(lastSentBlob, d)) diffCount++;
         }
       } else {
-        // Clock stopped — safe to send full pattern blob
-        sendPattern(pat, blob);
-        lastSentBlob = new Uint8Array(blob);
-        lastSentPat  = pat;
+        diffCount = len;
       }
+      // One 0x12 (~154 bytes) beats many 0x16s (~9 bytes each) once diffs pile up.
+      // 6 step deltas ≈ one full-pattern send; above that, send the blob once.
+      if (diffCount > 6) {
+        sendPattern(pat, blob);
+      } else if (haveBaseline) {
+        sendDelta(pat, blob);
+      } else {
+        for (var i = 0; i < len; i++) sendStepUpdate(pat, i, blob[i], getTime(blob, i));
+        for (var j = 0; j < len; j++) sendStepLockUpdate(pat, j, getStepLock(blob, j));
+        for (var k = 0; k < len; k++) sendRatchetUpdate(pat, k, getRatchet(blob, k));
+        sendLengthUpdate(pat, len);
+      }
+      lastSentBlob = new Uint8Array(blob);
+      lastSentPat  = pat;
     }, 100);
+  }
+
+  // ── Error toast ───────────────────────────────────────────────────
+  var errorToastTimer = null;
+  function showErrorToast(msg) {
+    var el = document.getElementById('errorToast');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add('visible');
+    if (errorToastTimer) clearTimeout(errorToastTimer);
+    errorToastTimer = setTimeout(function() {
+      el.classList.remove('visible');
+      errorToastTimer = null;
+    }, 2500);
   }
 
   // ── Bank download (.syx) ───────────────────────────────────────────
@@ -2183,10 +2248,13 @@
       var bulkDone = false;
       if (inBulk) {
         expectDump--;
-        log('Pattern ' + (pat+1) + ' received (' + (16 - expectDump) + '/16)', 'log-syx');
+        var recvd = 16 - expectDump;
+        log('Pattern ' + (pat+1) + ' received (' + recvd + '/16)', 'log-syx');
+        updateSyncOverlay(recvd);
         if (expectDump === 0) {
           bulkDone = true;
           bulkNextPat = -1;
+          hideSyncOverlay();
         } else {
           // Request next pattern immediately
           sendSysex(new Uint8Array([0x7d, 0x10, bulkNextPat & 15]));
@@ -2255,7 +2323,7 @@
         if (grp !== hwGroup) {
           hwGroup = grp;
           switchGroup(grp);
-          if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(grp); }
+          if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(grp, true); }
         }
       }
       updatePlayingStep(hPat, hStep);
@@ -2268,7 +2336,7 @@
       if (aGrp !== hwGroup) {
         hwGroup = aGrp;
         switchGroup(aGrp);
-        if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(aGrp); }
+        if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(aGrp, true); }
       }
       updatePlayingStep(aPat, -1);
       return;
@@ -2280,11 +2348,18 @@
       hwGroup = newGrp;
       log('Hardware group: ' + (newGrp + 1) + (grpChanged ? (initialSyncDone ? ' (changed)' : ' (initial sync)') : ' (echo)'), 'log-ack');
       switchGroup(newGrp);
-      // Download on first connect (initialSyncDone=false) or whenever group changes.
-      // Skip on the post-dump sendCfgRead() echo (initialSyncDone=true, same group).
-      if (grpChanged) {
+      // Download on first connect, on group change, or if an in-flight bulk
+      // is targeting a stale group. Abort the wrong-group bulk and restart.
+      var bulkMismatch = expectDump > 0 && patternBulkTargetGroup !== newGrp;
+      if (grpChanged || bulkMismatch) {
+        if (bulkMismatch) {
+          log('Aborting bulk for group ' + (patternBulkTargetGroup + 1) + ' — restarting for group ' + (newGrp + 1), 'log-syx');
+          expectDump = 0;
+          bulkNextPat = -1;
+        }
+        var wasInitial = !initialSyncDone;
         initialSyncDone = true;
-        startBulkRequest(newGrp);
+        startBulkRequest(newGrp, wasInitial);
       }
       return;
     }
@@ -2404,6 +2479,7 @@
 
     if (cmd === 0x21 && bytes.length >= 4) {
       var ch = bytes[2], fl = bytes[3];
+      hwMidiChannel = (ch <= 16) ? ch : 0;
       document.getElementById('cfgMidiCh').value   = String(ch);
       document.getElementById('cfgMidiClk').value  = String(fl & 1);
       document.getElementById('cfgMidiThru').value = String((fl >> 1) & 1);
@@ -2418,6 +2494,10 @@
       }
       document.getElementById('configStatus').textContent = 'Synced';
       document.getElementById('cfgFeedback').textContent  = 'Loaded from 303';
+      var _cb = document.getElementById('configBar'), _cy = document.getElementById('configBody');
+      _cb.classList.add('is-open'); _cy.classList.add('is-open');
+      updateSyncOverlayConfig('ok', 0);
+      clearCfgReadRetry();
       log('Config read: ch=' + ch + ' clock_rx=' + (fl & 1) + ' thru=' + ((fl >> 1) & 1) + ' dir=' + (kDirNames[currentDirection] || currentDirection) + briStr, 'log-ack');
       return;
     }
@@ -2440,6 +2520,18 @@
     if (chanBuf.length >= need) { dispatchChannel(chanBuf[0], chanBuf[1], chanBuf[2]); chanBuf = [chanBuf[0]]; }
   }
 
+  function drainCompleteSysex() {
+    var start = -1;
+    for (var i = 0; i < rxBuf.length; i++) {
+      if (rxBuf[i] === 0xf0) start = i;
+      else if (rxBuf[i] === 0xf7 && start >= 0) {
+        syxInner(new Uint8Array(rxBuf.slice(start + 1, i)));
+        start = -1;
+      }
+    }
+    if (start >= 0) rxBuf = rxBuf.slice(start);
+    else rxBuf = [];
+  }
   function onMidi(ev) {
     var d = ev.data;
     if (!d || !d.length) return;
@@ -2450,14 +2542,14 @@
       for (var i = 0; i < d.length; i++) rxBuf.push(d[i]);
       var hex0 = Array.from(d.subarray(0, Math.min(d.length, 8))).map(function(b){ return b.toString(16).padStart(2,'0'); }).join(' ');
       log('RX SysEx chunk [' + d.length + ' bytes]: ' + hex0 + (d.length > 8 ? ' ...' : ''), 'log-syx');
-      if (rxBuf[rxBuf.length-1] === 0xf7) { syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length-1)); rxBuf = []; }
+      if (rxBuf[rxBuf.length-1] === 0xf7) drainCompleteSysex();
       return;
     }
     if (rxBuf.length > 0) {
       if (d[0] < 0x80 || d[0] === 0xf7) {
         for (var j = 0; j < d.length; j++) rxBuf.push(d[j]);
         log('RX SysEx continuation [' + d.length + ' bytes, buf=' + rxBuf.length + ']', 'log-syx');
-        if (rxBuf[rxBuf.length-1] === 0xf7) { syxInner(new Uint8Array(rxBuf).subarray(1, rxBuf.length-1)); rxBuf = []; }
+        if (rxBuf[rxBuf.length-1] === 0xf7) drainCompleteSysex();
       } else if (d[0] < 0xf8) { log('RX SysEx aborted by status byte 0x' + d[0].toString(16), 'log-err'); rxBuf = []; }
     }
   }
@@ -2465,7 +2557,16 @@
   function onKeyboard(ev) {
     var d = ev.data;
     if (!d || !d.length || d[0] < 0x80 || d[0] >= 0xf0) return;
-    if (midiOut) midiOut.send(d);
+    // Rewrite the channel so keyboard thru lands on the 303's configured MIDI
+    // input channel. hwMidiChannel: 0=omni (no rewrite), 1..16 = rewrite.
+    if (midiOut) {
+      var out = d;
+      if (hwMidiChannel >= 1 && hwMidiChannel <= 16 && d[0] >= 0x80 && d[0] < 0xf0) {
+        out = new Uint8Array(d);
+        out[0] = (d[0] & 0xf0) | ((hwMidiChannel - 1) & 0x0f);
+      }
+      midiOut.send(out);
+    }
     var type = d[0] & 0xF0, ch = (d[0] & 0x0F) + 1;
     if (d.length >= 3 && (type === 0x90 || type === 0x80)) {
       var name = midiNoteNameForLog(d[1]);
@@ -2530,6 +2631,9 @@
       hwGroup = -1;
       initialSyncDone = false;
       autoConnectDone = false;
+      expectDump = 0;
+      bulkNextPat = -1;
+      hideSyncOverlay();
     }
     midiOut = newOut;
     midiIn  = newIn;
@@ -2562,9 +2666,16 @@
         autoPatternDumpTimer = setTimeout(function() {
           autoPatternDumpTimer = null;
           autoConnectDone = true;
-          log('Auto-connect: requesting config + all 16 patterns', 'log-syx');
+          log('Auto-connect: requesting config + patterns', 'log-syx');
+          showSyncOverlay('Requesting device config...');
           sendCfgRead();
-          startBulkRequest(activeGroup);
+          // Kick off bulk for the currently displayed group. If the 0x1C reply
+          // reveals a different hardware group, the 0x1C handler will abort
+          // this bulk and restart for the right group. startBulkRequest is
+          // idempotent for the same group, so duplicates are harmless.
+          setTimeout(function() {
+            if (expectDump === 0) startBulkRequest(activeGroup, true);
+          }, 250);
         }, 500);
       }
     }
@@ -2777,7 +2888,7 @@
     saveGroupsToLS();
     renderGrid();
     recomputeDirty();
-    scheduleLiveSend();
+    pushFullPatternNow();
     log('Pasted to pattern ' + (activePat+1) + ' (group ' + (activeGroup+1) + ')', 'log-ack');
   };
 
@@ -2814,20 +2925,17 @@
     renderGrid(); recomputeDirty();
   };
   document.getElementById('btnClearPat').onclick = function() {
-    clearPatternMinimalRest(activeBlob());
-    document.getElementById('patLen').value = '1';
+    var blob = activeBlob();
+    var keepLen = Math.max(1, blob[127] | 0);
+    clearPatternMinimalRest(blob);
+    blob[127] = keepLen;
+    document.getElementById('patLen').value = String(keepLen);
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
     renderGrid();
     recomputeDirty();
-    if (midiOut) {
-      var pat = activePat & 15;
-      var blob = activeBlob();
-      sendPattern(pat, blob);
-      lastSentBlob = new Uint8Array(blob);
-      lastSentPat  = pat;
-    }
-    log('Cleared pattern \u2192 1 step (rest)', 'log-ack');
+    pushFullPatternNow();
+    log('Cleared pattern (' + keepLen + ' steps, all rest)', 'log-ack');
   };
 
   // ── Randomize ──────────────────────────────────────────────────────
@@ -2941,7 +3049,7 @@
     applyRandomPitches(blob, len);
     syncScaleSnapAndApply(activeGroup, activePat, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     log('Randomized pitches', 'log-ack');
   };
   document.getElementById('btnRandOctave').onclick = function() {
@@ -2949,35 +3057,35 @@
     applyRandomOctave(blob, len);
     syncScaleSnapAndApply(activeGroup, activePat, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     log('Randomized octaves', 'log-ack');
   };
   document.getElementById('btnRandTime').onclick = function() {
     var blob = activeBlob(), len = currentPatLen();
     applyRandomTime(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     log('Randomized time', 'log-ack');
   };
   document.getElementById('btnRandAccent').onclick = function() {
     var blob = activeBlob(), len = currentPatLen();
     applyRandomAccent(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     log('Randomized accent', 'log-ack');
   };
   document.getElementById('btnRandSlide').onclick = function() {
     var blob = activeBlob(), len = currentPatLen();
     applyRandomSlide(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     log('Randomized slide', 'log-ack');
   };
   document.getElementById('btnRandRatchet').onclick = function() {
     var blob = activeBlob(), len = currentPatLen();
     applyRandomRatchets(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     log('Randomized ratchets', 'log-ack');
   };
   document.getElementById('btnRandAll').onclick = function() {
@@ -2991,7 +3099,7 @@
     for (var s = 0; s < len; s++) setRatchet(blob, s, 0);
     syncScaleSnapAndApply(activeGroup, activePat, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     log('Randomized all', 'log-ack');
   };
 
@@ -3024,7 +3132,7 @@
     applyBrownianPitches(blob, len);
     syncScaleSnapAndApply(activeGroup, activePat, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     log('Brownian pitches applied', 'log-ack');
   };
 
@@ -3354,7 +3462,7 @@
     saveGroupsToLS();
     renderGrid();
     recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
     var arrow = direction > 0 ? '\u2192' : '\u2190';
     log('Nudge ' + mode + ' ' + arrow, 'log-ack');
   }
@@ -3374,14 +3482,6 @@
   document.getElementById('btnNudgeAllL').onclick     = function() { doNudge('all',     -1); };
   document.getElementById('btnNudgeAllR').onclick     = function() { doNudge('all',     +1); };
 
-  document.getElementById('btnSave303').onclick = function() {
-    if (!midiOut) return;
-    syncBlob();
-    saveAckPending = true;
-    sendPattern(activePat & 15, activeBlob());
-    log('\u2190 Save pattern ' + (activePat+1) + ' to 303 (SysEx)', 'log-syx');
-  };
-
   // ── Request ────────────────────────────────────────────────────────
   document.getElementById('btnReq').onclick = function() {
     if (!midiIn) { log('Select MIDI input first', 'log-err'); return; }
@@ -3389,10 +3489,41 @@
     requestPattern(activePat & 15);
     log('\u2192 Request pattern ' + (activePat+1), 'log-syx');
   };
-  function startBulkRequest(g) {
+  function showSyncOverlay(msg) {
+    var ov = document.getElementById('syncOverlay');
+    if (!ov) return;
+    document.getElementById('syncMsg').textContent = msg || 'Reading device config and patterns...';
+    document.getElementById('syncCount').textContent = '0 / 16';
+    document.getElementById('syncBar').style.width = '0%';
+    document.getElementById('syncCfgLine').textContent = 'Device config: waiting...';
+    ov.classList.add('visible');
+  }
+  function updateSyncOverlayConfig(state, attempt) {
+    var el = document.getElementById('syncCfgLine');
+    if (!el) return;
+    if (state === 'ok')       el.textContent = 'Device config: synced';
+    else if (state === 'fail') el.textContent = 'Device config: no reply after ' + attempt + ' attempts';
+    else                       el.textContent = 'Device config: requesting (attempt ' + attempt + ')...';
+  }
+  function updateSyncOverlay(done) {
+    var pct = Math.round((done / 16) * 100);
+    document.getElementById('syncBar').style.width = pct + '%';
+    document.getElementById('syncCount').textContent = done + ' / 16';
+  }
+  function hideSyncOverlay() {
+    var ov = document.getElementById('syncOverlay');
+    if (ov) ov.classList.remove('visible');
+  }
+
+  function startBulkRequest(g, showOverlay) {
+    if (expectDump > 0 && patternBulkTargetGroup === g) {
+      // Bulk already in progress for this group — don't restart.
+      return;
+    }
     patternBulkTargetGroup = g;
     expectDump = 16;
     bulkNextPat = 1; // after pattern 0 arrives, request 1, then 2, etc.
+    if (showOverlay) showSyncOverlay('Loading patterns from 303 (group ' + (g + 1) + ')...');
     sendSysex(new Uint8Array([0x7d, 0x10, 0x00])); // request pattern 0 first
   }
   document.getElementById('btnReqAll').onclick = function() {
@@ -3402,35 +3533,6 @@
     startBulkRequest(activeGroup);
   };
 
-  function syncLiveIndicator() {
-    var cb = document.getElementById('chkLive');
-    var label = document.getElementById('liveToggleLabel');
-    liveEnabled = cb && cb.checked;
-    var on = liveEnabled ? 'Live on — pattern pushes to 303 while playing' : 'Live off — tap to push edits while the sequencer runs';
-    if (label) {
-      label.classList.toggle('is-on', !!liveEnabled);
-      label.title = on;
-      label.setAttribute('aria-label', on);
-    }
-  }
-  document.getElementById('chkLive').addEventListener('change', syncLiveIndicator);
-  syncLiveIndicator();
-
-  function syncReflectIndicator() {
-    var cb = document.getElementById('chkReflect');
-    var label = document.getElementById('reflectToggleLabel');
-    reflect303Enabled = cb && cb.checked;
-    var tip = reflect303Enabled
-      ? 'Reflect on — hardware edits are mirrored here in real time'
-      : 'Reflect off — tap to mirror 303 hardware edits into the web editor';
-    if (label) {
-      label.classList.toggle('is-on', !!reflect303Enabled);
-      label.title = tip;
-      label.setAttribute('aria-label', tip);
-    }
-  }
-  document.getElementById('chkReflect').addEventListener('change', syncReflectIndicator);
-  syncReflectIndicator();
 
   document.getElementById('patLen').addEventListener('change', function() {
     var blob = activeBlob();
@@ -3579,346 +3681,150 @@
     window.addEventListener('resize', schedule, { passive: true });
   })();
 
-  // ── Play Buddy ────────────────────────────────────────────────────────
-  // chance: probability (0-100%) this category fires for a given note
-  // amount: magnitude of change (0-100%)
-  var BUDDY_CAT_DEFS = [
-    { id: 'pitch',   label: 'Pitch',   on: true,  chance: 60, amount: 40 },
-    { id: 'octave',  label: 'Octave',  on: true,  chance: 30, amount: 30 },
-    { id: 'timing',  label: 'Timing',  on: true,  chance: 30, amount: 40 },
-    { id: 'accent',  label: 'Accent',  on: true,  chance: 20, amount: 20 },
-    { id: 'slide',   label: 'Slide',   on: true,  chance: 15, amount: 15 },
-    { id: 'ratchet', label: 'Ratchet', on: false, chance: 20, amount: 50 },
-    { id: 'length',  label: 'Length',  on: false, chance: 30, amount: 30 }
-  ];
-  var buddyCatEnabled = {};
-  var buddyCatChance  = {};
-  var buddyCatAmount  = {};
-  BUDDY_CAT_DEFS.forEach(function(d) {
-    buddyCatEnabled[d.id] = d.on;
-    buddyCatChance[d.id]  = d.chance;
-    buddyCatAmount[d.id]  = d.amount;
-  });
+  // ── Library ───────────────────────────────────────────────────────────
+  var LIB_LS_KEY = 'superos303_library_v1';
+  var libEntries = []; // [{src, group, pattern, length, pd}]
 
-  var buddyRunning    = false;
-  var buddyStepCount  = 0;
-  var buddyBaseline   = null;
-  var buddyBaselineG  = -1;
-  var buddyBaselineP  = -1;
-
-  // Build two-slider category rows
-  (function() {
-    var catsEl = document.getElementById('buddyCatsEl');
-    BUDDY_CAT_DEFS.forEach(function(def) {
-      var row = document.createElement('div');
-      row.className = 'buddy-cat';
-
-      var chk = document.createElement('input');
-      chk.type = 'checkbox';
-      chk.id = 'bchk_' + def.id;
-      chk.checked = def.on;
-
-      var nameLbl = document.createElement('label');
-      nameLbl.htmlFor = 'bchk_' + def.id;
-      nameLbl.className = 'buddy-cat-name' + (def.on ? '' : ' is-off');
-      nameLbl.textContent = def.label;
-
-      function makeSliderPair(labelText, initVal, storageKey, storeObj) {
-        var pair = document.createElement('div');
-        pair.className = 'buddy-cat-pair';
-
-        var lbl = document.createElement('span');
-        lbl.className = 'buddy-cat-pair-lbl';
-        lbl.textContent = labelText;
-
-        var slider = document.createElement('input');
-        slider.type = 'range';
-        slider.min = '0'; slider.max = '100'; slider.step = '5';
-        slider.value = String(initVal);
-        slider.disabled = !def.on;
-
-        var valLbl = document.createElement('span');
-        valLbl.className = 'buddy-cat-val';
-        valLbl.textContent = initVal + '%';
-
-        slider.addEventListener('input', function() {
-          storeObj[storageKey] = parseInt(this.value, 10);
-          valLbl.textContent = this.value + '%';
-        });
-
-        pair.appendChild(lbl);
-        pair.appendChild(slider);
-        pair.appendChild(valLbl);
-        return { el: pair, slider: slider };
-      }
-
-      var chancePair = makeSliderPair('Chance', def.chance, def.id, buddyCatChance);
-      var amountPair = makeSliderPair('Amount', def.amount, def.id, buddyCatAmount);
-
-      chk.addEventListener('change', function() {
-        buddyCatEnabled[def.id] = this.checked;
-        nameLbl.classList.toggle('is-off', !this.checked);
-        chancePair.slider.disabled = !this.checked;
-        amountPair.slider.disabled = !this.checked;
-      });
-
-      row.appendChild(chk);
-      row.appendChild(nameLbl);
-      row.appendChild(chancePair.el);
-      row.appendChild(amountPair.el);
-      catsEl.appendChild(row);
-    });
-  })();
-
-  // Per-step apply functions (step is pre-selected by buddyTick)
-  function buddyApplyPitchToStep(blob, step, amount) {
-    var maxDrift = Math.max(1, Math.round(amount / 100 * 8));
-    var curLin = unpackLinear(blob[step] & 0x3f);
-    var drift = Math.round((Math.random() * 2 - 1) * maxDrift);
-    if (drift === 0) drift = Math.random() < 0.5 ? 1 : -1;
-    var newLin = Math.max(0, Math.min(48, curLin + drift));
-    if (scaleLockEnabled) newLin = snapLinToScale(newLin);
-    blob[step] = linearToPacked(newLin) | (blob[step] & 0xc0);
-    return true;
+  function libLoadFromLS() {
+    try {
+      var raw = localStorage.getItem(LIB_LS_KEY);
+      if (raw) libEntries = JSON.parse(raw) || [];
+    } catch (e) { libEntries = []; }
+  }
+  function libSaveToLS() {
+    try { localStorage.setItem(LIB_LS_KEY, JSON.stringify(libEntries)); } catch (e) {}
   }
 
-  function buddyApplyOctaveToStep(blob, step, amount) {
-    var e = blob[step] & 0x3f;
-    var key = e % 13, oct = Math.floor(e / 13);
-    var newOct = amount > 60
-      ? Math.floor(Math.random() * 4)
-      : Math.max(0, Math.min(3, oct + (Math.random() < 0.5 ? -1 : 1)));
-    blob[step] = Math.min(key + 13 * newOct, PITCH_MAX) | (blob[step] & 0xc0);
-    return true;
-  }
-
-  function buddyApplyTimingToStep(blob, len, step, amount) {
-    var timesBefore = snapshotTimes(blob, len);
-    var pitchState  = snapshotPitchState(blob, len);
-    var cur = getTime(blob, step);
-    // Low amount: note↔tie only; high amount: include rest
-    var opts = amount < 40
-      ? (cur === 1 ? [2] : cur === 2 ? [1] : [1])
-      : [0, 1, 2].filter(function(v) { return v !== cur; });
-    setTime(blob, step, opts[Math.floor(Math.random() * opts.length)]);
-    normalizePatternTimes(blob, len);
-    reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
-    return true;
-  }
-
-  function buddyApplyAccentToStep(blob, step, amount) {
-    // Amount biases towards on (>50) or off (<50); 50 = pure toggle
-    var wantOn = Math.random() * 100 < amount;
-    var isOn   = !!(blob[step] & 0x40);
-    if (wantOn === isOn) return false;
-    blob[step] ^= 0x40;
-    return true;
-  }
-
-  function buddyApplySlideToStep(blob, step, amount) {
-    var wantOn = Math.random() * 100 < amount;
-    var isOn   = !!(blob[step] & 0x80);
-    if (wantOn === isOn) return false;
-    blob[step] ^= 0x80;
-    return true;
-  }
-
-  function buddyApplyRatchetToStep(blob, step, amount) {
-    if (blob[step] & 0x80) return false; // skip slide steps
-    var maxVal = amount > 50 ? 2 : 1;    // high amount allows 3x
-    setRatchet(blob, step, (getRatchet(blob, step) + 1) % (maxVal + 1));
-    return true;
-  }
-
-  function buddyApplyLength(blob, amount) {
-    var len = blob[127] | 0;
-    var maxDelta = Math.max(1, Math.round(amount / 100 * 8));
-    var delta = Math.round((Math.random() * 2 - 1) * maxDelta);
-    if (delta === 0) delta = Math.random() < 0.5 ? 1 : -1;
-    var newLen = Math.max(1, Math.min(groupMaxSteps(), len + delta));
-    if (newLen === len) return false;
-    migratePitchStashOnResize(blob, len, newLen);
-    blob[127] = newLen;
-    normalizePatternTimes(blob, newLen);
-    return true;
-  }
-
-  function buddyTick() {
+  function libApplyPdToActive(pd) {
     var blob = activeBlob();
-    var len  = blob[127] | 0;
-    var changesPerNote = parseInt(document.getElementById('buddyChangesPerTick').value, 10) || 1;
-    var notesPerTick   = Math.max(1, Math.min(len, parseInt(document.getElementById('buddyNotesPerTick').value, 10) || 1));
-
-    var changed = false;
-
-    // Length is pattern-level: one chance per tick regardless of note selection
-    if (buddyCatEnabled['length'] && Math.random() * 100 < buddyCatChance['length']) {
-      if (buddyApplyLength(blob, buddyCatAmount['length'])) {
-        len = blob[127] | 0;
-        changed = true;
+    var len = pd.length;
+    blob[127] = len;
+    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    for (var s = 0; s < len; s++) {
+      var st = pd.steps[s];
+      setTime(blob, s, st.time);
+      if (st.pitch !== null && st.pitch !== undefined) {
+        var flags = (st.accent ? 0x40 : 0) | (st.slide ? 0x80 : 0);
+        blob[s] = (st.pitch & 0x3f) | flags;
+      } else {
+        blob[s] = 0xff;
       }
     }
-
-    // Collect eligible note steps
-    var noteSteps = [];
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1 && blob[s] !== 0xff && !isStepLocked(blob, s)) noteSteps.push(s);
+    for (var sc = 0; sc < len; sc++)
+      if (blob[sc] !== 0xff) blob[sc] = clampPackedByte(blob[sc]);
+    normalizePatternTimes(blob, len);
+    setStashCount(blob, 0);
+    if (pd.pitch_stash_count != null && Array.isArray(pd.pitch_stash) && pd.pitch_stash.length > 0) {
+      var scn = clampStashToBlob(blob, len, pd.pitch_stash_count);
+      setStashCount(blob, scn);
+      for (var ks = 0; ks < scn; ks++)
+        blob[len + ks] = clampPackedByte(pd.pitch_stash[ks] & 0xff);
     }
+    document.getElementById('patLen').value = String(len);
+    syncBlob();
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    if (liveEnabled && midiOut) scheduleLiveSend();
+  }
 
-    // For timing changes we also want non-note steps (any unlocked step)
-    var anySteps = [];
-    for (var s = 0; s < len; s++) {
-      if (!isStepLocked(blob, s)) anySteps.push(s);
-    }
-
-    if (noteSteps.length === 0 && anySteps.length === 0) {
-      if (changed) { document.getElementById('patLen').value = String(blob[127]); pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty(); if (liveEnabled && midiOut) scheduleLiveSend(); }
+  function libRender() {
+    var listEl = document.getElementById('libList');
+    var countEl = document.getElementById('libCount');
+    listEl.innerHTML = '';
+    countEl.textContent = libEntries.length + ' pattern' + (libEntries.length === 1 ? '' : 's');
+    if (libEntries.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'lib-empty';
+      empty.textContent = 'No patterns uploaded. Click "Upload JSON(s)" to add pattern files.';
+      listEl.appendChild(empty);
       return;
     }
-
-    // Shuffle note steps and pick notesPerTick
-    var shuffled = noteSteps.slice();
-    for (var i = shuffled.length - 1; i > 0; i--) {
-      var j = Math.floor(Math.random() * (i + 1));
-      var tmp = shuffled[i]; shuffled[i] = shuffled[j]; shuffled[j] = tmp;
-    }
-    var picked = shuffled.slice(0, Math.min(notesPerTick, shuffled.length));
-
-    var noteCats = BUDDY_CAT_DEFS.filter(function(d) { return d.id !== 'length' && d.id !== 'timing' && buddyCatEnabled[d.id]; });
-    var timingEnabled = buddyCatEnabled['timing'];
-
-    picked.forEach(function(step) {
-      // Hard lock guard: skip this note if locked (defensive re-check after possible reflow)
-      if (isStepLocked(blob, step)) return;
-
-      // Shuffle non-length note categories for this note
-      var cats = noteCats.slice();
-      for (var i = cats.length - 1; i > 0; i--) {
-        var j = Math.floor(Math.random() * (i + 1));
-        var tmp = cats[i]; cats[i] = cats[j]; cats[j] = tmp;
-      }
-      var applied = 0;
-
-      // Timing: re-collect unlocked steps fresh so we never land on a locked step
-      if (timingEnabled && applied < changesPerNote && Math.random() * 100 < buddyCatChance['timing']) {
-        var unlockedNow = [];
-        for (var s = 0; s < len; s++) { if (!isStepLocked(blob, s)) unlockedNow.push(s); }
-        if (unlockedNow.length > 0) {
-          var tStep = unlockedNow[Math.floor(Math.random() * unlockedNow.length)];
-          if (buddyApplyTimingToStep(blob, len, tStep, buddyCatAmount['timing'])) {
-            len = blob[127] | 0;
-            changed = true;
-            applied++;
-          }
-        }
-      }
-
-      for (var ci = 0; ci < cats.length && applied < changesPerNote; ci++) {
-        // Re-check lock before each variable change in case reflow shifted things
-        if (isStepLocked(blob, step)) break;
-        var cat = cats[ci].id;
-        if (Math.random() * 100 >= buddyCatChance[cat]) continue;
-        var amt = buddyCatAmount[cat];
-        var ok  = false;
-        switch (cat) {
-          case 'pitch':   ok = buddyApplyPitchToStep(blob, step, amt);   break;
-          case 'octave':  ok = buddyApplyOctaveToStep(blob, step, amt);  break;
-          case 'accent':  ok = buddyApplyAccentToStep(blob, step, amt);  break;
-          case 'slide':   ok = buddyApplySlideToStep(blob, step, amt);   break;
-          case 'ratchet': ok = buddyApplyRatchetToStep(blob, step, amt); break;
-        }
-        if (ok) { changed = true; applied++; }
-      }
+    libEntries.forEach(function(entry, idx) {
+      var row = document.createElement('div');
+      row.className = 'lib-item';
+      var lbl = document.createElement('span');
+      lbl.className = 'lib-item-label';
+      lbl.textContent = entry.src + ' \u203A G' + entry.group + 'P' + entry.pattern + ' (len ' + entry.length + ')';
+      var loadBtn = document.createElement('button');
+      loadBtn.className = 'btn btn-primary';
+      loadBtn.textContent = 'Load';
+      loadBtn.addEventListener('click', function() {
+        libApplyPdToActive(entry.pd);
+        log('Library: loaded "' + entry.src + '" G' + entry.group + 'P' + entry.pattern + ' into G' + (activeGroup+1) + 'P' + (activePat+1), 'log-ack');
+      });
+      var delBtn = document.createElement('button');
+      delBtn.className = 'btn';
+      delBtn.textContent = '\u2715';
+      delBtn.title = 'Remove from library';
+      delBtn.addEventListener('click', function() {
+        libEntries.splice(idx, 1);
+        libSaveToLS();
+        libRender();
+      });
+      row.appendChild(lbl);
+      row.appendChild(loadBtn);
+      row.appendChild(delBtn);
+      listEl.appendChild(row);
     });
-
-    if (changed) {
-      document.getElementById('patLen').value = String(blob[127]);
-      pushHistory(activeGroup, activePat);
-      saveGroupsToLS();
-      renderGrid();
-      recomputeDirty();
-      if (liveEnabled && midiOut) scheduleLiveSend();
-      log('Play Buddy: tick', 'log-ack');
-    }
   }
 
-  function buddyUpdateUI() {
-    var btn = document.getElementById('btnBuddyToggle');
-    var runLbl = document.getElementById('buddyRunLbl');
-    btn.textContent = buddyRunning ? 'Stop' : 'Start';
-    btn.classList.toggle('btn-primary', !buddyRunning);
-    runLbl.textContent = buddyRunning ? 'Running' : 'Off';
-    runLbl.classList.toggle('is-on', buddyRunning);
-    document.getElementById('btnBuddyRestore').disabled = !buddyBaseline;
+  function libIngestFile(file) {
+    return new Promise(function(resolve) {
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          var obj = JSON.parse(e.target.result);
+          if (typeof obj !== 'object' || obj === null) throw new Error('not an object');
+          if (obj.version !== 1 && obj.version !== 2) throw new Error('bad version');
+          if (!['pattern','bank','group','all'].includes(obj.type)) throw new Error('bad type');
+          if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('empty data');
+          var added = 0;
+          for (var i = 0; i < obj.data.length; i++) {
+            var pd = obj.data[i];
+            validatePatJSON(pd, i + 1);
+            libEntries.push({ src: file.name, group: pd.group, pattern: pd.pattern, length: pd.length, pd: pd });
+            added++;
+          }
+          log('Library: added ' + added + ' pattern(s) from ' + file.name, 'log-ack');
+        } catch (err) {
+          log('Library: skipped ' + file.name + ' \u2014 ' + err.message, 'log-err');
+        }
+        resolve();
+      };
+      reader.readAsText(file);
+    });
   }
 
-  document.getElementById('btnBuddyToggle').addEventListener('click', function() {
-    if (buddyRunning) {
-      buddyRunning = false;
-      buddyStepCount = 0;
-      buddyUpdateUI();
-      log('Play Buddy stopped', 'log-ack');
-    } else {
-      buddyBaseline  = cloneU8(activeBlob());
-      buddyBaselineG = activeGroup;
-      buddyBaselineP = activePat;
-      buddyStepCount = 0;
-      buddyRunning   = true;
-      buddyUpdateUI();
-      log('Play Buddy started (every ' + (parseInt(document.getElementById('buddyInterval').value, 10) || 8) + ' steps)', 'log-ack');
-    }
+  document.getElementById('btnLibUpload').addEventListener('click', function() {
+    document.getElementById('libFileInput').click();
   });
-
-  document.getElementById('btnBuddyRestore').addEventListener('click', function() {
-    if (!buddyBaseline) return;
-    var g = buddyBaselineG, p = buddyBaselineP;
-    groups[g][p].set(buddyBaseline);
-    if (g === activeGroup && p === activePat) {
-      document.getElementById('patLen').value = String(buddyBaseline[127]);
-      pushHistory(activeGroup, activePat);
-      saveGroupsToLS();
-      renderGrid();
-      recomputeDirty();
-      if (liveEnabled && midiOut) scheduleLiveSend();
-    }
-    log('Play Buddy: restored original G' + (g+1) + ' P' + (p+1), 'log-ack');
+  document.getElementById('libFileInput').addEventListener('change', function(ev) {
+    var files = Array.from(ev.target.files || []);
+    if (files.length === 0) return;
+    Promise.all(files.map(libIngestFile)).then(function() {
+      libSaveToLS();
+      libRender();
+    });
+    ev.target.value = '';
   });
-
-  // Draggable number inputs
-  (function() {
-    function makeDraggable(id, min, max, fallback) {
-      var el = document.getElementById(id);
-      var dragStartY, dragStartVal, dragging = false;
-      el.addEventListener('pointerdown', function(e) {
-        if (e.button !== 0) return;
-        dragStartY   = e.clientY;
-        dragStartVal = parseInt(el.value, 10) || fallback;
-        dragging     = true;
-        el.setPointerCapture(e.pointerId);
-        e.preventDefault();
-      });
-      el.addEventListener('pointermove', function(e) {
-        if (!dragging) return;
-        var v = Math.max(min, Math.min(max, dragStartVal + Math.round((dragStartY - e.clientY) / 4)));
-        if (parseInt(el.value, 10) !== v) { el.value = String(v); buddyStepCount = 0; }
-      });
-      el.addEventListener('pointerup',     function() { dragging = false; });
-      el.addEventListener('pointercancel', function() { dragging = false; });
-      el.addEventListener('change', function() {
-        var v = Math.max(min, Math.min(max, parseInt(this.value, 10) || fallback));
-        this.value = String(v);
-        buddyStepCount = 0;
-      });
-    }
-    makeDraggable('buddyInterval',    1, 64, 8);
-    makeDraggable('buddyNotesPerTick', 1, 64, 1);
-  })();
-
-  document.getElementById('buddyBar').addEventListener('click', function() {
-    var body = document.getElementById('buddyBody');
+  document.getElementById('btnLibClear').addEventListener('click', function() {
+    if (libEntries.length === 0) return;
+    if (!confirm('Clear all ' + libEntries.length + ' library patterns?')) return;
+    libEntries = [];
+    libSaveToLS();
+    libRender();
+  });
+  document.getElementById('libBar').addEventListener('click', function() {
+    var body = document.getElementById('libBody');
     var open = body.classList.toggle('is-open');
     this.classList.toggle('is-open', open);
   });
+
+  libLoadFromLS();
+  libRender();
+
 
   // ── Init ────────────────────────────────────────────────────────────
   refreshAllPills();
