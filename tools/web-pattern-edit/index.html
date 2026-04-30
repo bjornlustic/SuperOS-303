@@ -739,16 +739,21 @@
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────────
-  // In-memory blob layout (56 bytes, OS-303 v0.6 wire-compatible EXCEPT pitch
-  // is stored per-time-step here; we map to/from NOTE-event order at the
-  // SysEx boundary so the editor UI keeps "one knob per step" semantics).
-  //   bytes  0..31  pitch[32]    per time step, 0xFF = empty (rest/tie slot)
+  // In-memory blob layout = OS-303 v0.6 wire format byte-for-byte:
+  //   bytes  0..31  pitch[32]    NOTE-event-indexed pitch stream
+  //                              (slot K = pitch for the K-th NOTE event in time order)
   //   bytes 32..47  time_data[16] 4-bit nibbles (0=REST, 1=NOTE, 2=TIE)
   //   byte  48      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
   //   bytes 49..52  reserved[1..4] ratchet bitmap (1 bit/step, 32 bits)
   //   byte  53      transpose
   //   byte  54      engine_select (round-tripped untouched)
   //   byte  55      length (1..32 normal, 1..24 triplet)
+  //
+  // Pitches are NOT indexed by time step. Use noteIdx(blob, s) to map a time
+  // step to its stream slot. Time edits never shift pitch[]; the stream
+  // auto-extends with PITCH_DEFAULT only when note_count > pitch_count.
+  // Removing a NOTE preserves the pitch stream so re-adding NOTEs replays
+  // the same pitches in stream order. Same model as the firmware.
   var PATTERN_SIZE   = 56;
   var MAX_STEPS      = 32;
   var TRIPLET_MAX_STEPS = 24;
@@ -913,7 +918,7 @@
   /**
    * Match firmware normalize_pattern_times: all-tie → first note; step 0 tie → note;
    * rest followed by tie (including wrap last→first) → note on rest step.
-   * Empty pitch on the converted slot is initialized to PITCH_DEFAULT.
+   * Stream auto-extends with PITCH_DEFAULT after time changes.
    */
   function normalizePatternTimes(blob, len) {
     len = Math.min(MAX_STEPS, Math.max(1, len | 0));
@@ -921,21 +926,13 @@
     for (var i = 0; i < len; i++) {
       if (getTime(blob, i) !== 2) { allTie = false; break; }
     }
-    if (allTie) {
-      setTime(blob, 0, 1);
-      if (blob[0] === PITCH_EMPTY) blob[0] = PITCH_DEFAULT;
-    }
-    if (getTime(blob, 0) === 2) {
-      setTime(blob, 0, 1);
-      if (blob[0] === PITCH_EMPTY) blob[0] = PITCH_DEFAULT;
-    }
+    if (allTie) setTime(blob, 0, 1);
+    if (getTime(blob, 0) === 2) setTime(blob, 0, 1);
     for (var j = 0; j < len; j++) {
       var nxt = (j + 1) % len;
-      if (getTime(blob, j) === 0 && getTime(blob, nxt) === 2) {
-        setTime(blob, j, 1);
-        if (blob[j] === PITCH_EMPTY) blob[j] = PITCH_DEFAULT;
-      }
+      if (getTime(blob, j) === 0 && getTime(blob, nxt) === 2) setTime(blob, j, 1);
     }
+    ensurePitchStream(blob);
   }
 
   // Ratchet: 1 bit per step at bytes RAT_OFF..RAT_OFF+3 (= reserved[1..4]).
@@ -974,60 +971,55 @@
     return t;
   }
 
-  // ── NOTE-event ↔ time-step pitch mapping (for SysEx wire format) ──
-  // Wire pitch[32] is indexed by NOTE-event order. Editor stores pitch
-  // by time-step. These helpers convert between the two on send/receive.
-  function buildWireFromBlob(blob) {
-    var raw = new Uint8Array(PATTERN_SIZE);
-    raw.set(blob);
-    var len = getLength(blob);
-    for (var i = 0; i < MAX_STEPS; i++) raw[i] = PITCH_EMPTY;
+  // ── Stream <-> step accessors ─────────────────────────────────────
+  // Stream slot for time step s = number of NOTE events strictly before s.
+  // For NOTE step s, that slot holds the played pitch byte. Identical to
+  // firmware count_notes_to() / pitch_index_for_note().
+  function noteIdx(blob, s) {
     var k = 0;
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1) {
-        var pb = blob[s];
-        raw[k++] = (pb === PITCH_EMPTY) ? PITCH_DEFAULT : pb;
-      }
-    }
-    return raw;
+    for (var i = 0; i < s; i++) if (getTime(blob, i) === 1) k++;
+    return k;
   }
-  function applyWireToBlob(blob, raw) {
-    blob.set(raw);
+  function noteCount(blob, len) {
+    if (len === undefined) len = getLength(blob);
+    var n = 0;
+    for (var i = 0; i < len; i++) if (getTime(blob, i) === 1) n++;
+    return n;
+  }
+  /** Auto-extend stream with PITCH_DEFAULT until pitch_count >= note_count. */
+  function ensurePitchStream(blob) {
+    var nc = noteCount(blob);
+    for (var k = 0; k < MAX_STEPS; k++) {
+      if (k < nc && (blob[k] === PITCH_EMPTY || blob[k] === undefined)) blob[k] = PITCH_DEFAULT;
+    }
+  }
+  /** Pitch byte for the playing NOTE/TIE source at time step s. Returns PITCH_EMPTY for REST. */
+  function pitchByteForStep(blob, s) {
+    var t = getTime(blob, s);
+    if (t === 0) return PITCH_EMPTY;
+    if (t === 1) return blob[noteIdx(blob, s)];
     var len = getLength(blob);
-    var pitchStream = [];
-    for (var i = 0; i < MAX_STEPS; i++) pitchStream.push(raw[i]);
-    var k = 0;
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1) {
-        var pb = pitchStream[k++];
-        blob[s] = (pb === PITCH_EMPTY || pb === undefined) ? PITCH_DEFAULT : pb;
-      } else {
-        blob[s] = PITCH_EMPTY;
-      }
+    for (var i = 1; i < len; i++) {
+      var p = (s - i + len) % len;
+      var pt = getTime(blob, p);
+      if (pt === 0) return PITCH_EMPTY;
+      if (pt === 1) return blob[noteIdx(blob, p)];
     }
-    for (var s2 = len; s2 < MAX_STEPS; s2++) blob[s2] = PITCH_EMPTY;
+    return PITCH_EMPTY;
   }
+  /** Wire format is identical to in-memory layout — straight copy. */
+  function buildWireFromBlob(blob) { return new Uint8Array(blob); }
+  function applyWireToBlob(blob, raw) { blob.set(raw); }
 
   /// Packed pitch (bits 5:0) for what is *heard* at step s (TIE inherits prev NOTE).
   function effectivePacked6(blob, s, len) {
-    s &= (MAX_STEPS - 1);
-    len = Math.min(MAX_STEPS, Math.max(1, len | 0));
-    var t = getTime(blob, s);
-    if (t === 0) return null;
-    if (t === 2) {
-      for (var g = 1; g < len; g++) {
-        var tp = (s + len - g) % len;
-        var tt = getTime(blob, tp);
-        if (tt === 0) break;
-        if (tt === 1) {
-          var br = blob[tp];
-          return (br === PITCH_EMPTY) ? PITCH_DEFAULT : (br & PITCH_PACK_MASK);
-        }
-      }
+    var pb = pitchByteForStep(blob, s);
+    if (pb === PITCH_EMPTY) {
+      var t = getTime(blob, s);
+      if (t === 0) return null;
       return PITCH_DEFAULT;
     }
-    var r = blob[s];
-    return (r === PITCH_EMPTY) ? null : (r & PITCH_PACK_MASK);
+    return pb & PITCH_PACK_MASK;
   }
 
   /** Octave button (0=DOWN, 1=CENTRE, 2=UP, 3=DOUBLE_UP) from packed pitch byte. */
@@ -1035,13 +1027,16 @@
     if (packed6 == null) return 1;
     return (packed6 >> 4) & 0x03;
   }
+  /** Set octave on the stream slot belonging to time step si (must be a NOTE step). */
   function setOctaveOnStep(blob, si, octBtn) {
+    if (getTime(blob, si) !== 1) return;
     octBtn = Math.max(0, Math.min(3, octBtn | 0));
-    var r = blob[si];
+    var k = noteIdx(blob, si);
+    var r = blob[k];
     if (r === PITCH_EMPTY) r = PITCH_DEFAULT;
     var semi = r & 0x0F;
     var flags = r & 0xC0;
-    blob[si] = flags | (semi & 0x0F) | (octBtn << 4);
+    blob[k] = flags | (semi & 0x0F) | (octBtn << 4);
   }
 
   // ── Storage ────────────────────────────────────────────────────────
@@ -1112,11 +1107,11 @@
     b[LEN_OFF] = 16;
     return b;
   }
-  /** One step, rest, no pitches set. Length collapses to 1. */
+  /** One step, rest, no pitches set. */
   function clearPatternMinimalRest(blob) {
     for (var t = 0; t < 16; t++) blob[TIME_OFF + t] = 0;
     for (var p = 0; p < MAX_STEPS; p++) blob[p] = PITCH_EMPTY;
-    blob[RES0_OFF] &= TRIPLET_FLAG; // keep triplet flag, clear direction
+    blob[RES0_OFF] &= TRIPLET_FLAG;
     blob[RAT_OFF] = blob[RAT_OFF+1] = blob[RAT_OFF+2] = blob[RAT_OFF+3] = 0;
     blob[LEN_OFF] = 1;
   }
@@ -1551,7 +1546,7 @@
       var pt = getTime(blob, prev);
       if (pt === 0) return false;
       if (pt === 1) {
-        var pr = blob[prev];
+        var pr = blob[noteIdx(blob, prev)];
         return pr !== PITCH_EMPTY && !!(pr & 0x80);
       }
     }
@@ -1608,10 +1603,11 @@
 
   function renderPatternCards(blob, patIdx, len, gridEl, editable) {
     for (var s = 0; s < len; s++) {
-      var t      = getTime(blob, s);
-      var raw    = blob[s];
+      var t       = getTime(blob, s);
+      var slot    = (t === 1) ? noteIdx(blob, s) : -1;
+      var raw     = (slot >= 0) ? blob[slot] : PITCH_EMPTY;
       var isEmpty = (raw === PITCH_EMPTY);
-      var eff    = effectivePacked6(blob, s, len);
+      var eff     = effectivePacked6(blob, s, len);
       var packedRaw = isEmpty ? PITCH_DEFAULT : (raw & PITCH_PACK_MASK);
       var dispPacked = t === 1 ? packedRaw : (eff != null ? eff : PITCH_DEFAULT);
       var acc     = t === 1 && !isEmpty && !!(raw & 0x40);
@@ -1662,13 +1658,7 @@
               showErrorToast('Cannot put rest before a tie.');
               return;
             }
-            var prevT = getTime(blob2, si);
             setTime(blob2, si, tv);
-            if (tv === 1 && blob2[si] === PITCH_EMPTY) blob2[si] = PITCH_DEFAULT;
-            if (tv !== 1 && prevT === 1) {
-              // Keep the pitch byte for restore-on-toggle-back; firmware
-              // ignores pitches on non-NOTE steps, but the editor preserves them.
-            }
             normalizePatternTimes(blob2, L);
             pushHistory(activeGroup, activePat);
             saveGroupsToLS();
@@ -1690,6 +1680,7 @@
       var pkWrap = document.createElement('div');
       pkWrap.className = 'pitch-knob-wrap';
       var uiPacked = noteStep ? packedRaw : dispPacked;
+      pkWrap.dataset.slot = String(slot);
       if (pitchEditorFullRange)
         pkWrap.dataset.lin = String(clampFullLinear(unpackLinear(uiPacked)));
       else
@@ -1739,14 +1730,16 @@
 
       var aBtn = document.createElement('button');
       aBtn.className = 'f-btn' + (acc ? ' f-on' : '');
-      aBtn.disabled = tieStep;
+      aBtn.disabled = tieStep || !noteStep;
       aBtn.textContent = 'A';
       aBtn.addEventListener('click', (function(si, btn) {
         return function() {
           var blob2 = activeBlob();
-          if (blob2[si] === PITCH_EMPTY) blob2[si] = PITCH_DEFAULT;
-          blob2[si] ^= 0x40;
-          btn.classList.toggle('f-on', !!(blob2[si] & 0x40));
+          if (getTime(blob2, si) !== 1) return;
+          var k = noteIdx(blob2, si);
+          if (blob2[k] === PITCH_EMPTY) blob2[k] = PITCH_DEFAULT;
+          blob2[k] ^= 0x40;
+          btn.classList.toggle('f-on', !!(blob2[k] & 0x40));
           pushHistory(activeGroup, activePat);
           saveGroupsToLS();
           recomputeDirty();
@@ -1756,14 +1749,16 @@
 
       var sBtn = document.createElement('button');
       sBtn.className = 'f-btn' + (sl ? ' f-on' : '');
-      sBtn.disabled = tieStep;
+      sBtn.disabled = tieStep || !noteStep;
       sBtn.textContent = 'S';
       sBtn.addEventListener('click', (function(si) {
         return function() {
           var blob2 = activeBlob();
-          if (blob2[si] === PITCH_EMPTY) blob2[si] = PITCH_DEFAULT;
-          blob2[si] ^= 0x80;
-          if (!!(blob2[si] & 0x80)) setRatchet(blob2, si, 0);
+          if (getTime(blob2, si) !== 1) return;
+          var k = noteIdx(blob2, si);
+          if (blob2[k] === PITCH_EMPTY) blob2[k] = PITCH_DEFAULT;
+          blob2[k] ^= 0x80;
+          if (!!(blob2[k] & 0x80)) setRatchet(blob2, si, 0);
           pushHistory(activeGroup, activePat);
           saveGroupsToLS();
           renderGrid();
@@ -1792,7 +1787,8 @@
         return function() {
           var blob2 = activeBlob();
           if (getTime(blob2, si) !== 1) return;
-          if (blob2[si] !== PITCH_EMPTY && !!(blob2[si] & 0x80)) return;
+          var slk = noteIdx(blob2, si);
+          if (blob2[slk] !== PITCH_EMPTY && !!(blob2[slk] & 0x80)) return;
           setRatchet(blob2, si, getRatchet(blob2, si) ? 0 : 1);
           pushHistory(activeGroup, activePat);
           saveGroupsToLS();
@@ -1817,45 +1813,45 @@
       : document;
     var cards = syncRoot.querySelectorAll('.step-card');
     for (var i = 0; i < cards.length; i++) {
-      var si   = Number(cards[i].dataset.s);
+      var si = Number(cards[i].dataset.s);
       if (getTime(blob, si) !== 1) continue;
       var wrap = cards[i].querySelector('.pitch-knob-wrap');
-      if (wrap) {
-        var flags = blob[si] & 0xC0;
-        var pk;
-        if (pitchEditorFullRange) {
-          var lin = Number(wrap.dataset.lin);
-          if (!isNaN(lin)) pk = linearToPacked(lin);
-        } else {
-          var key = Number(wrap.dataset.key);
-          if (!isNaN(key)) {
-            key = Math.max(0, Math.min(12, key | 0));
-            var oct = (blob[si] !== PITCH_EMPTY) ? ((blob[si] >> 4) & 0x03) : 1;
-            pk = (key & 0x0F) | (oct << 4);
-          }
-        }
-        if (pk !== undefined) {
-          if (blob[si] !== PITCH_EMPTY) blob[si] = pk | flags;
-          else blob[si] = pk;
+      if (!wrap) continue;
+      var k = noteIdx(blob, si);
+      var existing = blob[k];
+      var flags = (existing !== PITCH_EMPTY) ? (existing & 0xC0) : 0;
+      var pk;
+      if (pitchEditorFullRange) {
+        var lin = Number(wrap.dataset.lin);
+        if (!isNaN(lin)) pk = linearToPacked(lin);
+      } else {
+        var key = Number(wrap.dataset.key);
+        if (!isNaN(key)) {
+          key = Math.max(0, Math.min(12, key | 0));
+          var oct = (existing !== PITCH_EMPTY) ? ((existing >> 4) & 0x03) : 1;
+          pk = (key & 0x0F) | (oct << 4);
         }
       }
+      if (pk !== undefined) blob[k] = pk | flags;
     }
   }
 
   function layoutPitchKnob(wrap, nameEl, blob, s, len) {
     var thumb = wrap.querySelector('.pitch-knob-thumb');
     var fill  = wrap.querySelector('.pitch-knob-fill');
+    var slot  = (getTime(blob, s) === 1) ? noteIdx(blob, s) : -1;
+    var slotByte = (slot >= 0) ? blob[slot] : PITCH_EMPTY;
     var pct;
     if (pitchEditorFullRange) {
       var lin = Number(wrap.dataset.lin);
-      if (isNaN(lin)) lin = clampFullLinear(unpackLinear(blob[s] & PITCH_PACK_MASK));
+      if (isNaN(lin)) lin = clampFullLinear(unpackLinear(slotByte & PITCH_PACK_MASK));
       else lin = clampFullLinear(lin);
       wrap.dataset.lin = String(lin);
       var spanF = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
       pct = spanF > 0 ? ((lin - PITCH_FULL_LIN_MIN) / spanF) * 100 : 0;
     } else {
       var keyIdx = Number(wrap.dataset.key);
-      if (isNaN(keyIdx)) keyIdx = blob[s] & 0x0F;
+      if (isNaN(keyIdx)) keyIdx = slotByte & 0x0F;
       keyIdx = Math.max(0, Math.min(12, keyIdx | 0));
       wrap.dataset.key = String(keyIdx);
       pct = (keyIdx / 12) * 100;
@@ -1863,18 +1859,19 @@
     thumb.style.bottom = pct + '%';
     fill.style.height  = pct + '%';
     if (blob && nameEl) updateDisplayLabels(blob, s, len, nameEl);
-    if (pitchEditorFullRange && blob && wrap && getTime(blob, s) === 1)
+    if (pitchEditorFullRange && blob && wrap && slot >= 0)
       syncOctRowFromBlob(wrap, blob, s);
   }
 
   /** Live-update DOWN/CENTRE/UP/2×UP highlights while dragging full-range slider. */
   function syncOctRowFromBlob(wrap, blob, s) {
     if (!wrap || !blob) return;
+    if (getTime(blob, s) !== 1) return;
     var card = wrap.closest('.step-card');
     if (!card) return;
     var row = card.querySelector('.step-oct-row');
     if (!row) return;
-    var raw = blob[s];
+    var raw = blob[noteIdx(blob, s)];
     if (raw === PITCH_EMPTY) return;
     var sel = octButtonFromPacked(raw & PITCH_PACK_MASK, true);
     var btns = row.querySelectorAll('.f-btn-o');
@@ -1915,24 +1912,26 @@
     function applyDrag(clientY) {
       var blob2 = activeBlob();
       var L = currentPatLen();
-      if (getTime(blob2, step) === 2) return;
+      if (getTime(blob2, step) !== 1) return;
+      var k = noteIdx(blob2, step);
+      var existing = blob2[k];
       var pk, v = valueFromY(clientY);
-      var flags = blob2[step] & 0xC0;
+      var flags = (existing !== PITCH_EMPTY) ? (existing & 0xC0) : 0;
       if (pitchEditorFullRange) {
         pk = linearToPacked(v);
         wrap.dataset.lin = String(v);
       } else {
-        var oct = (blob2[step] !== PITCH_EMPTY) ? ((blob2[step] >> 4) & 0x03) : 1;
+        var oct = (existing !== PITCH_EMPTY) ? ((existing >> 4) & 0x03) : 1;
         pk = (v & 0x0F) | (oct << 4);
         wrap.dataset.key = String(v);
       }
       if (scaleLockEnabled) {
         if (scaleLockSnaps[activeGroup] && scaleLockSnaps[activeGroup][activePat]) {
-          scaleLockSnaps[activeGroup][activePat][step] = (blob2[step] !== PITCH_EMPTY) ? (pk | flags) : pk;
+          scaleLockSnaps[activeGroup][activePat][k] = (existing !== PITCH_EMPTY) ? (pk | flags) : pk;
         }
         pk = linearToPacked(snapLinToScale(unpackLinear(pk & PITCH_PACK_MASK)));
       }
-      blob2[step] = (blob2[step] !== PITCH_EMPTY) ? (pk | flags) : pk;
+      blob2[k] = pk | flags;
       layoutPitchKnob(wrap, nameEl, blob2, step, L);
     }
     track.addEventListener('pointerdown', onDown);
@@ -2068,22 +2067,45 @@
     sendSysex(new Uint8Array([0x7d, 0x1b, pat & 0x0f, step & 0x3f, val & 0x01]));
   }
 
-  /** Send per-step deltas to the 303 by diffing current blob against lastSentBlob. */
+  /** Send per-step deltas to the 303 by diffing current blob against lastSentBlob.
+   * Stream-slot model:
+   *  - Time nibble change for step S → 0x16 step=S, pitchByte=PITCH_EMPTY (sentinel: time only).
+   *  - Pitch stream slot change → find the NOTE step S that owns that slot, send
+   *    0x16 step=S, pitchByte=new, timeNib=NOTE.
+   * Length and ratchets ride along after.
+   */
   function sendDelta(pat, blob) {
     var len = getLength(blob);
+    var prevTime = lastSentBlob;
+    // 1) time changes
     for (var i = 0; i < len; i++) {
-      var pitchChanged = !lastSentBlob || blob[i] !== lastSentBlob[i];
-      var timeChanged  = !lastSentBlob || getTime(blob, i) !== getTime(lastSentBlob, i);
-      if (pitchChanged || timeChanged) {
-        sendStepUpdate(pat, i, blob[i], getTime(blob, i));
+      var tnow = getTime(blob, i);
+      var tprev = prevTime ? getTime(prevTime, i) : -1;
+      if (tnow !== tprev) sendStepUpdate(pat, i, PITCH_EMPTY, tnow);
+    }
+    // 2) pitch stream slot changes — map slot back to its owning NOTE step
+    var nc = noteCount(blob, len);
+    for (var k = 0; k < nc; k++) {
+      var pcur  = blob[k];
+      var pprev = prevTime ? prevTime[k] : -1;
+      if (pcur !== pprev) {
+        var step = -1, count = 0;
+        for (var s = 0; s < len; s++) {
+          if (getTime(blob, s) === 1) {
+            if (count === k) { step = s; break; }
+            count++;
+          }
+        }
+        if (step >= 0 && pcur !== PITCH_EMPTY) sendStepUpdate(pat, step, pcur, 1);
       }
     }
-    for (var j = 0; j < len; j++) {
-      var curRat  = getRatchet(blob, j);
-      var prevRat = lastSentBlob ? getRatchet(lastSentBlob, j) : 0;
-      if (curRat !== prevRat) sendRatchetUpdate(pat, j, curRat);
+    // 3) ratchets
+    for (var rj = 0; rj < len; rj++) {
+      var curRat  = getRatchet(blob, rj);
+      var prevRat = prevTime ? getRatchet(prevTime, rj) : 0;
+      if (curRat !== prevRat) sendRatchetUpdate(pat, rj, curRat);
     }
-    if (!lastSentBlob || len !== getLength(lastSentBlob)) sendLengthUpdate(pat, len);
+    if (!prevTime || len !== getLength(prevTime)) sendLengthUpdate(pat, len);
     lastSentBlob = new Uint8Array(blob);
     lastSentPat  = pat;
   }
@@ -2123,18 +2145,19 @@
       var haveBaseline = !!lastSentBlob && lastSentPat === pat;
       var len = getLength(blob);
       var diffCount = 0;
-      // Per-step diffs we can ship via 0x16 / 0x1B
       if (haveBaseline) {
         for (var d = 0; d < len; d++) {
-          if (blob[d] !== lastSentBlob[d]) diffCount++;
-          else if (getTime(blob, d) !== getTime(lastSentBlob, d)) diffCount++;
-          else if (getRatchet(blob, d) !== getRatchet(lastSentBlob, d)) diffCount++;
+          if (getTime(blob, d) !== getTime(lastSentBlob, d)) diffCount++;
+          if (getRatchet(blob, d) !== getRatchet(lastSentBlob, d)) diffCount++;
+        }
+        for (var ds = 0; ds < MAX_STEPS; ds++) {
+          if (blob[ds] !== lastSentBlob[ds]) diffCount++;
         }
       } else {
-        diffCount = len;
+        diffCount = len + MAX_STEPS;
       }
-      // Pattern-level fields that don't have a per-field SysEx → force full pattern
-      // push if any of these changed (direction, triplet, transpose, engine_select).
+      // Pattern-level fields without a per-field SysEx → force full pattern push
+      // when they change (direction, triplet flag, transpose, engine_select).
       var metaChanged = !haveBaseline ||
         blob[RES0_OFF] !== lastSentBlob[RES0_OFF] ||
         blob[TRANSPOSE_OFF] !== lastSentBlob[TRANSPOSE_OFF] ||
@@ -2144,9 +2167,7 @@
       } else if (haveBaseline) {
         sendDelta(pat, blob);
       } else {
-        for (var i = 0; i < len; i++) sendStepUpdate(pat, i, blob[i], getTime(blob, i));
-        for (var k = 0; k < len; k++) sendRatchetUpdate(pat, k, getRatchet(blob, k));
-        sendLengthUpdate(pat, len);
+        sendPattern(pat, blob);
       }
       lastSentBlob = new Uint8Array(blob);
       lastSentPat  = pat;
@@ -2311,11 +2332,18 @@
       var pitchByte = (bytes[4] & 0x7f) | ((bytes[5] & 0x01) << 7);
       var timeNibble = bytes[6] & 0x0f;
       var rBlob = groups[hwGroup][rPat];
-      rBlob[rStep] = (timeNibble === 1) ? pitchByte : PITCH_EMPTY;
+      // Apply time first, then auto-extend the stream so noteIdx maps correctly.
       setTime(rBlob, rStep, timeNibble);
+      ensurePitchStream(rBlob);
+      if (timeNibble === 1 && pitchByte !== PITCH_EMPTY) {
+        rBlob[noteIdx(rBlob, rStep)] = pitchByte;
+      }
       if (lastSentBlob && lastSentPat === rPat) {
-        lastSentBlob[rStep] = (timeNibble === 1) ? pitchByte : PITCH_EMPTY;
         setTime(lastSentBlob, rStep, timeNibble);
+        ensurePitchStream(lastSentBlob);
+        if (timeNibble === 1 && pitchByte !== PITCH_EMPTY) {
+          lastSentBlob[noteIdx(lastSentBlob, rStep)] = pitchByte;
+        }
       }
       saveGroupsToLS();
       if (activeGroup === hwGroup && rPat === activePat) renderGrid();
@@ -2611,22 +2639,26 @@
   }
 
   // ── Save JSON ──────────────────────────────────────────────────────
-  // v3: OS-303 v0.6 layout. drops pitch_stash, adds direction/triplet/transpose/ratchet.
-  var JSON_VERSION = 3;
+  // v4: OS-303 v0.6 stream model. Times[] is per time step, pitches[] is the
+  // separate NOTE-event-order pitch stream (matches firmware data structure).
+  var JSON_VERSION = 4;
   function nowISO() { return new Date().toISOString(); }
 
   function patternToJSON(g, p) {
     var blob = groups[g][p];
     var len = getLength(blob);
-    var steps = [];
+    var times = [];
     for (var s = 0; s < len; s++) {
-      var raw = blob[s], t = getTime(blob, s);
-      steps.push({
-        time:    t,
-        pitch:   (raw === PITCH_EMPTY) ? null : (raw & PITCH_PACK_MASK),
-        accent:  (raw !== PITCH_EMPTY) ? !!(raw & 0x40) : false,
-        slide:   (raw !== PITCH_EMPTY) ? !!(raw & 0x80) : false,
-        ratchet: !!getRatchet(blob, s)
+      times.push({ time: getTime(blob, s), ratchet: !!getRatchet(blob, s) });
+    }
+    var pitches = [];
+    var nc = noteCount(blob, len);
+    for (var k = 0; k < nc; k++) {
+      var raw = blob[k];
+      pitches.push({
+        pitch:  (raw === PITCH_EMPTY) ? null : (raw & PITCH_PACK_MASK),
+        accent: (raw !== PITCH_EMPTY) ? !!(raw & 0x40) : false,
+        slide:  (raw !== PITCH_EMPTY) ? !!(raw & 0x80) : false
       });
     }
     return {
@@ -2635,7 +2667,8 @@
       triplet: isTriplet(blob),
       transpose: getTranspose(blob),
       engine_select: blob[ENGINE_OFF] | 0,
-      steps: steps
+      times: times,
+      pitches: pitches
     };
   }
 
@@ -2682,19 +2715,19 @@
   };
 
   // ── Load JSON (with strict validation) ────────────────────────────
-  function validateStep(step, stepIdx) {
-    if (typeof step !== 'object' || step === null)
-      throw new Error('Step ' + stepIdx + ': not an object');
-    if (![0,1,2].includes(step.time))
-      throw new Error('Step ' + stepIdx + ': invalid time ' + step.time);
-    if (step.pitch !== null) {
-      if (typeof step.pitch !== 'number' || !Number.isInteger(step.pitch) || step.pitch < 0 || step.pitch > 0xFF)
-        throw new Error('Step ' + stepIdx + ': invalid pitch ' + step.pitch);
+  function validateTime(rec, idx) {
+    if (typeof rec !== 'object' || rec === null) throw new Error('Time ' + idx + ': not an object');
+    if (![0,1,2].includes(rec.time)) throw new Error('Time ' + idx + ': invalid time ' + rec.time);
+    if (typeof rec.ratchet !== 'boolean') throw new Error('Time ' + idx + ': ratchet must be boolean');
+  }
+  function validatePitch(rec, idx) {
+    if (typeof rec !== 'object' || rec === null) throw new Error('Pitch ' + idx + ': not an object');
+    if (rec.pitch !== null) {
+      if (typeof rec.pitch !== 'number' || !Number.isInteger(rec.pitch) || rec.pitch < 0 || rec.pitch > 0xFF)
+        throw new Error('Pitch ' + idx + ': invalid pitch ' + rec.pitch);
     }
-    if (typeof step.accent !== 'boolean')
-      throw new Error('Step ' + stepIdx + ': accent must be boolean');
-    if (typeof step.slide  !== 'boolean')
-      throw new Error('Step ' + stepIdx + ': slide must be boolean');
+    if (typeof rec.accent !== 'boolean') throw new Error('Pitch ' + idx + ': accent must be boolean');
+    if (typeof rec.slide  !== 'boolean') throw new Error('Pitch ' + idx + ': slide must be boolean');
   }
   function validatePatJSON(pd, patIdx) {
     if (typeof pd !== 'object' || pd === null)
@@ -2705,14 +2738,18 @@
       throw new Error('Pattern ' + patIdx + ': pattern out of range');
     if (typeof pd.length  !== 'number' || pd.length  < 1 || pd.length  > MAX_STEPS)
       throw new Error('Pattern ' + patIdx + ': invalid length');
-    if (!Array.isArray(pd.steps) || pd.steps.length !== pd.length)
-      throw new Error('Pattern ' + patIdx + ': steps length mismatch');
-    for (var si = 0; si < pd.steps.length; si++) validateStep(pd.steps[si], si + 1);
+    if (!Array.isArray(pd.times) || pd.times.length !== pd.length)
+      throw new Error('Pattern ' + patIdx + ': times length mismatch');
+    if (!Array.isArray(pd.pitches))
+      throw new Error('Pattern ' + patIdx + ': pitches must be an array');
+    if (pd.pitches.length > MAX_STEPS)
+      throw new Error('Pattern ' + patIdx + ': pitches stream too long');
+    for (var ti = 0; ti < pd.times.length; ti++)   validateTime(pd.times[ti],   ti + 1);
+    for (var pi = 0; pi < pd.pitches.length; pi++) validatePitch(pd.pitches[pi], pi + 1);
   }
   function applyPatJSON(pd) {
     var g = pd.group - 1, p = pd.pattern - 1;
     var blob = groups[g][p];
-    // Reset blob (preserve nothing — JSON is the source of truth)
     for (var z = 0; z < PATTERN_SIZE; z++) blob[z] = 0;
     for (var z2 = 0; z2 < MAX_STEPS; z2++) blob[z2] = PITCH_EMPTY;
     setTriplet(blob, !!pd.triplet);
@@ -2722,15 +2759,18 @@
     var len = Math.min(patternMaxSteps(blob), pd.length);
     blob[LEN_OFF] = len;
     for (var s = 0; s < len; s++) {
-      var st = pd.steps[s];
-      setTime(blob, s, st.time);
-      if (st.pitch !== null) {
-        var flags = (st.accent ? 0x40 : 0) | (st.slide ? 0x80 : 0);
-        blob[s] = clampPackedByte((st.pitch & PITCH_PACK_MASK) | flags);
+      var trec = pd.times[s];
+      setTime(blob, s, trec.time);
+      setRatchet(blob, s, trec.ratchet ? 1 : 0);
+    }
+    for (var k = 0; k < pd.pitches.length; k++) {
+      var prec = pd.pitches[k];
+      if (prec.pitch !== null) {
+        var flags = (prec.accent ? 0x40 : 0) | (prec.slide ? 0x80 : 0);
+        blob[k] = clampPackedByte((prec.pitch & PITCH_PACK_MASK) | flags);
       } else {
-        blob[s] = PITCH_EMPTY;
+        blob[k] = PITCH_EMPTY;
       }
-      setRatchet(blob, s, st.ratchet ? 1 : 0);
     }
     normalizePatternTimes(blob, len);
     pushHistory(g, p);
@@ -2753,7 +2793,7 @@
         var obj = JSON.parse(e.target.result);
         // Top-level validation
         if (typeof obj !== 'object' || obj === null)          throw new Error('Root is not an object');
-        if (obj.version !== 3)                                throw new Error('Version mismatch: expected 3, got ' + obj.version);
+        if (obj.version !== 4)                                throw new Error('Version mismatch: expected 4, got ' + obj.version);
         if (!['pattern','bank','group','all'].includes(obj.type)) throw new Error('Unknown type: ' + obj.type);
         if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('data array missing or empty');
         // Validate all patterns before applying any
@@ -2860,12 +2900,11 @@
     return 3;               // DOUBLE_UP
   }
   function applyRandomPitches(blob, len) {
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1) {
-        var flags = (blob[s] !== PITCH_EMPTY) ? (blob[s] & 0xC0) : 0;
-        var semi = Math.floor(Math.random() * 13);
-        blob[s] = ((semi & 0x0F) | (pickWeightedOctave() << 4)) | flags;
-      }
+    var nc = noteCount(blob, len);
+    for (var k = 0; k < nc; k++) {
+      var flags = (blob[k] !== PITCH_EMPTY) ? (blob[k] & 0xC0) : 0;
+      var semi = Math.floor(Math.random() * 13);
+      blob[k] = ((semi & 0x0F) | (pickWeightedOctave() << 4)) | flags;
     }
   }
   /** Random time: NOTE 60% / REST 25% / TIE 15% (TIE→REST guard preserved). */
@@ -2875,64 +2914,71 @@
     for (var s = 0; s < len; s++) {
       var r = Math.random();
       var tv;
-      if (s === 0)         tv = (r < 0.85) ? 1 : 0;       // first step never TIE
-      else if (prev === 0) tv = (r < 0.70) ? 1 : 0;       // can't TIE after REST
+      if (s === 0)         tv = (r < 0.85) ? 1 : 0;
+      else if (prev === 0) tv = (r < 0.70) ? 1 : 0;
       else                 tv = (r < 0.60) ? 1 : (r < 0.85) ? 0 : 2;
       setTime(blob, s, tv);
       if (tv !== 1) setRatchet(blob, s, 0);
       prev = tv;
     }
     normalizePatternTimes(blob, len);
-    // Initialize pitch on any newly-NOTE slot that's empty.
-    for (var k = 0; k < len; k++) {
-      if (getTime(blob, k) === 1 && blob[k] === PITCH_EMPTY) blob[k] = PITCH_DEFAULT;
-      if (getTime(blob, k) !== 1) blob[k] = PITCH_EMPTY;
-    }
   }
-  /** Random octave per NOTE step using the same weighted distribution. */
+  /** Random octave per stream slot using the weighted distribution. */
   function applyRandomOctave(blob, len) {
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1 && blob[s] !== PITCH_EMPTY) {
-        var flags = blob[s] & 0xC0;
-        var semi = blob[s] & 0x0F;
-        blob[s] = flags | (semi & 0x0F) | (pickWeightedOctave() << 4);
-      }
+    var nc = noteCount(blob, len);
+    for (var k = 0; k < nc; k++) {
+      if (blob[k] === PITCH_EMPTY) continue;
+      var flags = blob[k] & 0xC0;
+      var semi = blob[k] & 0x0F;
+      blob[k] = flags | (semi & 0x0F) | (pickWeightedOctave() << 4);
     }
   }
   /** Random 2× ratchets, ~25% probability, only on NOTE steps without slide. */
   function applyRandomRatchets(blob, len) {
     for (var s = 0; s < len; s++) {
-      var slide = blob[s] !== PITCH_EMPTY && (blob[s] & 0x80);
+      var slide = false;
+      if (getTime(blob, s) === 1) {
+        var k = noteIdx(blob, s);
+        slide = blob[k] !== PITCH_EMPTY && !!(blob[k] & 0x80);
+      }
       if (getTime(blob, s) === 1 && !slide && Math.random() < 0.25) setRatchet(blob, s, 1);
       else setRatchet(blob, s, 0);
     }
   }
 
-  /** Random accent flag (~30% on / 70% off) on existing NOTE steps. */
+  /** Random accent flag (~30% on / 70% off) on every stream slot. */
   function applyRandomAccent(blob, len) {
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1 && blob[s] !== PITCH_EMPTY) {
-        blob[s] = (blob[s] & 0xBF) | (Math.random() < 0.30 ? 0x40 : 0);
-      }
+    var nc = noteCount(blob, len);
+    for (var k = 0; k < nc; k++) {
+      if (blob[k] === PITCH_EMPTY) blob[k] = PITCH_DEFAULT;
+      blob[k] = (blob[k] & 0xBF) | (Math.random() < 0.30 ? 0x40 : 0);
     }
   }
 
-  /** Random slide flag (~20% on / 80% off) on existing NOTE steps. */
+  /** Random slide flag (~20% on / 80% off) on every stream slot. */
   function applyRandomSlide(blob, len) {
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1 && blob[s] !== PITCH_EMPTY) {
-        var slide = Math.random() < 0.20;
-        blob[s] = (blob[s] & 0x7F) | (slide ? 0x80 : 0);
-        if (slide) setRatchet(blob, s, 0);
+    var nc = noteCount(blob, len);
+    for (var k = 0; k < nc; k++) {
+      if (blob[k] === PITCH_EMPTY) blob[k] = PITCH_DEFAULT;
+      var slide = Math.random() < 0.20;
+      blob[k] = (blob[k] & 0x7F) | (slide ? 0x80 : 0);
+    }
+    if (Math.random() < 0.20) {
+      // Slide source steps disable ratchets at their corresponding step
+      for (var s = 0; s < len; s++) {
+        if (getTime(blob, s) === 1) {
+          var slk = noteIdx(blob, s);
+          if (blob[slk] !== PITCH_EMPTY && (blob[slk] & 0x80)) setRatchet(blob, s, 0);
+        }
       }
     }
   }
 
-  function syncScaleSnapAndApply(g, p, len) {
+  function syncScaleSnapAndApply(g, p, _len) {
     if (!scaleLockEnabled) return;
     ensureScaleSnap(g, p);
     var blob = groups[g][p], snap = scaleLockSnaps[g][p];
-    for (var s = 0; s < len; s++) snap[s] = blob[s];
+    for (var k = 0; k < MAX_STEPS; k++) snap[k] = blob[k];
     applySnapToBlob(g, p);
   }
 
@@ -3004,15 +3050,13 @@
    */
   function applyBrownianPitches(blob, len) {
     var STEP_MAX = 4;
-    var curLin = 12; // seed: C centre
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1 && blob[s] !== PITCH_EMPTY) { curLin = unpackLinear(blob[s] & PITCH_PACK_MASK); break; }
-    }
-    for (var s2 = 0; s2 < len; s2++) {
-      if (getTime(blob, s2) !== 1) continue;
+    var nc = noteCount(blob, len);
+    if (nc === 0) return;
+    var curLin = (blob[0] !== PITCH_EMPTY) ? unpackLinear(blob[0] & PITCH_PACK_MASK) : 12;
+    for (var k = 0; k < nc; k++) {
       curLin = Math.max(0, Math.min(48, curLin + Math.round((Math.random() * 2 - 1) * STEP_MAX)));
-      var flags = (blob[s2] !== PITCH_EMPTY) ? (blob[s2] & 0xC0) : 0;
-      blob[s2] = linearToPacked(curLin) | flags;
+      var flags = (blob[k] !== PITCH_EMPTY) ? (blob[k] & 0xC0) : 0;
+      blob[k] = linearToPacked(curLin) | flags;
     }
   }
   document.getElementById('btnRandBrownian').onclick = function() {
@@ -3060,12 +3104,11 @@
   function applySnapToBlob(g, p) {
     var blob = groups[g][p], snap = scaleLockSnaps[g][p];
     if (!snap) return;
-    var len = getLength(blob);
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) !== 1) continue;
-      if (snap[s] === PITCH_EMPTY) { blob[s] = PITCH_EMPTY; continue; }
-      var flags = (blob[s] !== PITCH_EMPTY) ? (blob[s] & 0xC0) : (snap[s] & 0xC0);
-      blob[s] = linearToPacked(snapLinToScale(unpackLinear(snap[s] & PITCH_PACK_MASK))) | flags;
+    var nc = noteCount(blob);
+    for (var k = 0; k < nc; k++) {
+      if (snap[k] === PITCH_EMPTY) continue;
+      var flags = (blob[k] !== PITCH_EMPTY) ? (blob[k] & 0xC0) : (snap[k] & 0xC0);
+      blob[k] = linearToPacked(snapLinToScale(unpackLinear(snap[k] & PITCH_PACK_MASK))) | flags;
     }
   }
 
@@ -3246,85 +3289,71 @@
    */
   function nudgePattern(blob, len, mode, direction) {
     if (len < 2) return;
-
-    function noteSteps() {
-      var a = [];
-      for (var s = 0; s < len; s++) if (getTime(blob, s) === 1) a.push(s);
-      return a;
-    }
     function rotate(arr) {
       if (direction > 0) arr.unshift(arr.pop());
       else               arr.push(arr.shift());
     }
+    var nc = noteCount(blob, len);
 
     if (mode === 'pitch') {
-      var ns = noteSteps(); if (ns.length < 2) return;
-      var pitches  = ns.map(function(s) { return blob[s]; });
-      var ratchets = ns.map(function(s) { return getRatchet(blob, s); });
-      rotate(pitches); rotate(ratchets);
-      for (var i = 0; i < ns.length; i++) {
-        blob[ns[i]] = pitches[i];
-        setRatchet(blob, ns[i], ratchets[i]);
-      }
+      if (nc < 2) return;
+      var pitches = []; for (var k = 0; k < nc; k++) pitches.push(blob[k]);
+      rotate(pitches);
+      for (var k2 = 0; k2 < nc; k2++) blob[k2] = pitches[k2];
 
     } else if (mode === 'octave') {
-      var ns2 = noteSteps(); if (ns2.length < 2) return;
-      var octs = ns2.map(function(s) { return (blob[s] >> 4) & 0x03; });
+      if (nc < 2) return;
+      var octs = []; for (var ko = 0; ko < nc; ko++) octs.push((blob[ko] >> 4) & 0x03);
       rotate(octs);
-      for (var io = 0; io < ns2.length; io++) {
-        var semi = blob[ns2[io]] & 0x0F;
-        var flags = blob[ns2[io]] & 0xC0;
-        blob[ns2[io]] = flags | (semi & 0x0F) | (octs[io] << 4);
+      for (var ko2 = 0; ko2 < nc; ko2++) {
+        var semi = blob[ko2] & 0x0F;
+        var flg  = blob[ko2] & 0xC0;
+        blob[ko2] = flg | (semi & 0x0F) | (octs[ko2] << 4);
       }
 
     } else if (mode === 'accent') {
-      var ns3 = noteSteps(); if (ns3.length < 2) return;
-      var accs = ns3.map(function(s) { return (blob[s] >> 6) & 1; });
+      if (nc < 2) return;
+      var accs = []; for (var ka = 0; ka < nc; ka++) accs.push((blob[ka] >> 6) & 1);
       rotate(accs);
-      for (var ia = 0; ia < ns3.length; ia++)
-        blob[ns3[ia]] = (blob[ns3[ia]] & 0xBF) | (accs[ia] << 6);
+      for (var ka2 = 0; ka2 < nc; ka2++) blob[ka2] = (blob[ka2] & 0xBF) | (accs[ka2] << 6);
 
     } else if (mode === 'slide') {
-      var ns4 = noteSteps(); if (ns4.length < 2) return;
-      var sls = ns4.map(function(s) { return (blob[s] >> 7) & 1; });
+      if (nc < 2) return;
+      var sls = []; for (var ks = 0; ks < nc; ks++) sls.push((blob[ks] >> 7) & 1);
       rotate(sls);
-      for (var is = 0; is < ns4.length; is++)
-        blob[ns4[is]] = (blob[ns4[is]] & 0x7F) | (sls[is] << 7);
+      for (var ks2 = 0; ks2 < nc; ks2++) blob[ks2] = (blob[ks2] & 0x7F) | (sls[ks2] << 7);
 
     } else if (mode === 'ratchet') {
-      var ns5 = noteSteps(); if (ns5.length < 2) return;
-      var rats = ns5.map(function(s) { return getRatchet(blob, s); });
+      // Ratchets are per time step but only meaningful on NOTE steps.
+      var noteStepsArr = [];
+      for (var s = 0; s < len; s++) if (getTime(blob, s) === 1) noteStepsArr.push(s);
+      if (noteStepsArr.length < 2) return;
+      var rats = noteStepsArr.map(function(s) { return getRatchet(blob, s); });
       rotate(rats);
-      for (var ir = 0; ir < ns5.length; ir++) setRatchet(blob, ns5[ir], rats[ir]);
+      for (var ir = 0; ir < noteStepsArr.length; ir++) setRatchet(blob, noteStepsArr[ir], rats[ir]);
 
     } else if (mode === 'time') {
-      var times    = []; for (var st = 0; st < len; st++) times.push(getTime(blob, st));
-      var ratchets2 = []; for (var st2 = 0; st2 < len; st2++) ratchets2.push(getRatchet(blob, st2));
-      rotate(times); rotate(ratchets2);
+      var times = []; for (var st = 0; st < len; st++) times.push(getTime(blob, st));
+      var rats2 = []; for (var st2 = 0; st2 < len; st2++) rats2.push(getRatchet(blob, st2));
+      rotate(times); rotate(rats2);
       for (var iz = 0; iz < len; iz++) {
         setTime(blob, iz, times[iz]);
-        setRatchet(blob, iz, ratchets2[iz]);
+        setRatchet(blob, iz, rats2[iz]);
       }
       normalizePatternTimes(blob, len);
-      for (var sk = 0; sk < len; sk++) {
-        if (getTime(blob, sk) === 1 && blob[sk] === PITCH_EMPTY) blob[sk] = PITCH_DEFAULT;
-        if (getTime(blob, sk) !== 1) { blob[sk] = PITCH_EMPTY; setRatchet(blob, sk, 0); }
-      }
 
-    } else { // 'all' — rotate every attribute as a unit
-      var stepsAll = [];
-      for (var sa = 0; sa < len; sa++)
-        stepsAll.push({ t: getTime(blob, sa), p: blob[sa], r: getRatchet(blob, sa) });
-      rotate(stepsAll);
-      for (var ja = 0; ja < len; ja++) {
-        setTime(blob, ja, stepsAll[ja].t);
-        blob[ja] = stepsAll[ja].p;
-        setRatchet(blob, ja, stepsAll[ja].r);
+    } else { // 'all' — rotate stream pitches AND time_data together
+      var times3 = []; for (var sb = 0; sb < len; sb++) times3.push(getTime(blob, sb));
+      var rats3  = []; for (var sb2 = 0; sb2 < len; sb2++) rats3.push(getRatchet(blob, sb2));
+      var pitch3 = []; for (var kp = 0; kp < nc; kp++) pitch3.push(blob[kp]);
+      rotate(times3); rotate(rats3);
+      if (pitch3.length >= 2) rotate(pitch3);
+      for (var iz2 = 0; iz2 < len; iz2++) {
+        setTime(blob, iz2, times3[iz2]);
+        setRatchet(blob, iz2, rats3[iz2]);
       }
+      for (var ip = 0; ip < pitch3.length; ip++) blob[ip] = pitch3[ip];
       normalizePatternTimes(blob, len);
-      for (var sb = 0; sb < len; sb++) {
-        if (getTime(blob, sb) !== 1) { blob[sb] = PITCH_EMPTY; setRatchet(blob, sb, 0); }
-      }
     }
   }
 
@@ -3612,15 +3641,19 @@
     var len = Math.min(patternMaxSteps(blob), pd.length);
     blob[LEN_OFF] = len;
     for (var s = 0; s < len; s++) {
-      var st = pd.steps[s];
-      setTime(blob, s, st.time);
-      if (st.pitch !== null && st.pitch !== undefined) {
-        var flags = (st.accent ? 0x40 : 0) | (st.slide ? 0x80 : 0);
-        blob[s] = clampPackedByte((st.pitch & PITCH_PACK_MASK) | flags);
+      var trec = pd.times[s];
+      setTime(blob, s, trec.time);
+      setRatchet(blob, s, trec.ratchet ? 1 : 0);
+    }
+    var pStream = pd.pitches || [];
+    for (var k = 0; k < pStream.length; k++) {
+      var prec = pStream[k];
+      if (prec.pitch !== null && prec.pitch !== undefined) {
+        var flags = (prec.accent ? 0x40 : 0) | (prec.slide ? 0x80 : 0);
+        blob[k] = clampPackedByte((prec.pitch & PITCH_PACK_MASK) | flags);
       } else {
-        blob[s] = PITCH_EMPTY;
+        blob[k] = PITCH_EMPTY;
       }
-      setRatchet(blob, s, st.ratchet ? 1 : 0);
     }
     normalizePatternTimes(blob, len);
     syncPatternToolbar();

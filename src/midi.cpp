@@ -272,7 +272,9 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     Sequence &seq = g_eng->pattern[pat];
     if (step >= seq.length) return;
     sequence_write_time_with_pitch_sync(seq, step, timeNib);
-    if (timeNib == 1) {
+    // pitchByte == PITCH_EMPTY (0xFF) is the editor's "time-only edit"
+    // sentinel: leave the pitch stream alone (auto-extension already ran).
+    if (timeNib == 1 && pitchByte != PITCH_EMPTY) {
       const uint8_t slot = seq.pitch_index_for_note(step);
       if (slot < seq.get_pitch_count())
         seq.pitch[slot] = pitchByte;
