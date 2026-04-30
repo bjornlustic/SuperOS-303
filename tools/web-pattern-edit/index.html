@@ -2092,10 +2092,11 @@
       cfgReadRetryTimer = null;
       if (!midiOut) { cfgReadAttempts = 0; return; }
       if (cfgIsSynced()) { cfgReadAttempts = 0; return; }
-      if (cfgReadAttempts >= 6) {
-        log('Config read: no 0x21 reply after ' + cfgReadAttempts + ' attempts', 'log-err');
-        updateSyncOverlayConfig('fail', cfgReadAttempts);
+      if (cfgReadAttempts >= 3) {
+        log('Config read: no 0x21 reply after ' + cfgReadAttempts + ' attempts — disconnecting', 'log-err');
         cfgReadAttempts = 0;
+        disconnectPorts();
+        showErrorToast('MIDI connection failed');
         return;
       }
       log('Config read: no reply yet, retry ' + cfgReadAttempts, 'log-syx');
@@ -3670,22 +3671,49 @@
   });
 
   // ── MIDI connect ───────────────────────────────────────────────────
+  function disconnectPorts() {
+    if (midiIn)  midiIn.onmidimessage  = null;
+    if (midiKbd) midiKbd.onmidimessage = null;
+    midiOut = null; midiIn = null; midiKbd = null;
+    autoConnectDone = false;
+    expectDump = 0; bulkNextPat = -1;
+    if (autoPatternDumpTimer) { clearTimeout(autoPatternDumpTimer); autoPatternDumpTimer = null; }
+    hideSyncOverlay();
+    var btn = document.getElementById('btnMidi');
+    btn.textContent = 'Connect MIDI';
+    btn.classList.remove('is-connected');
+    var statusEl = document.getElementById('midiStatus');
+    statusEl.textContent = 'No reply — pick a device and try again';
+    statusEl.className = 'is-warn';
+    if (midiAccess) midiAccess.onstatechange = function() { populatePortSelects(midiAccess); };
+    updateButtons();
+  }
+
   document.getElementById('btnMidi').onclick = async function() {
     if (!navigator.requestMIDIAccess) { log('Web MIDI unavailable (use Chrome/Edge)', 'log-err'); return; }
-    try {
-      midiAccess = await navigator.requestMIDIAccess({ sysex: true });
+    if (!midiAccess) {
+      // First click: request access and populate the device dropdowns.
+      // User picks In/Out, then clicks Connect again to actually bind.
+      try {
+        midiAccess = await navigator.requestMIDIAccess({ sysex: true });
+        populatePortSelects(midiAccess);
+        midiAccess.onstatechange = function() { populatePortSelects(midiAccess); };
+        var statusEl = document.getElementById('midiStatus');
+        statusEl.textContent = 'Select In and Out, then click Connect';
+        statusEl.className = 'is-warn';
+        log('MIDI devices loaded — pick In and Out then click Connect', 'log-ack');
+      } catch(e) { log('MIDI denied: ' + e, 'log-err'); return; }
+      return;
+    }
+    // Second click (or any subsequent click): bind with the currently selected ports.
+    midiAccess.onstatechange = function() {
       populatePortSelects(midiAccess);
       bindPorts(midiAccess);
-      midiAccess.onstatechange = function() {
-        populatePortSelects(midiAccess);
-        bindPorts(midiAccess);
-      };
-      log('MIDI ready — Computer Out \u2192 303 MIDI In  |  303 MIDI Out \u2192 Computer In', 'log-ack');
-    } catch(e) { log('MIDI denied: ' + e, 'log-err'); }
+    };
+    bindPorts(midiAccess);
   };
 
-  document.getElementById('selOut').onchange =
-  document.getElementById('selIn').onchange  =
+  // Selects have no onchange auto-bind: user picks In/Out, then clicks Connect.
   document.getElementById('selKbd').onchange = function() { if (midiAccess) bindPorts(midiAccess); };
 
   (function initPitchModeUi() {
