@@ -739,31 +739,32 @@
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────────
-  // In-memory blob layout = OS-303 v0.6 wire format byte-for-byte:
+  // In-memory blob layout (matches firmware Sequence struct):
   //   bytes  0..31  pitch[32]    NOTE-event-indexed pitch stream
   //                              (slot K = pitch for the K-th NOTE event in time order)
-  //   bytes 32..47  time_data[16] 4-bit nibbles (0=REST, 1=NOTE, 2=TIE)
-  //   byte  48      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
-  //   bytes 49..52  reserved[1..4] ratchet bitmap (1 bit/step, 32 bits)
-  //   byte  53      transpose
-  //   byte  54      engine_select (round-tripped untouched)
-  //   byte  55      length (1..32 normal, 1..24 triplet)
+  //   bytes 32..39  time_data[8]  2-bit cells, 4 steps/byte (0=REST, 1=NOTE, 2=TIE)
+  //   byte  40      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
+  //   bytes 41..44  reserved[1..4] ratchet bitmap (1 bit/step, 32 bits)
+  //   byte  45      transpose
+  //   byte  46      engine_select (round-tripped untouched)
+  //   byte  47      length (1..32 normal, 1..24 triplet)
   //
   // Pitches are NOT indexed by time step. Use noteIdx(blob, s) to map a time
   // step to its stream slot. Time edits never shift pitch[]; the stream
   // auto-extends with PITCH_DEFAULT only when note_count > pitch_count.
   // Removing a NOTE preserves the pitch stream so re-adding NOTEs replays
   // the same pitches in stream order. Same model as the firmware.
-  var PATTERN_SIZE   = 56;
+  var PATTERN_SIZE   = 48;
   var MAX_STEPS      = 32;
   var TRIPLET_MAX_STEPS = 24;
   var TIME_OFF       = 32;
-  var RES0_OFF       = 48;
-  var RAT_OFF        = 49;
-  var TRANSPOSE_OFF  = 53;
-  var ENGINE_OFF     = 54;
-  var LEN_OFF        = 55;
-  var PACKED_SIZE    = 64;  // 56 raw → 8 chunks × 8 packed bytes
+  var TIME_BYTES     = 8;   // MAX_STEPS / 4 (2-bit cells, 4 steps/byte)
+  var RES0_OFF       = 40;
+  var RAT_OFF        = 41;
+  var TRANSPOSE_OFF  = 45;
+  var ENGINE_OFF     = 46;
+  var LEN_OFF        = 47;
+  var PACKED_SIZE    = 55;  // 48 raw -> 6 full chunks (48 B) + 1 partial (7 B)
 
   var PITCH_PACK_MASK = 0x3F;
   var PITCH_MAX       = 0x3C; // semi=12 | (oct=3 << 4)
@@ -898,14 +899,14 @@
     return x & 0xff;
   }
 
-  // ── Time nibble helpers ────────────────────────────────────────────
+  // ── Time cell helpers (2 bits/step, 4 steps/byte) ──────────────────
   function getTime(blob, s) {
     var idx = s & (MAX_STEPS - 1);
-    return (blob[TIME_OFF + (idx >> 1)] >> (4 * (idx & 1))) & 0x0F;
+    return (blob[TIME_OFF + (idx >> 2)] >> (2 * (idx & 3))) & 0x03;
   }
   function setTime(blob, s, v) {
-    var idx = s & (MAX_STEPS - 1), p = TIME_OFF + (idx >> 1), sh = 4 * (idx & 1);
-    blob[p] = (blob[p] & ~(0x0F << sh)) | ((v & 0x0F) << sh);
+    var idx = s & (MAX_STEPS - 1), p = TIME_OFF + (idx >> 2), sh = 2 * (idx & 3);
+    blob[p] = (blob[p] & ~(0x03 << sh)) | ((v & 0x03) << sh);
   }
   function getLength(blob) {
     return Math.min(MAX_STEPS, Math.max(1, blob[LEN_OFF] | 0));
@@ -1040,11 +1041,10 @@
   }
 
   // ── Storage ────────────────────────────────────────────────────────
-  // groups[g][p] = Uint8Array(56) for group g (0-3), pattern p (0-15).
-  // Wire-compatible with OS-303 v0.6 (56-byte blob), but pitch is stored
-  // per-time-step in the editor (converted at SysEx boundary).
+  // groups[g][p] = Uint8Array(48) for group g (0-3), pattern p (0-15).
+  // Wire format = firmware Sequence struct (48 B: pitch[32] + time_data[8] + 8 metadata).
   var groups = []; // [4][16]
-  var LS_KEY = 'superos303_groups_v6'; // bumped for new layout; old key dropped
+  var LS_KEY = 'superos303_groups_v7'; // bumped for 2-bit time layout; old key dropped
   var LS_SCALE_LOCK = 'superos303_scale_lock';
 
   // ── Scale definitions ──────────────────────────────────────────────
@@ -1099,7 +1099,7 @@
   function makeBlankPat() {
     var b = new Uint8Array(PATTERN_SIZE);
     for (var i = 0; i < MAX_STEPS; i++) b[i] = PITCH_EMPTY;
-    for (var t = 0; t < 16; t++) b[TIME_OFF + t] = 0;
+    for (var t = 0; t < TIME_BYTES; t++) b[TIME_OFF + t] = 0;
     b[RES0_OFF] = 0;
     b[RAT_OFF] = b[RAT_OFF+1] = b[RAT_OFF+2] = b[RAT_OFF+3] = 0;
     b[TRANSPOSE_OFF] = 0;
@@ -1109,7 +1109,7 @@
   }
   /** One step, rest, no pitches set. */
   function clearPatternMinimalRest(blob) {
-    for (var t = 0; t < 16; t++) blob[TIME_OFF + t] = 0;
+    for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
     for (var p = 0; p < MAX_STEPS; p++) blob[p] = PITCH_EMPTY;
     blob[RES0_OFF] &= TRIPLET_FLAG;
     blob[RAT_OFF] = blob[RAT_OFF+1] = blob[RAT_OFF+2] = blob[RAT_OFF+3] = 0;
@@ -2973,7 +2973,7 @@
   }
   /** Random time: NOTE 60% / REST 25% / TIE 15% (TIE→REST guard preserved). */
   function applyRandomTime(blob, len) {
-    for (var t = 0; t < 16; t++) blob[TIME_OFF + t] = 0;
+    for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
     var prev = 1;
     for (var s = 0; s < len; s++) {
       var r = Math.random();

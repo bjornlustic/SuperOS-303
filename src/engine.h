@@ -8,6 +8,9 @@
  *   "PewPewPew!!4" -- 1:1 pitch/time model, 16-step max, 4 groups x 16 patterns
  *   "PewPewPew!!5" -- groups 0-2: 16-step compact; group 3: 64-step full blob (1:1 model)
  *   "PewPewPew!!6" -- two-stream model: pitch[] in NOTE-event order, pitch_count byte
+ *   "superOS-2bit"  -- time_data shrunk from 4-bit nibbles to 2-bit cells
+ *                      (8 B/pattern instead of 16 B). PATTERN_SIZE 56->48.
+ *                      Wipes EEPROM on first boot since offsets shifted.
  */
 
 #pragma once
@@ -118,8 +121,13 @@ struct Engine {
       memcpy(GlobalSettings.signature, sig_pew, kSigEepromLen);
       GlobalSettings.Save();
       GlobalSettings.save_midi_to_storage();
-      stale = true;
-      Save();
+      // Wipe all 4 banks, not just the active one. Old EEPROM had time_data
+      // at different offsets; without this, switching to bank 1/2/3 reads
+      // garbage at the new offsets.
+      for (uint8_t b = 0; b < NUM_BANKS; ++b)
+        for (uint8_t i = 0; i < NUM_PATTERNS; ++i)
+          WritePattern(pattern[i], i, b);
+      stale = false;
     }
   }
 
@@ -1075,7 +1083,8 @@ struct Engine {
   }
 
   // ---------------------------------------------------------------------------
-  // SysEx blob (128 bytes: pitch[64] + time_data[32] + step_lock[8] + reserved[23] + length)
+  // SysEx blob (PATTERN_SIZE = 48 bytes: pitch[32] + time_data[8] + reserved[5]
+  // + transpose + engine_select + length). Layout matches Sequence struct memory.
   // ---------------------------------------------------------------------------
   void export_pattern_blob(uint8_t idx, uint8_t *blob128) const {
     idx &= 0xf;

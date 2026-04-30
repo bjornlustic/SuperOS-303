@@ -4,13 +4,14 @@
 // Layout matches OS-303 v0.6 byte-for-byte so EEPROM is round-trippable
 // between SuperOS-303 and stock OS-303 firmware.
 //
-// Pattern storage (56 bytes):
+// Pattern storage (48 bytes):
 //   pitch[32]            -- 8 bits: bits[3:0]=semitone (0..12, 12=high-C button)
 //                                   bits[5:4]=octave (0..3)
 //                                   bit[6]=accent, bit[7]=slide
 //                          NOTE-event-indexed: pitch[i] = i-th NOTE in time order.
 //                          PITCH_EMPTY (0xFF) marks unwritten slots.
-//   time_data[16]        -- 4-bit nibbles per time step (0=REST, 1=NOTE, 2=TIE).
+//   time_data[8]         -- 2-bit cells per time step (0=REST, 1=NOTE, 2=TIE),
+//                          4 steps packed per byte.
 //   reserved[5]          -- bytes that OS-303 round-trips untouched.
 //                            reserved[0] = direction (0..5)
 //                            reserved[1..4] = ratchet bitmap, 1 bit/step,
@@ -95,7 +96,7 @@ static inline uint8_t unpack_pitch_linear(uint8_t e) {
 struct Sequence {
   // ----- EEPROM-persisted layout (56 bytes, must match OS-303 byte-for-byte) -----
   uint8_t pitch[MAX_STEPS];           // 32 bytes
-  uint8_t time_data[MAX_STEPS / 2];   // 16 bytes (4-bit nibbles)
+  uint8_t time_data[MAX_STEPS / 4];   // 8 bytes (2-bit cells, 4 steps/byte)
   uint8_t reserved[METADATA_SIZE - 3]; // 5 bytes (reserved[0]=direction, [1..4]=ratchet bits)
   uint8_t transpose     = 0;
   uint8_t engine_select = 0;
@@ -155,7 +156,7 @@ struct Sequence {
   // Time stream accessors
   // ---------------------------------------------------------------------------
   inline uint8_t time(uint8_t idx) const {
-    return (time_data[idx >> 1] >> (4 * (idx & 1))) & 0xf;
+    return (time_data[idx >> 2] >> (2 * (idx & 3))) & 0x3;
   }
   const uint8_t get_time() const { return time(time_pos); }
 
@@ -295,9 +296,9 @@ struct Sequence {
   // Time-step writing (raw nibble; does NOT touch pitch stream)
   // ---------------------------------------------------------------------------
   void SetTime(uint8_t t) {
-    const uint8_t upper = time_pos & 1;
-    uint8_t &data = time_data[time_pos >> 1];
-    data = (~(0x0f << (4 * upper)) & data) | (t << (4 * upper));
+    const uint8_t shift = 2 * uint8_t(time_pos & 3);
+    uint8_t &data = time_data[time_pos >> 2];
+    data = uint8_t((data & ~(0x03u << shift)) | ((t & 0x03u) << shift));
   }
 
   // ---------------------------------------------------------------------------
@@ -386,10 +387,8 @@ struct Sequence {
     first_step = true;
   }
   void Clear() {
-    for (uint8_t i = 0; i < MAX_STEPS; ++i) {
-      pitch[i] = PITCH_EMPTY;
-      if ((i & 1) == 0) time_data[i >> 1] = 0;
-    }
+    for (uint8_t i = 0; i < MAX_STEPS; ++i) pitch[i] = PITCH_EMPTY;
+    for (uint8_t i = 0; i < (MAX_STEPS / 4); ++i) time_data[i] = 0;
     for (uint8_t i = 0; i < (METADATA_SIZE - 3); ++i)
       reserved[i] = 0;
     for (uint8_t i = 0; i < (MAX_STEPS / 8); ++i)
@@ -540,9 +539,9 @@ struct Sequence {
 // =============================================================================
 inline void sequence_set_time_at(Sequence &s, uint8_t idx, uint8_t t) {
   idx &= uint8_t(MAX_STEPS - 1);
-  const uint8_t upper = idx & 1u;
-  uint8_t &cell = s.time_data[idx >> 1u];
-  cell = uint8_t((cell & ~(0x0fu << (4u * upper))) | ((t & 0x0fu) << (4u * upper)));
+  const uint8_t shift = 2u * (idx & 3u);
+  uint8_t &cell = s.time_data[idx >> 2u];
+  cell = uint8_t((cell & ~(0x03u << shift)) | ((t & 0x03u) << shift));
 }
 
 inline void sequence_rebuild_pitch_count(Sequence &s) {

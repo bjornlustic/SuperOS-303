@@ -119,7 +119,7 @@ static bool tx_push_message(const uint8_t *inner, uint16_t inner_len) {
   return true;
 }
 
-// --- 7-bit pack / unpack (56-byte raw pattern blob = 64 packed bytes) ----------
+// --- 7-bit pack / unpack (PATTERN_SIZE raw -> kPackedPatternLen packed) -------
 static uint16_t pack_7bit(const uint8_t *src, uint16_t len, uint8_t *out) {
   uint16_t o = 0;
   for (uint16_t i = 0; i < len; i += 7) {
@@ -134,10 +134,10 @@ static uint16_t pack_7bit(const uint8_t *src, uint16_t len, uint8_t *out) {
   return o;
 }
 
-// 56 raw bytes → 8 chunks × 8 packed bytes = 64 packed bytes.
-// (Renamed from kPacked128Len; the old 128-byte format is gone with the
-// OS-303 v0.6 layout migration.)
-static constexpr uint16_t kPacked128Len = 64;
+// 7-bit packing inflation: every 7 raw bytes -> 1 MSB byte + 7 data bytes.
+// 48 raw -> 6 full chunks (48 packed bytes) + 1 partial (1 + 6 = 7) = 55.
+static constexpr uint16_t kPackedPatternLen =
+    PATTERN_SIZE + ((PATTERN_SIZE + 6) / 7);
 
 static bool unpack_7bit(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16_t out_len) {
   uint16_t oi = 0, ii = 0;
@@ -165,7 +165,7 @@ static void enqueue_pattern_reply(uint8_t pat) {
   uint8_t raw[PATTERN_SIZE];
   g_eng->export_pattern_blob(pat, raw);
   const uint8_t cx = xor_blob_pattern(raw);
-  uint8_t inner[5 + kPacked128Len];
+  uint8_t inner[5 + kPackedPatternLen];
   inner[0] = 0x7D;
   inner[1] = 0x11;
   inner[2] = pat & 0x0F;
@@ -242,7 +242,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     break;
   }
   case 0x12: { // set pattern
-    if (n < 5 + kPacked128Len) { send_ack(1); return; }
+    if (n < 5 + kPackedPatternLen) { send_ack(1); return; }
     const uint8_t pat = p[2] & 0x0F;
     const uint8_t cx = static_cast<uint8_t>(p[3] | (p[4] << 7));
     uint8_t raw[PATTERN_SIZE];

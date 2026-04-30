@@ -1,17 +1,19 @@
 // Copyright (c) 2026, Nicholas J. Michalek
 //
-// persistent_settings.h -- EEPROM layout (OS-303 v0.6 compatible) +
-// pattern read/write. Depends on sequence.h for Sequence struct.
+// persistent_settings.h -- EEPROM layout + pattern read/write.
+// Depends on sequence.h for Sequence struct.
 //
-// EEPROM layout (4096 bytes total, byte-for-byte compatible with OS-303 v0.6):
+// EEPROM layout (4096 bytes total):
 //   0    .. 127    SETTINGS     (128 B)  signature[16] + flags + reserved
 //   128  .. 2175   PITCH_DATA   (2048 B) 64 patterns x 32 bytes (pitch[32])
-//   2176 .. 3199   TIME_DATA    (1024 B) 64 patterns x 16 bytes (time_data[16])
-//   3200 .. 3711   PATTERN_META (512 B)  64 patterns x 8 bytes (reserved[5] + transpose + engine_select + length)
-//   3712 .. 3967   TRACK_DATA   (256 B)  8 tracks x 32 bytes (p_chain[16] + t_chain[16])
-//   3968 .. 4095   AUX_DATA     (128 B)  free
+//   2176 .. 2687   TIME_DATA    (512 B)  64 patterns x 8 bytes (time_data[8], 2-bit cells)
+//   2688 .. 3199   PATTERN_META (512 B)  64 patterns x 8 bytes (reserved[5] + transpose + engine_select + length)
+//   3200 .. 3455   TRACK_DATA   (256 B)  8 tracks x 32 bytes (p_chain[16] + t_chain[16])
+//   3456 .. 4095   AUX_DATA     (640 B)  free
 //
 // Patterns are addressed by a flat index 0..63: bank * 16 + pattern_in_bank.
+// Wire format diverges from OS-303 v0.6: time_data is now 2 bits/step
+// (8 bytes for 32 steps) instead of 4 bits/step (16 bytes).
 
 #pragma once
 #include <Arduino.h>
@@ -22,30 +24,25 @@ static constexpr int SETTINGS_SIZE       = 128;
 static constexpr int SETTINGS_OFFSET     = 0;
 static constexpr int PITCH_DATA_SIZE     = 64 * MAX_STEPS;        // 2048
 static constexpr int PITCH_DATA_OFFSET   = SETTINGS_OFFSET + SETTINGS_SIZE; // 128
-static constexpr int TIME_DATA_SIZE      = 64 * (MAX_STEPS / 2);  // 1024
+static constexpr int TIME_DATA_SIZE      = 64 * (MAX_STEPS / 4);  // 512
 static constexpr int TIME_DATA_OFFSET    = PITCH_DATA_OFFSET + PITCH_DATA_SIZE; // 2176
 static constexpr int PATTERN_META_SIZE   = 64 * METADATA_SIZE;    // 512
-static constexpr int PATTERN_META_OFFSET = TIME_DATA_OFFSET + TIME_DATA_SIZE; // 3200
+static constexpr int PATTERN_META_OFFSET = TIME_DATA_OFFSET + TIME_DATA_SIZE; // 2688
 static constexpr int TRACK_DATA_SIZE     = 8 * 32;                // 256
-static constexpr int TRACK_DATA_OFFSET   = PATTERN_META_OFFSET + PATTERN_META_SIZE; // 3712
-static constexpr int AUX_DATA_OFFSET     = TRACK_DATA_OFFSET + TRACK_DATA_SIZE;     // 3968
-static constexpr int AUX_DATA_SIZE       = 4096 - AUX_DATA_OFFSET;                  // 128
+static constexpr int TRACK_DATA_OFFSET   = PATTERN_META_OFFSET + PATTERN_META_SIZE; // 3200
+static constexpr int AUX_DATA_OFFSET     = TRACK_DATA_OFFSET + TRACK_DATA_SIZE;     // 3456
+static constexpr int AUX_DATA_SIZE       = 4096 - AUX_DATA_OFFSET;                  // 640
 
-// SysEx pattern blob = 56 raw bytes (pitch[32] + time_data[16] + 8 metadata).
-static constexpr int PATTERN_SIZE = MAX_STEPS + (MAX_STEPS / 2) + METADATA_SIZE;
+// SysEx pattern blob = 48 raw bytes (pitch[32] + time_data[8] + 8 metadata).
+static constexpr int PATTERN_SIZE = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE;
 
 // Sig is prefix-matched: anything starting with sig_compat_prefix passes.
-// OS-303's own firmware uses sig_compat_prefix as its full sig, so EEPROM
-// written by either firmware is readable by the other.
-//
-// signature[] is 16 bytes (locked by OS-303's settings layout). The full sig
-// "OS-303-v0.6+superOS" is 19 chars + null = 20 bytes, so it doesn't fit
-// strcpy'd. We write via memcpy with fixed 16-byte length, so EEPROM bytes
-// 0..15 hold the first 16 chars ("OS-303-v0.6+supe"). Prefix match (11 chars)
-// works in both directions.
-const char *const sig_pew = "OS-303-v0.6+superOS";
-const char *const sig_compat_prefix = "OS-303-v0.6";
-static constexpr int kSigCompatPrefixLen = 11;
+// Bumped from "OS-303-v0.6" because time_data shrank from 4-bit nibbles
+// (16 B) to 2-bit cells (8 B) -- old EEPROMs lay out wrong under the new
+// offsets, so this prefix forces a wipe on first boot of new firmware.
+const char *const sig_pew = "superOS-2bit-v1";
+const char *const sig_compat_prefix = "superOS-2bit";
+static constexpr int kSigCompatPrefixLen = 12;
 static constexpr int kSigEepromLen = 16;
 
 extern EEPROMClass storage;
@@ -109,7 +106,7 @@ extern PersistentSettings GlobalSettings;
 inline void WritePatternFlat(Sequence &seq, uint8_t flat_idx) {
   flat_idx &= 0x3F;
   storage.put(PITCH_DATA_OFFSET + (int(flat_idx) * MAX_STEPS), seq.pitch);
-  storage.put(TIME_DATA_OFFSET  + (int(flat_idx) * (MAX_STEPS / 2)), seq.time_data);
+  storage.put(TIME_DATA_OFFSET  + (int(flat_idx) * (MAX_STEPS / 4)), seq.time_data);
   // Metadata block: reserved[0..4], transpose, engine_select, length (8 bytes,
   // contiguous in struct memory because all uint8_t).
   uint8_t *src = seq.reserved;
@@ -120,7 +117,7 @@ inline void WritePatternFlat(Sequence &seq, uint8_t flat_idx) {
 inline void ReadPatternFlat(Sequence &seq, uint8_t flat_idx) {
   flat_idx &= 0x3F;
   storage.get(PITCH_DATA_OFFSET + (int(flat_idx) * MAX_STEPS), seq.pitch);
-  storage.get(TIME_DATA_OFFSET  + (int(flat_idx) * (MAX_STEPS / 2)), seq.time_data);
+  storage.get(TIME_DATA_OFFSET  + (int(flat_idx) * (MAX_STEPS / 4)), seq.time_data);
   uint8_t *dst = seq.reserved;
   for (uint8_t i = 0; i < METADATA_SIZE; ++i) {
     dst[i] = storage.read(PATTERN_META_OFFSET + (int(flat_idx) * METADATA_SIZE) + i);
