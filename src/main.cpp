@@ -1662,7 +1662,12 @@ void loop() {
     if (clk_run) {
       if (engine.Clock()) {
         midi_after_clock(engine, transpose);
-        midi_send_step_position(engine.get_patsel(), engine.get_time_pos());
+        // Per-16th SysEx broadcast (0x15) intentionally not sent here:
+        // the extra TX activity on the DIN MIDI line couples into the
+        // analog audio rail as an audible click on every 16th. The web
+        // editor reconstructs the playhead by counting incoming MIDI
+        // clock (24 PPQN / 6 = 16th step). Active-pattern sync still
+        // travels via the existing 0x1E broadcast.
         // Metronome tap-write: record time data for the step that just played
         if (s_metronome_active) {
           const uint8_t len = engine.get_length();

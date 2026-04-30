@@ -630,3 +630,27 @@ static inline uint8_t fast_rand_pitch_byte() {
   const uint8_t oct  = fast_rand(4);   // 0..3
   return pack_pitch(semi, oct);
 }
+
+// Weighted octave: DOWN 25% / CENTRE 40% / UP 25% / DOUBLE_UP 10%.
+// CENTRE is the "no octave shift" outcome.
+static inline uint8_t fast_rand_octave_weighted() {
+  const uint8_t r = fast_rand(20);
+  if (r < 5)  return 0;
+  if (r < 13) return 1;
+  if (r < 18) return 2;
+  return 3;
+}
+static inline uint8_t fast_rand_pitch_byte_weighted() {
+  return pack_pitch(fast_rand(13), fast_rand_octave_weighted());
+}
+// Time: NOTE 60% / REST 25% / TIE 15%, with TIE-after-REST and first-step-no-TIE guards.
+static inline uint8_t fast_rand_time_weighted(uint8_t prev_t, bool is_first) {
+  const uint8_t r = fast_rand(20);
+  if (is_first || prev_t == 0) return (r < 12) ? 1 : 0;
+  if (r < 12) return 1;
+  if (r < 17) return 0;
+  return 2;
+}
+static inline uint8_t fast_rand_accent_weighted()  { return (fast_rand(10) < 3) ? 0x40 : 0; }
+static inline uint8_t fast_rand_slide_weighted()   { return (fast_rand(10) < 2) ? 0x80 : 0; }
+static inline uint8_t fast_rand_ratchet_weighted() { return (fast_rand(4) == 0) ? 1 : 0; }

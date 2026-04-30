@@ -387,10 +387,7 @@ struct Engine {
     last_step_dir_ = 1;
   }
 
-  static uint8_t random_ratchet_val() {
-    const uint8_t r = fast_rand(12);
-    return r < 6 ? 0 : r < 10 ? 1 : 2;
-  }
+  static uint8_t random_ratchet_val() { return fast_rand_ratchet_weighted(); }
 
   // ---------------------------------------------------------------------------
   // Bulk ops on the joint (time, pitch) representation.
@@ -407,10 +404,7 @@ struct Engine {
     fast_rand_seed();
     uint8_t prev = 1;
     for (uint8_t i = 0; i < len; i++) {
-      uint8_t t;
-      if (i == 0)         t = fast_rand(2) ? 1 : 0;
-      else if (prev == 0) t = fast_rand(2) ? 1 : 0;
-      else                t = fast_rand(3);
+      const uint8_t t = fast_rand_time_weighted(prev, i == 0);
       sequence_set_time_at(s, i, t);
       s.set_ratchet_val(i, 0);
       prev = t;
@@ -418,10 +412,9 @@ struct Engine {
     normalize_pattern_times_only(s);
     const uint8_t nc = s.note_count();
     for (uint8_t k = 0; k < nc; ++k) {
-      const uint8_t pk  = fast_rand_pitch_byte();
-      const uint8_t acc = fast_rand(2) ? 0x40 : 0;
-      const uint8_t sl  = fast_rand(2) ? 0x80 : 0;
-      s.pitch[k] = pk | acc | sl;
+      s.pitch[k] = fast_rand_pitch_byte_weighted()
+                   | fast_rand_accent_weighted()
+                   | fast_rand_slide_weighted();
     }
     for (uint8_t k = nc; k < MAX_STEPS; ++k) s.pitch[k] = PITCH_EMPTY;
     s.set_pitch_count(nc);
@@ -471,10 +464,9 @@ struct Engine {
     const uint8_t pc = s.get_pitch_count();
     fast_rand_seed();
     for (uint8_t k = 0; k < pc; ++k) {
-      const uint8_t pk  = fast_rand_pitch_byte();
-      const uint8_t acc = fast_rand(2) ? 0x40 : 0;
-      const uint8_t sl  = fast_rand(2) ? 0x80 : 0;
-      s.pitch[k] = pk | acc | sl;
+      s.pitch[k] = fast_rand_pitch_byte_weighted()
+                   | fast_rand_accent_weighted()
+                   | fast_rand_slide_weighted();
     }
     // Slide steps cannot ratchet - clear ratchets for any NOTE step that
     // gained slide. Ratchet storage is per-time-step.
@@ -496,10 +488,7 @@ struct Engine {
     fast_rand_seed();
     uint8_t prev = 1;
     for (uint8_t i = 0; i < len; i++) {
-      uint8_t t;
-      if (i == 0)         t = fast_rand(2) ? 1 : 0;
-      else if (prev == 0) t = fast_rand(2) ? 1 : 0;
-      else                t = fast_rand(3);
+      const uint8_t t = fast_rand_time_weighted(prev, i == 0);
       sequence_set_time_at(s, i, t);
       if (t != 1) s.set_ratchet_val(i, 0);
       prev = t;
@@ -543,8 +532,8 @@ struct Engine {
     fast_rand_seed();
     for (uint8_t k = 0; k < pc; ++k) {
       if (s.pitch[k] == PITCH_EMPTY) continue;
-      if (fast_rand(5) == 0) s.pitch[k] |=  0x40;
-      else                   s.pitch[k] &= ~0x40;
+      const uint8_t acc = fast_rand_accent_weighted();
+      s.pitch[k] = (s.pitch[k] & ~uint8_t(0x40)) | acc;
     }
     stale = true;
   }
@@ -557,12 +546,9 @@ struct Engine {
     for (uint8_t i = 0; i < s.length; ++i) {
       if (s.time(i) == 1) {
         if (k < pc && s.pitch[k] != PITCH_EMPTY) {
-          if (fast_rand(20) < 3) {
-            s.pitch[k] |= 0x80;
-            s.set_ratchet_val(i, 0);
-          } else {
-            s.pitch[k] &= ~0x80;
-          }
+          const uint8_t sl = fast_rand_slide_weighted();
+          s.pitch[k] = (s.pitch[k] & ~uint8_t(0x80)) | sl;
+          if (sl) s.set_ratchet_val(i, 0);
         }
         ++k;
       }
@@ -586,7 +572,7 @@ struct Engine {
           if (t_i == 1) {
             const uint8_t slot = s.pitch_index_for_note(i);
             if (slot < s.get_pitch_count()) {
-              const uint8_t pk = fast_rand_pitch_byte();
+              const uint8_t pk = fast_rand_pitch_byte_weighted();
               s.pitch[slot] = (s.pitch[slot] & 0xC0) | pk;
             }
           }
