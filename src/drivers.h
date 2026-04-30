@@ -146,10 +146,14 @@ namespace Leds {
   // Start Timer3-driven LED refresh. Call once from setup().
   void BeginRefresh() {
     // Timer3 CTC mode, prescaler 64: 16MHz/64 = 250kHz tick.
-    // OCR3A = 15 -> 250000/16 ~ 15.6kHz per row, ~3.9kHz frame, ~488 Hz PWM cycle.
+    // Earlier OCR3A = 15 → ~15.6kHz ISR rate. With each ISR taking 15-25us
+    // for the matrix multiplex + PWM bookkeeping, that ate ~25-30% CPU and
+    // starved the main loop, missing CLOCK rising edges at high BPMs.
+    // OCR3A = 63 → 3.9kHz ISR (~6% CPU), 977 Hz frame, 122 Hz PWM cycle.
+    // 122 Hz PWM is still well above visible flicker (~60 Hz) so no LED change.
     TCCR3A = 0;
     TCCR3B = (1 << WGM32) | (1 << CS31) | (1 << CS30);
-    OCR3A  = 15;
+    OCR3A  = 63;
     TIMSK3 = (1 << OCIE3A);
   }
 

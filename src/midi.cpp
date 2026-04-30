@@ -119,7 +119,7 @@ static bool tx_push_message(const uint8_t *inner, uint16_t inner_len) {
   return true;
 }
 
-// --- 7-bit pack / unpack (128-byte blob) ---------------------------------------
+// --- 7-bit pack / unpack (56-byte raw pattern blob = 64 packed bytes) ----------
 static uint16_t pack_7bit(const uint8_t *src, uint16_t len, uint8_t *out) {
   uint16_t o = 0;
   for (uint16_t i = 0; i < len; i += 7) {
@@ -134,7 +134,10 @@ static uint16_t pack_7bit(const uint8_t *src, uint16_t len, uint8_t *out) {
   return o;
 }
 
-static constexpr uint16_t kPacked128Len = 147;
+// 56 raw bytes → 8 chunks × 8 packed bytes = 64 packed bytes.
+// (Renamed from kPacked128Len; the old 128-byte format is gone with the
+// OS-303 v0.6 layout migration.)
+static constexpr uint16_t kPacked128Len = 64;
 
 static bool unpack_7bit(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16_t out_len) {
   uint16_t oi = 0, ii = 0;
@@ -150,7 +153,7 @@ static bool unpack_7bit(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16
   return true;
 }
 
-static uint8_t xor_blob128(const uint8_t *p) {
+static uint8_t xor_blob_pattern(const uint8_t *p) {
   uint8_t x = 0;
   for (uint16_t i = 0; i < PATTERN_SIZE; ++i)
     x ^= p[i];
@@ -161,7 +164,7 @@ static void enqueue_pattern_reply(uint8_t pat) {
   if (!g_eng) return;
   uint8_t raw[PATTERN_SIZE];
   g_eng->export_pattern_blob(pat, raw);
-  const uint8_t cx = xor_blob128(raw);
+  const uint8_t cx = xor_blob_pattern(raw);
   uint8_t inner[5 + kPacked128Len];
   inner[0] = 0x7D;
   inner[1] = 0x11;
@@ -244,7 +247,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t cx = static_cast<uint8_t>(p[3] | (p[4] << 7));
     uint8_t raw[PATTERN_SIZE];
     if (!unpack_7bit(p + 5, static_cast<uint16_t>(n - 5), raw, PATTERN_SIZE)) { send_ack(1); return; }
-    if (xor_blob128(raw) != cx) { send_ack(1); return; }
+    if (xor_blob_pattern(raw) != cx) { send_ack(1); return; }
     // Never persist inline: a 32-byte EEPROM write blocks ~100ms and overflows
     // the UART RX buffer, dropping whatever the web sends next. RAM update
     // only; engine.stale causes the natural save points (RUN stop, WRITE
@@ -268,11 +271,12 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t timeNib   = p[6] & 0x0F;
     Sequence &seq = g_eng->pattern[pat];
     if (step >= seq.length) return;
-    seq.pitch[step] = pitchByte;
-    // Write time nibble at arbitrary index
-    uint8_t &td = seq.time_data[step >> 1];
-    const uint8_t shift = 4 * (step & 1);
-    td = (td & ~(0x0F << shift)) | (timeNib << shift);
+    sequence_write_time_with_pitch_sync(seq, step, timeNib);
+    if (timeNib == 1) {
+      const uint8_t slot = seq.pitch_index_for_note(step);
+      if (slot < seq.get_pitch_count())
+        seq.pitch[slot] = pitchByte;
+    }
     g_eng->stale = true;
     mark_pat_dirty(pat);
     break;
@@ -287,7 +291,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     mark_pat_dirty(pat);
     break;
   }
-  case 0x19: { // host → 303: set step lock
+  case 0x19: { // host → 303: set step lock (RAM-only since OS-303 v0.6 layout)
     if (n < 5 || !g_eng) return;
     const uint8_t pat    = p[2] & 0x0F;
     const uint8_t step   = p[3] & 0x3F;
@@ -296,11 +300,10 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     if (step >= MAX_STEPS) return;
     const uint8_t mask = uint8_t(1u << (step & 7));
     if (locked)
-      seq.step_lock[step >> 3] |= mask;
+      seq.step_lock_ram[step >> 3] |= mask;
     else
-      seq.step_lock[step >> 3] &= ~mask;
-    g_eng->stale = true;
-    mark_pat_dirty(pat);
+      seq.step_lock_ram[step >> 3] &= ~mask;
+    // step_lock is RAM-only in the OS-303 layout: do not mark stale.
     break;
   }
   case 0x1B: { // host → 303: set step ratchet value
@@ -599,8 +602,15 @@ void midi_send_pattern_update(uint8_t pat) {
 
 void midi_send_pattern_steps(uint8_t pat, const Sequence &seq, uint8_t len) {
   pat &= 0x0F;
-  for (uint8_t k = 0; k < len; ++k)
-    midi_send_step_update(pat, k, seq.pitch[k], seq.time(k));
+  for (uint8_t k = 0; k < len; ++k) {
+    const uint8_t tt = seq.time(k);
+    uint8_t pb = PITCH_EMPTY;
+    if (tt == 1) {
+      const uint8_t slot = seq.pitch_index_for_note(k);
+      if (slot < seq.get_pitch_count()) pb = seq.pitch[slot];
+    }
+    midi_send_step_update(pat, k, pb, tt);
+  }
 }
 
 // --- Step lock broadcast (SysEx 0x19) -------------------------------------------

@@ -1,8 +1,27 @@
 // Copyright (c) 2026, Nicholas J. Michalek
 //
 // sequence.h -- TB-303 pattern data model.
-// One `Sequence` = one pattern (128 bytes in RAM).
-// Pure data + inline helpers, no EEPROM or Engine coupling.
+// Layout matches OS-303 v0.6 byte-for-byte so EEPROM is round-trippable
+// between SuperOS-303 and stock OS-303 firmware.
+//
+// Pattern storage (56 bytes):
+//   pitch[32]            -- 8 bits: bits[3:0]=semitone (0..12, 12=high-C button)
+//                                   bits[5:4]=octave (0..3)
+//                                   bit[6]=accent, bit[7]=slide
+//                          NOTE-event-indexed: pitch[i] = i-th NOTE in time order.
+//                          PITCH_EMPTY (0xFF) marks unwritten slots.
+//   time_data[16]        -- 4-bit nibbles per time step (0=REST, 1=NOTE, 2=TIE).
+//   reserved[5]          -- bytes that OS-303 round-trips untouched.
+//                            reserved[0] = direction (0..5)
+//                            reserved[1..4] = ratchet bitmap, 1 bit/step,
+//                                             32 bits = 32 steps. Bit set = 2x.
+//   transpose            -- per-pattern transpose (semitones).
+//   engine_select        -- OS-303's multi-engine selector (we leave at 0).
+//   length               -- 1..32.
+//
+// Runtime state (NOT in EEPROM, lives after the persisted block):
+//   pitch_pos, time_pos, reset, first_step, pitch_count_runtime,
+//   step_lock_ram (32 bits, RAM-only live-write lockout).
 
 #pragma once
 #include <Arduino.h>
@@ -21,15 +40,11 @@ static inline uint8_t fast_rand(uint8_t n) {
   return uint8_t(s_fast_rng % n);
 }
 
-static constexpr int MAX_STEPS = 64;
-static constexpr int MAX_USER_STEPS = 16;
-static constexpr int NUM_GROUPS = 4;
-static constexpr int NUM_PATTERNS = 16;
-static constexpr int EEPROM_PATTERN_SIZE = 32; // compact EEPROM bytes per pattern (groups 0-2)
-// Groups 0-2 use 32-byte compact; group 3 uses full 128-byte blob at a separate EEPROM base.
-static constexpr int EEPROM_G4_PATTERN_SIZE = 128; // = PATTERN_SIZE, defined after
-static constexpr int G4_EEPROM_BASE = 128 + (NUM_GROUPS - 1) * NUM_PATTERNS * EEPROM_PATTERN_SIZE; // 1664
-static constexpr uint8_t max_steps_for_group(uint8_t g) { return g == 3 ? uint8_t(MAX_STEPS) : MAX_USER_STEPS; }
+static constexpr int MAX_STEPS = 32;
+static constexpr int NUM_PATTERNS = 16; // patterns per bank
+static constexpr int NUM_BANKS = 4;     // banks 0..3 (was NUM_GROUPS)
+static constexpr int NUM_GROUPS = NUM_BANKS; // back-compat alias
+static constexpr int METADATA_SIZE = 8; // OS-303: reserved[5] + transpose + engine_select + length
 
 enum SequencerMode {
   NORMAL_MODE,
@@ -38,212 +53,222 @@ enum SequencerMode {
 };
 
 enum SequenceDirection : uint8_t {
-  DIR_FORWARD   = 0, ///< Normal forward playback
-  DIR_REVERSE   = 1, ///< Reverse (end->start)
-  DIR_PINGPONG  = 2, ///< Bounce forward then backward
-  DIR_RANDOM    = 3, ///< Each step jumps to a random position
-  DIR_HALF_RAND = 4, ///< 50% chance of random step, else forward
-  DIR_BROWNIAN  = 5, ///< Random walk: each step moves +/-1 from current position
+  DIR_FORWARD   = 0,
+  DIR_REVERSE   = 1,
+  DIR_PINGPONG  = 2,
+  DIR_RANDOM    = 3,
+  DIR_HALF_RAND = 4,
+  DIR_BROWNIAN  = 5,
   DIR_COUNT     = 6,
 };
 
+// Octave register (low 4-bit values for OS-303 pitch byte). DOUBLE_UP is gone:
+// the OS-303 encoding has only 4 octave registers (0..3). High-C is reached by
+// pressing the dedicated high-C key, which writes semi=12 instead of climbing
+// to oct=4.
 enum OctaveState {
-  OCTAVE_DOWN,
-  OCTAVE_ZERO,
-  OCTAVE_UP,
-  OCTAVE_DOUBLE_UP,
+  OCTAVE_DOWN      = 0,
+  OCTAVE_ZERO      = 1,
+  OCTAVE_UP        = 2,
+  OCTAVE_DOUBLE_UP = 3,
 };
 
-static constexpr uint8_t PITCH_EMPTY = 0xFF;
-// Packed step pitch: key_idx (0..12, chromatic incl. high C) + 13 * octave_btn (0..3).
-// Decodes to linear CV semitone via unpack_pitch_linear(); avoids C vs C2 + UP collisions.
-// oct_btn 3 = DOUBLE_UP: allows high C to go one octave above the normal UP range.
-static constexpr uint8_t PITCH_PACK_MAX = 12 + 13 * 3; // 51
-static constexpr uint8_t PITCH_DEFAULT = 0 + 13 * 1; // packed: low C, middle octave button
-/// Index of C_KEY2 in pitched_keys / pitch_leds (chromatic row incl. upper C).
-static constexpr uint8_t PITCH_KEY_HIGH_C = 12;
+static constexpr uint8_t PITCH_EMPTY     = 0xFF;          // unwritten slot sentinel
+static constexpr uint8_t PITCH_DEFAULT   = 0x10;          // semi=0, oct=1 (centre C), no flags
+static constexpr uint8_t PITCH_KEY_HIGH_C = 12;           // high-C key index
+static constexpr uint8_t PITCH_PACK_MASK = 0x3F;          // bits[5:0] = pitch (semi | oct<<4)
 
-static inline uint8_t pack_pitch(uint8_t key_idx, uint8_t oct_btn) {
-  return uint8_t(key_idx + 13 * oct_btn);
+// Pack/unpack: OS-303 v0.6 encoding.
+//   semi = 0..12 (12 means user pressed the high-C key explicitly)
+//   oct  = 0..3
+// Linear semitone is `semi + 12*oct`, range 0..48 (high-C in top register = 48).
+static inline uint8_t pack_pitch(uint8_t semi, uint8_t oct) {
+  return uint8_t((semi & 0x0F) | ((oct & 0x03) << 4));
 }
-/// Convert packed EEPROM/CV encoding to linear semitone (0..48) for DAC / MIDI.
 static inline uint8_t unpack_pitch_linear(uint8_t e) {
-  if (e > PITCH_PACK_MAX)
-    return e & 0x3f; // corrupt or legacy linear: clamp
-  const uint8_t key_idx = e % 13;
-  const uint8_t oct_btn = e / 13;
-  return key_idx + 12 * oct_btn;
+  return (e & 0x0F) + 12 * ((e >> 4) & 0x03);
 }
 
 // =============================================================================
-// Sequence -- one pattern (matches reference OS-303 layout)
+// Sequence -- one pattern. EEPROM bytes first (56), then runtime state.
 // =============================================================================
-static constexpr int STEP_LOCK_BYTES = (MAX_STEPS + 7) / 8;
-
 struct Sequence {
-  uint8_t pitch[MAX_STEPS];
-  uint8_t time_data[MAX_STEPS / 2];
-  /// Per-step live-write lock for TIME_MODE (same physical key as slide; not pitch slide).
-  uint8_t step_lock[STEP_LOCK_BYTES];
-  uint8_t reserved[MAX_STEPS / 2 - 1 - STEP_LOCK_BYTES];
-  uint8_t length = 16;
+  // ----- EEPROM-persisted layout (56 bytes, must match OS-303 byte-for-byte) -----
+  uint8_t pitch[MAX_STEPS];           // 32 bytes
+  uint8_t time_data[MAX_STEPS / 2];   // 16 bytes (4-bit nibbles)
+  uint8_t reserved[METADATA_SIZE - 3]; // 5 bytes (reserved[0]=direction, [1..4]=ratchet bits)
+  uint8_t transpose     = 0;
+  uint8_t engine_select = 0;
+  uint8_t length        = 16;
+  // ----- Runtime state (NOT persisted) -----
+  int pitch_pos = 0;
+  int time_pos  = 0;
+  bool reset      = true;
+  bool first_step = true;
+  uint8_t pitch_count_runtime = 0;        // rebuilt on Load via sequence_rebuild_pitch_count
+  uint8_t step_lock_ram[MAX_STEPS / 8] = {0,0,0,0}; // 32 bits, RAM-only live lockout
 
-  int pitch_pos, time_pos;
-  bool reset;
-  bool first_step = true; // suppresses slide_from_prev on the very first step after Reset()
-
-  bool step_locked(uint8_t idx) const {
-    idx &= (MAX_STEPS - 1);
-    return (step_lock[idx >> 3] >> (idx & 7)) & 1;
+  // ---------------------------------------------------------------------------
+  // Reserved-byte accessors. reserved[0] layout: bits[2:0] = direction (0..5),
+  // bit[3] = triplet step mode (1 = triplets, 0 = 16ths). Higher bits free.
+  // ---------------------------------------------------------------------------
+  static constexpr uint8_t TRIPLET_FLAG = 0x08;
+  uint8_t get_direction_stored() const { return reserved[0] & 0x07; }
+  void    store_direction(uint8_t d) {
+    const uint8_t flags = reserved[0] & ~uint8_t(0x07);
+    reserved[0] = flags | ((d < DIR_COUNT) ? d : 0);
   }
-  void ToggleStepLock(uint8_t idx) {
-    idx &= (MAX_STEPS - 1);
-    step_lock[idx >> 3] ^= uint8_t(1u << (idx & 7));
+  bool is_triplet_mode() const { return (reserved[0] & TRIPLET_FLAG) != 0; }
+  void set_triplet_mode(bool on) {
+    if (on) reserved[0] |= TRIPLET_FLAG;
+    else    reserved[0] &= uint8_t(~TRIPLET_FLAG);
   }
 
-  /// Per-pattern direction stored in reserved[0] (byte 104 of the 128-byte blob).
-  uint8_t get_direction_stored() const { return reserved[0]; }
-  void    store_direction(uint8_t d)   { reserved[0] = (d < 5) ? d : 0; }
+  uint8_t get_pitch_count() const { return pitch_count_runtime; }
+  void    set_pitch_count(uint8_t n) {
+    pitch_count_runtime = (n <= MAX_STEPS) ? n : MAX_STEPS;
+  }
 
-  /// Pitch stash count stored in reserved[21] (byte 125).
-  /// The stash holds pitches displaced from NOTE steps when the NOTE count shrinks;
-  /// they live in pitch[length..length+stash_count-1] within the 64-byte pitch array.
-  /// Mirrors the web editor's STASH_COUNT_IDX = 125 convention.
-  uint8_t get_stash_count() const { return reserved[21] < MAX_STEPS ? reserved[21] : 0; }
-  void    set_stash_count(uint8_t n) { reserved[21] = (n < MAX_STEPS) ? n : uint8_t(MAX_STEPS - 1); }
-
-  /// Ratchet value for a step (0=1x, 1=2x, 2=3x max).
-  /// Packed 2 bits/step in reserved[1..16] (bytes 105-120). Mirrors web RATCHET_BASE=105.
-  /// Only meaningful on NOTE steps without slide.
+  // Ratchet: 1 bit/step in reserved[1..4]. 0 = 1x (normal), 1 = 2x.
   uint8_t get_ratchet_val(uint8_t step) const {
     const uint8_t idx = step & (MAX_STEPS - 1);
-    const uint8_t b   = uint8_t(1 + (idx >> 2)); // reserved[1..16]
-    const uint8_t sh  = uint8_t((idx & 3u) << 1);
-    return (reserved[b] >> sh) & 0x03u;
+    return (reserved[1 + (idx >> 3)] >> (idx & 7)) & 0x01;
   }
   void set_ratchet_val(uint8_t step, uint8_t val) {
     const uint8_t idx = step & (MAX_STEPS - 1);
-    const uint8_t b   = uint8_t(1 + (idx >> 2));
-    const uint8_t sh  = uint8_t((idx & 3u) << 1);
-    reserved[b] = uint8_t((reserved[b] & ~(0x03u << sh)) | ((val & 0x03u) << sh));
+    const uint8_t mask = uint8_t(1u << (idx & 7));
+    if (val & 0x01) reserved[1 + (idx >> 3)] |=  mask;
+    else            reserved[1 + (idx >> 3)] &= ~mask;
   }
 
-  /// 1:1 model: pitch[time_pos] is this step's pitch.
-  /// For TIE steps, walk backward to find the last NOTE step's pitch.
-  const uint8_t get_pitch() const {
-    if (time(time_pos) == 2) {
-      // TIE: use the last NOTE step's pitch (rest cancels the chain)
-      for (uint8_t g = 1; g < length; ++g) {
-        const uint8_t tp = uint8_t((time_pos + length - g) % length);
-        if (time(tp) == 0) break; // rest cancels slide/tie chain
-        if (time(tp) == 1) {
-          return pitch_is_empty(tp) ? unpack_pitch_linear(PITCH_DEFAULT)
-                                    : unpack_pitch_linear(pitch[tp] & 0x3f);
-        }
-      }
-      return unpack_pitch_linear(PITCH_DEFAULT);
-    }
-    if (step_is_empty()) return unpack_pitch_linear(PITCH_DEFAULT);
-    return unpack_pitch_linear(pitch[pitch_pos] & 0x3f);
+  // Step lock (RAM-only)
+  bool step_locked(uint8_t idx) const {
+    idx &= (MAX_STEPS - 1);
+    return (step_lock_ram[idx >> 3] >> (idx & 7)) & 1;
   }
-  /// Linear pitch / 12 - pattern-select octave LEDs (DOWN/UP) vs stored keypad octave.
-  const uint8_t get_octave() const {
-    if (step_is_empty()) return OCTAVE_ZERO;
-    return get_pitch() / 12;
+  void ToggleStepLock(uint8_t idx) {
+    idx &= (MAX_STEPS - 1);
+    step_lock_ram[idx >> 3] ^= uint8_t(1u << (idx & 7));
   }
+
+  // ---------------------------------------------------------------------------
+  // Time stream accessors
+  // ---------------------------------------------------------------------------
+  inline uint8_t time(uint8_t idx) const {
+    return (time_data[idx >> 1] >> (4 * (idx & 1))) & 0xf;
+  }
+  const uint8_t get_time() const { return time(time_pos); }
+
+  uint8_t count_notes_to(uint8_t time_idx) const {
+    uint8_t cnt = 0;
+    const uint8_t lim = (time_idx < length) ? time_idx : length;
+    for (uint8_t i = 0; i < lim; ++i)
+      if (time(i) == 1) ++cnt;
+    return cnt;
+  }
+  uint8_t pitch_index_for_note(uint8_t time_idx) const {
+    return count_notes_to(time_idx);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Playback pitch lookup
+  // ---------------------------------------------------------------------------
+  uint8_t get_pitch_packed_or_default() const {
+    const uint8_t pc = get_pitch_count();
+    if (pc == 0) return PITCH_DEFAULT;
+    if (pitch_pos < 0 || pitch_pos >= int(pc)) return PITCH_DEFAULT;
+    const uint8_t b = pitch[pitch_pos];
+    return (b == PITCH_EMPTY) ? PITCH_DEFAULT : (b & PITCH_PACK_MASK);
+  }
+  const uint8_t get_pitch() const { return unpack_pitch_linear(get_pitch_packed_or_default()); }
+  uint8_t get_pitch_dir(int8_t /*step_dir*/) const { return get_pitch(); }
+
+  const uint8_t get_octave() const  { return (get_pitch_packed_or_default() >> 4) & 0x03; }
   const uint8_t get_semitone() const {
-    if (step_is_empty()) return PITCH_EMPTY;
-    return get_pitch() % 12;
+    if (get_pitch_count() == 0) return PITCH_EMPTY;
+    return get_pitch_packed_or_default() & 0x0F;
   }
-  /// Index into pitched_keys / pitch_leds (0..12), distinct for low C vs high C.
-  uint8_t get_note_key_index() const {
-    if (step_is_empty()) return 0;
-    return (pitch[pitch_pos] & 0x3f) % 13;
-  }
-  /// UP/DOWN octave buttons at record time: 0 down, 1 center, 2 up, 3 double-up (packed e / 13).
-  uint8_t get_octave_button() const {
-    if (step_is_empty()) return 1;
-    return (pitch[pitch_pos] & 0x3f) / 13;
-  }
+  uint8_t get_note_key_index() const { return get_pitch_packed_or_default() & 0x0F; }
+  uint8_t get_octave_button() const  { return (get_pitch_packed_or_default() >> 4) & 0x03; }
+
   const uint8_t get_accent() const {
-    if (step_is_empty()) return 0;
-    return pitch[pitch_pos] & (1 << 6);
+    const uint8_t pc = get_pitch_count();
+    if (pc == 0) return 0;
+    int pp = pitch_pos;
+    if (pp < 0 || pp >= int(pc)) return 0;
+    const uint8_t b = pitch[pp];
+    return (b == PITCH_EMPTY) ? 0 : (b & (1 << 6));
   }
-  const bool get_slide(uint8_t step) const {
-    if (pitch_is_empty(step)) return false;
-    return pitch[step] & (1 << 7);
+  bool get_slide_at_slot(uint8_t slot) const {
+    if (slot >= get_pitch_count()) return false;
+    const uint8_t b = pitch[slot];
+    if (b == PITCH_EMPTY) return false;
+    return (b & 0x80) != 0;
   }
-  const bool get_slide() const { return get_slide(pitch_pos); }
-  /// TB-303 slide: slide is stored on the *source* pitch step;
-  /// slide CV is on the *destination* pitch step. Ties after the source do not break the glide,
-  /// but any *rest* (time 0) between source and destination cancels slide.
-  /// Forward-only version (used for display / edit, where step order is always linear).
-  bool slide_from_prev() const {
-    if (length <= 1) return false;
-    if (time(time_pos) == 0) return false;
-    if (first_step) return false;
+  const bool get_slide() const {
+    const uint8_t pc = get_pitch_count();
+    if (pc == 0) return false;
+    int pp = pitch_pos;
+    if (pp < 0 || pp >= int(pc)) return false;
+    return get_slide_at_slot(uint8_t(pp));
+  }
 
-    // Walk backward from the step before time_pos, skipping ties until we hit a note or rest.
-    // Slide flag lives on the *note* step that starts the glide, not on tie slots.
-    uint8_t tp = uint8_t((time_pos + length - 1) % length);
-    for (uint8_t guard = 0; guard < length; ++guard) {
-      const uint8_t tt = time(tp);
-      if (tt == 0)
-        return false; // rest breaks chain
-      if (tt == 1)
-        return get_slide(tp);
-      // tie: keep walking backward
-      tp = uint8_t((tp + length - 1) % length);
-    }
-    return false;
+  uint8_t note_count() const {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < length; ++i)
+      if (time(i) == 1) ++n;
+    return n;
   }
-  /// Direction-aware slide detection: checks if the step played just before the current
-  /// one had a slide flag set. step_dir is +1 if we moved forward to reach this step,
-  /// -1 if we moved backward (reverse / ping-pong-backward leg).
-  /// For random modes (DIR_RANDOM / DIR_HALF_RAND) there is no meaningful predecessor,
-  /// so always returns false.
+
+  // ---------------------------------------------------------------------------
+  // Slide detection (direction-aware)
+  // ---------------------------------------------------------------------------
   bool slide_from_prev_dir(uint8_t dir, int8_t step_dir) const {
-    if (dir == DIR_RANDOM || dir == DIR_HALF_RAND) return false;
-    if (length <= 1) return false;
-    if (time(time_pos) == 0) return false;
+    if (dir == DIR_RANDOM || dir == DIR_HALF_RAND || dir == DIR_BROWNIAN) return false;
     if (first_step) return false;
+    const uint8_t pc = get_pitch_count();
+    if (pc == 0) return false;
+    if (length <= 1) return false;
+    const uint8_t cur_t = time(uint8_t(time_pos));
+    if (cur_t == 0) return false;
 
-    // delta: modular offset that walks us toward the step that played just before.
-    // step_dir >= 0 (moved forward): previous is at lower index -> subtract 1 (delta = length-1).
-    // step_dir <  0 (moved backward): previous is at higher index -> add 1 (delta = 1).
+    int slide_src;
+    if (cur_t == 1) {
+      const uint8_t nc = note_count();
+      if (nc < 2) return false;
+      if (step_dir >= 0)
+        slide_src = (int(pitch_pos) + int(nc) - 1) % int(nc);
+      else
+        slide_src = (int(pitch_pos) + 1) % int(nc);
+    } else {
+      slide_src = pitch_pos;
+    }
+    if (slide_src < 0 || slide_src >= int(pc)) return false;
+
     const unsigned delta = (step_dir >= 0) ? (unsigned(length) - 1u) : 1u;
     uint8_t tp = uint8_t((unsigned(time_pos) + delta) % unsigned(length));
     for (uint8_t guard = 0; guard < length; ++guard) {
       const uint8_t tt = time(tp);
-      if (tt == 0) return false; // rest breaks slide chain
-      if (tt == 1) return get_slide(tp);
-      // tie: keep walking in the same direction
+      if (tt == 0) return false;
+      if (tt == 1) break;
       tp = uint8_t((unsigned(tp) + delta) % unsigned(length));
     }
-    return false;
+    const uint8_t b = pitch[slide_src];
+    if (b == PITCH_EMPTY) return false;
+    return (b & 0x80) != 0;
   }
-  /// Direction-aware pitch lookup for playback. For TIE steps the pitch is carried
-  /// from the last NOTE step in the play direction (same as slide walk direction).
-  /// step_dir: +1 = moving forward (TIE walks backward), -1 = moving backward (TIE walks forward).
-  uint8_t get_pitch_dir(int8_t step_dir) const {
-    if (time(time_pos) == 2) {
-      const unsigned delta = (step_dir >= 0) ? (unsigned(length) - 1u) : 1u;
-      for (uint8_t g = 1; g < length; ++g) {
-        const uint8_t tp = uint8_t((unsigned(time_pos) + delta * g) % unsigned(length));
-        if (time(tp) == 0) break; // rest cancels tie/slide chain
-        if (time(tp) == 1) {
-          return pitch_is_empty(tp) ? unpack_pitch_linear(PITCH_DEFAULT)
-                                    : unpack_pitch_linear(pitch[tp] & 0x3f);
-        }
-      }
-      return unpack_pitch_linear(PITCH_DEFAULT);
-    }
-    if (step_is_empty()) return unpack_pitch_linear(PITCH_DEFAULT);
-    return unpack_pitch_linear(pitch[pitch_pos] & 0x3f);
+  bool slide_from_prev() const { return slide_from_prev_dir(uint8_t(DIR_FORWARD), 1); }
+
+  // ---------------------------------------------------------------------------
+  // Tie helpers
+  // ---------------------------------------------------------------------------
+  bool is_tie() const { return (time_pos < length) && (time(uint8_t(time_pos)) == 2); }
+  bool next_is_tie() const {
+    if (length == 0) return false;
+    const uint8_t n = (time_pos + 1) % length;
+    return time(n) == 2;
   }
-  /// Direction-aware: is the NEXT step (in the given play direction) a TIE?
-  /// next_dir: +1 = stepping forward next, -1 = stepping backward next.
-  /// For random modes returns false (no defined next step).
+  bool is_tied() const { return next_is_tie(); }
   bool is_tied_dir(uint8_t dir, int8_t next_dir) const {
     if (dir == DIR_RANDOM || dir == DIR_HALF_RAND || dir == DIR_BROWNIAN) return false;
     if (length == 0) return false;
@@ -252,263 +277,207 @@ struct Sequence {
       : uint8_t((unsigned(time_pos) + unsigned(length) - 1u) % unsigned(length));
     return time(n) == 2;
   }
-  /// Current time slot is a tie.
-  bool is_tie() const {
-    return (time_pos < length) && (time(time_pos) == 2);
-  }
-  /// Next step (wrapped) is a tie.
-  bool next_is_tie() const {
-    if (length == 0) return false;
-    const uint8_t n = (time_pos + 1) % length;
-    return time(n) == 2;
-  }
-  /// True if this NOTE step follows one or more TIE steps (gate carried; MIDI should legato in).
+  bool tie_chain_ending() const { return is_tie() && !next_is_tie(); }
   bool note_after_tie_run() const {
-    if (length <= 1 || first_step || time(time_pos) != 1) return false;
+    if (length <= 1 || first_step || time(uint8_t(time_pos)) != 1) return false;
     uint8_t tp = uint8_t((time_pos + length - 1) % length);
     bool seen_tie = false;
     for (uint8_t g = 0; g < length; ++g) {
       const uint8_t tt = time(tp);
       if (tt == 0) return false;
-      if (tt == 2) {
-        seen_tie = true;
-        tp = uint8_t((tp + length - 1) % length);
-        continue;
-      }
+      if (tt == 2) { seen_tie = true; tp = uint8_t((tp + length - 1) % length); continue; }
       if (tt == 1) return seen_tie;
     }
     return false;
   }
-  /// Last tie in a run: on a tie step whose next step is not a tie.
-  bool tie_chain_ending() const {
-    return is_tie() && !next_is_tie();
-  }
 
-  inline uint8_t time(uint8_t idx) const {
-    return (time_data[idx >> 1] >> (4 * (idx & 1))) & 0xf;
-  }
-
-  const uint8_t get_time() const { return time(time_pos); }
-
+  // ---------------------------------------------------------------------------
+  // Time-step writing (raw nibble; does NOT touch pitch stream)
+  // ---------------------------------------------------------------------------
   void SetTime(uint8_t t) {
     const uint8_t upper = time_pos & 1;
     uint8_t &data = time_data[time_pos >> 1];
     data = (~(0x0f << (4 * upper)) & data) | (t << (4 * upper));
   }
-  /// After SetTime() at time_pos, reflow pitch data so NOTE steps keep sequential
-  /// pitches from the previous stream. Pass the time value at time_pos *before*
-  /// SetTime was called. No-op when the step stays NOTE or stays non-NOTE.
-  /// Stream includes non-NOTE slots with user-written pitch data so pitches written
-  /// via PITCH_MODE survive the first TIME_MODE reflow.
-  bool reflow_pitches_after_time_change(uint8_t old_time) {
-    return reflow_pitches_at(uint8_t(time_pos & (MAX_STEPS - 1)), old_time);
-  }
-  bool reflow_pitches_at(uint8_t tp, uint8_t old_time) {
-    const uint8_t new_t = time(tp);
-    if ((old_time == 1) == (new_t == 1)) return false; // NOTE<->NOTE or non<->non: nothing to do
 
-    const uint8_t len = uint8_t(length);
-
-    // Build pitch stream from: slots that were NOTE *or* had user-written pitch data,
-    // treating the changed step with its old time type (before SetTime).
-    uint8_t stream[MAX_STEPS];
-    uint8_t slen = 0;
-    for (uint8_t i = 0; i < len; ++i) {
-      const uint8_t t_i = (i == tp) ? old_time : time(i);
-      const bool was_note = (t_i == 1);
-      const bool has_data = !pitch_is_empty(i);
-      if (was_note || has_data)
-        stream[slen++] = has_data ? pitch[i] : PITCH_DEFAULT;
-    }
-    // Append stash tail.
-    const uint8_t old_stash = get_stash_count();
-    for (uint8_t k = 0; k < old_stash && slen < MAX_STEPS; ++k) {
-      const uint8_t sb = pitch[len + k];
-      stream[slen++] = (sb == PITCH_EMPTY) ? PITCH_DEFAULT : sb;
-    }
-
-    // Count new NOTE steps.
-    uint8_t note_count = 0;
-    for (uint8_t i = 0; i < len; ++i) if (time(i) == 1) ++note_count;
-
-    // Ensure stream has enough pitches for all new NOTE slots.
-    while (slen < note_count && slen < MAX_STEPS) stream[slen++] = PITCH_DEFAULT;
-
-    // Excess beyond note_count goes to stash (capped by available tail space).
-    uint8_t excess = (slen > note_count) ? uint8_t(slen - note_count) : 0;
-    const uint8_t max_stash = uint8_t(MAX_STEPS - len);
-    if (excess > max_stash) excess = max_stash;
-
-    // Redistribute: NOTE slots get sequential pitches; non-NOTE slots cleared.
-    uint8_t ni = 0;
-    for (uint8_t i = 0; i < len; ++i) {
-      if (time(i) == 1) pitch[i] = stream[ni++];
-      else               pitch[i] = PITCH_EMPTY;
-    }
-    // Write stash tail.
-    for (uint8_t k = 0; k < excess; ++k)
-      pitch[len + k] = stream[note_count + k];
-    set_stash_count(excess);
+  // ---------------------------------------------------------------------------
+  // Pitch-slot mutators
+  // ---------------------------------------------------------------------------
+  bool edit_slot_index(uint8_t &out_slot) const {
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return false;
+    out_slot = uint8_t(pitch_pos);
     return true;
   }
-  void SetPitch(uint8_t p, uint8_t flags) {
-    pitch[pitch_pos] = (p & 0x3f) | (flags & 0xc0);
+  void init_if_empty() {
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
+    if (pitch[pitch_pos] == PITCH_EMPTY) pitch[pitch_pos] = PITCH_DEFAULT;
+    if (uint8_t(pitch_pos) >= get_pitch_count()) set_pitch_count(uint8_t(pitch_pos + 1));
   }
-  void SetPitchSemitone(uint8_t p) {
-    init_if_empty();
-    const uint8_t e = pitch[pitch_pos] & 0x3f;
-    const uint8_t oct_btn = e / 13;
-    pitch[pitch_pos] =
-        (pack_pitch(p, oct_btn) & 0x3f) | (pitch[pitch_pos] & 0xc0);
+  bool step_is_empty() const {
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return true;
+    if (uint8_t(pitch_pos) >= get_pitch_count()) return true;
+    return pitch[pitch_pos] == PITCH_EMPTY;
   }
-  void SetLength(uint8_t len, uint8_t max_len = MAX_USER_STEPS) { length = constrain(len, 1, max_len); }
-  void nudge_octave_buttons(int dir) {
-    init_if_empty();
-    const uint8_t e = pitch[pitch_pos] & 0x3f;
-    const uint8_t k = e % 13;
-    int o = int(e / 13) + dir;
-    CONSTRAIN(o, 0, 3); // 0=DOWN, 1=CENTER, 2=UP, 3=DOUBLE_UP
-    pitch[pitch_pos] =
-        (pack_pitch(k, uint8_t(o)) & 0x3f) | (pitch[pitch_pos] & 0xc0);
+  bool pitch_is_empty(uint8_t slot) const {
+    if (slot >= get_pitch_count()) return true;
+    return pitch[slot] == PITCH_EMPTY;
   }
 
+  // SetPitch: caller passes the packed pitch in `p` (low 6 bits used: semi | oct<<4)
+  // and the flag bits in `flags` (top 2 bits used: accent | slide).
+  void SetPitch(uint8_t p, uint8_t flags) {
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
+    pitch[pitch_pos] = (p & PITCH_PACK_MASK) | (flags & 0xC0);
+    if (uint8_t(pitch_pos) >= get_pitch_count()) set_pitch_count(uint8_t(pitch_pos + 1));
+  }
+  void SetPitchSemitone(uint8_t semi) {
+    init_if_empty();
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
+    const uint8_t oct = (pitch[pitch_pos] >> 4) & 0x03;
+    pitch[pitch_pos] = pack_pitch(semi, oct) | (pitch[pitch_pos] & 0xC0);
+  }
+  void nudge_octave_buttons(int dir) {
+    init_if_empty();
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
+    const uint8_t semi = pitch[pitch_pos] & 0x0F;
+    int o = int((pitch[pitch_pos] >> 4) & 0x03) + dir;
+    CONSTRAIN(o, 0, 3);
+    pitch[pitch_pos] = pack_pitch(semi, uint8_t(o)) | (pitch[pitch_pos] & 0xC0);
+  }
   void ToggleSlide() {
     init_if_empty();
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
     pitch[pitch_pos] ^= (1 << 7);
   }
   void ToggleAccent() {
     init_if_empty();
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
     pitch[pitch_pos] ^= (1 << 6);
   }
   void SetSlide(bool on) {
     init_if_empty();
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
     pitch[pitch_pos] = (pitch[pitch_pos] & ~(1 << 7)) | (on << 7);
   }
   void SetAccent(bool on) {
     init_if_empty();
+    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
     pitch[pitch_pos] = (pitch[pitch_pos] & ~(1 << 6)) | (on << 6);
   }
 
-  bool BumpLength(uint8_t max_len = MAX_USER_STEPS) {
+  // ---------------------------------------------------------------------------
+  // Length
+  // ---------------------------------------------------------------------------
+  void SetLength(uint8_t len, uint8_t max_len = MAX_STEPS) {
+    length = constrain(len, 1, max_len);
+  }
+  bool BumpLength(uint8_t max_len = MAX_STEPS) {
     if (++length == max_len) return false;
     return true;
   }
 
-  void RegenTime() { time_data[time_pos] = random(); }
-  void RegenPitch() {
-    pitch[pitch_pos] =
-        uint8_t(random(PITCH_PACK_MAX + 1)) | (pitch[pitch_pos] & 0xc0);
-  }
-
+  // ---------------------------------------------------------------------------
+  // Reset / Clear
+  // ---------------------------------------------------------------------------
   void Reset() {
     pitch_pos = 0;
     time_pos = 0;
     reset = true;
     first_step = true;
   }
-
-  bool pitch_is_empty(uint8_t pos) const { return pitch[pos] == PITCH_EMPTY; }
-  bool step_is_empty() const { return pitch_is_empty(pitch_pos); }
-
-  void init_if_empty() {
-    if (step_is_empty()) pitch[pitch_pos] = PITCH_DEFAULT;
-  }
-
   void Clear() {
     for (uint8_t i = 0; i < MAX_STEPS; ++i) {
-      pitch[i] = PITCH_DEFAULT;
-      time_data[i >> 1] = 0;
+      pitch[i] = PITCH_EMPTY;
+      if ((i & 1) == 0) time_data[i >> 1] = 0;
     }
-    for (uint8_t i = 0; i < STEP_LOCK_BYTES; ++i)
-      step_lock[i] = 0;
-    // Clear ratchet data stored in reserved[1..16] (2 bits/step, 64 steps).
-    for (uint8_t i = 1; i <= 16; ++i)
+    for (uint8_t i = 0; i < (METADATA_SIZE - 3); ++i)
       reserved[i] = 0;
-    set_stash_count(0);
+    for (uint8_t i = 0; i < (MAX_STEPS / 8); ++i)
+      step_lock_ram[i] = 0;
+    transpose = 0;
+    engine_select = 0;
+    set_pitch_count(0);
     length = 8;
   }
 
+  // ---------------------------------------------------------------------------
+  // Time-step navigation helpers
+  // ---------------------------------------------------------------------------
   uint8_t first_note_idx() const {
     for (uint8_t j = 0; j < length; ++j)
-      if (time(j) == 1)
-        return j;
+      if (time(j) == 1) return j;
     return 0;
   }
-  uint8_t next_note_step_idx(uint8_t from) const {
-    for (uint8_t k = 1; k <= length; ++k) {
-      const uint8_t j = uint8_t((unsigned(from) + k) % unsigned(length));
-      if (time(j) == 1)
-        return j;
-    }
-    return from;
-  }
-  uint8_t prev_note_step_idx(uint8_t from) const {
-    for (uint8_t k = 1; k <= length; ++k) {
-      const uint8_t j =
-          uint8_t((unsigned(from) + unsigned(length) - k) % unsigned(length));
-      if (time(j) == 1)
-        return j;
-    }
-    return from;
-  }
-
-  /// PITCH_MODE edit entry (TAP held): clear reset flag and land on first NOTE step.
-  /// If no NOTE steps exist, defaults to step 0 (caller handles display guard).
   void ensure_pitch_edit_entry() {
     if (reset) {
       reset = false;
-      pitch_pos = int(first_note_idx()); // first NOTE step, or 0 if none
-      time_pos = pitch_pos;
+      pitch_pos = 0;
+      sync_time_pos_to_pitch_pos();
     }
   }
-  /// PITCH_MODE write entry: clear reset flag and land on the first NOTE step so
-  /// pitch input targets playable steps rather than REST/TIE slots.
-  void ensure_pitch_write_entry() {
-    if (reset) {
-      reset = false;
-      pitch_pos = int(first_note_idx());
-      time_pos = pitch_pos;
+  void ensure_pitch_write_entry() { ensure_pitch_edit_entry(); }
+  void sync_time_pos_to_pitch_pos() {
+    if (length == 0) { time_pos = 0; return; }
+    const uint8_t want = uint8_t(pitch_pos < 0 ? 0 : pitch_pos);
+    uint8_t cur = 0;
+    for (uint8_t i = 0; i < length; ++i) {
+      if (time(i) == 1) {
+        if (cur == want) { time_pos = int(i); return; }
+        ++cur;
+      }
     }
+    time_pos = int(first_note_idx());
   }
-
-  /// PITCH_MODE advance: jump to the next NOTE step, skipping REST and TIE.
-  /// If no other NOTE steps exist (all-REST pattern), falls back to linear +1
-  /// so notes can be entered into a freshly cleared pattern without getting stuck.
   void advance_pitch_to_next_note() {
     first_step = false;
-    const uint8_t cur = uint8_t(pitch_pos & (MAX_STEPS - 1));
-    const uint8_t nxt = next_note_step_idx(cur);
-    // nxt == cur means no other NOTE steps found; use linear advance as fallback
-    pitch_pos = int(nxt != cur ? nxt : uint8_t((unsigned(cur) + 1) % unsigned(length)));
-    time_pos = pitch_pos;
+    if (length == 0) return;
+    ++pitch_pos;
+    if (pitch_pos >= int(length)) pitch_pos = 0;
+    sync_time_pos_to_pitch_pos();
   }
 
-  /// 1:1 model: pitch_pos always equals time_pos.
-  /// On a NOTE step, pitch[time_pos] is played. On TIE, get_pitch() walks backward.
-  /// On REST, gate is low regardless.
+  // ---------------------------------------------------------------------------
+  // Playback advance
+  // ---------------------------------------------------------------------------
   bool Advance() {
     if (reset) {
       reset = false;
-      pitch_pos = 0;
       time_pos = 0;
+      pitch_pos = 0;
       return time(0) != 0;
     }
-    first_step = false;
+    if (first_step && time(uint8_t(time_pos)) == 1) {
+      first_step = false;
+    }
+    const uint8_t prev_pos = uint8_t(time_pos);
     ++time_pos %= length;
-    pitch_pos = time_pos; // 1:1 mapping
-    return time(time_pos) != 0;
+    // Wrap-back to 0 from a non-zero position completes the first pass even
+    // if no NOTE was hit (cleared / all-rest patterns). Without this, the
+    // engine wrap detection (`!first_step && time_pos==0`) never fires and
+    // queued pattern switches stick.
+    if (first_step && prev_pos != 0 && time_pos == 0) {
+      first_step = false;
+    }
+    if (time(uint8_t(time_pos)) == 1) {
+      const uint8_t pc = get_pitch_count();
+      if (pc > 0 && !first_step) {
+        pitch_pos = int(pitch_index_for_note(uint8_t(time_pos)));
+      }
+    }
+    return time(uint8_t(time_pos)) != 0;
   }
 
-  /// Direction-aware advance used by Engine for non-forward modes.
-  /// `pp_dir` is a persistent +/-1 for ping-pong kept in Engine.
   bool AdvanceDirectional(uint8_t dir, int8_t &pp_dir) {
     if (reset) {
       reset = false;
-      pitch_pos = 0;
       time_pos = 0;
+      pitch_pos = 0;
       return time(0) != 0;
     }
-    first_step = false;
+    if (first_step && time(uint8_t(time_pos)) == 1) {
+      first_step = false;
+    }
+    const uint8_t prev_pos = uint8_t(time_pos);
     switch (dir) {
     case DIR_REVERSE:
       if (time_pos <= 0) time_pos = int(length) - 1;
@@ -518,10 +487,10 @@ struct Sequence {
       time_pos += pp_dir;
       if (time_pos >= int(length)) {
         pp_dir = -1;
-        time_pos = int(length) - 1; // retrigger last step so both endpoints play
+        time_pos = int(length) - 1;
       } else if (time_pos < 0) {
         pp_dir = 1;
-        time_pos = 0;               // retrigger step 0 so both endpoints play
+        time_pos = 0;
       }
       break;
     }
@@ -534,39 +503,41 @@ struct Sequence {
       break;
     case DIR_BROWNIAN: {
       int8_t bdir = random(2) ? 1 : -1;
-      pp_dir = bdir; // pass actual walk direction back to Engine (reuses pp_dir field)
+      pp_dir = bdir;
       time_pos = int((unsigned(length) + unsigned(time_pos) + unsigned(bdir)) % unsigned(length));
       break;
     }
-    default: // DIR_FORWARD
+    default:
       ++time_pos %= length;
       break;
     }
-    pitch_pos = time_pos;
-    return time(time_pos) != 0;
+    // Wrap-back to 0 from non-zero clears first_step (matches forward Advance).
+    if (first_step && prev_pos != 0 && time_pos == 0) {
+      first_step = false;
+    }
+    if (time(uint8_t(time_pos)) == 1) {
+      const uint8_t pc = get_pitch_count();
+      if (pc > 0 && !first_step) {
+        pitch_pos = int(pitch_index_for_note(uint8_t(time_pos)));
+      }
+    }
+    return time(uint8_t(time_pos)) != 0;
   }
 
-  /// PITCH_MODE: advance to next NOTE step (used by TAP write).
   void AdvancePitch() { advance_pitch_to_next_note(); }
 
-  /// TIME_MODE step back: one physical step toward 0 (unchanged TB behaviour).
   bool StepBack() {
-    if (reset || (pitch_pos == 0 && time_pos == 0)) {
-      return false;
-    }
-    if (pitch_pos > 0) {
-      --pitch_pos;
-      time_pos = pitch_pos;
-    } else {
-      pitch_pos = 0;
-      time_pos = 0;
-    }
+    if (reset || (time_pos == 0)) return false;
+    --time_pos;
+    if (time(uint8_t(time_pos)) == 1)
+      pitch_pos = int(pitch_index_for_note(uint8_t(time_pos)));
     return true;
   }
-
 };
 
-/// Set time nibble for step `idx` (0=rest, 1=note, 2=tie).
+// =============================================================================
+// Free helpers
+// =============================================================================
 inline void sequence_set_time_at(Sequence &s, uint8_t idx, uint8_t t) {
   idx &= uint8_t(MAX_STEPS - 1);
   const uint8_t upper = idx & 1u;
@@ -574,37 +545,88 @@ inline void sequence_set_time_at(Sequence &s, uint8_t idx, uint8_t t) {
   cell = uint8_t((cell & ~(0x0fu << (4u * upper))) | ((t & 0x0fu) << (4u * upper)));
 }
 
-/// TB-303-valid time fixes: no rest->tie, no leading tie, no all-ties (wrap-aware).
-inline void normalize_pattern_times(Sequence &s) {
-  const uint8_t L = s.length;
-  if (L < 1)
-    return;
+inline void sequence_rebuild_pitch_count(Sequence &s) {
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < s.length; ++i)
+    if (s.time(i) == 1) ++n;
+  s.set_pitch_count(n);
+}
 
-  bool all_tie = true;
-  for (uint8_t i = 0; i < L; ++i) {
-    if (s.time(i) != 2) {
-      all_tie = false;
-      break;
+inline void sequence_ensure_pitch_for_notes(Sequence &s) {
+  const uint8_t nc = s.note_count();
+  uint8_t pc = s.get_pitch_count();
+  while (pc < nc && pc < MAX_STEPS) {
+    s.pitch[pc] = PITCH_DEFAULT;
+    ++pc;
+  }
+  if (pc != s.get_pitch_count()) s.set_pitch_count(pc);
+}
+
+inline void sequence_write_time_with_pitch_sync(Sequence &s, uint8_t idx, uint8_t new_t) {
+  idx &= uint8_t(MAX_STEPS - 1);
+  if (idx >= s.length) return;
+  const uint8_t old_t = s.time(idx);
+  if (old_t == new_t) return;
+  sequence_set_time_at(s, idx, new_t);
+  sequence_ensure_pitch_for_notes(s);
+}
+
+inline void sequence_pack_per_time(const Sequence &s, uint8_t *out) {
+  const uint8_t pc = s.get_pitch_count();
+  uint8_t k = 0;
+  for (uint8_t i = 0; i < s.length; ++i) {
+    if (s.time(i) == 1 && k < pc) out[i] = s.pitch[k++];
+    else                          out[i] = PITCH_EMPTY;
+  }
+}
+
+inline void sequence_unpack_per_time(Sequence &s, const uint8_t *in) {
+  uint8_t k = 0;
+  for (uint8_t i = 0; i < s.length; ++i) {
+    if (s.time(i) == 1) {
+      const uint8_t b = in[i];
+      s.pitch[k++] = (b == PITCH_EMPTY) ? PITCH_DEFAULT : b;
     }
   }
-  if (all_tie) {
-    sequence_set_time_at(s, 0, 1);
-    if (s.pitch_is_empty(0))
-      s.pitch[0] = PITCH_DEFAULT;
-  }
+  for (uint8_t i = k; i < MAX_STEPS; ++i) s.pitch[i] = PITCH_EMPTY;
+  s.set_pitch_count(k);
+}
 
-  if (s.time(0) == 2) {
-    sequence_set_time_at(s, 0, 1);
-    if (s.pitch_is_empty(0))
-      s.pitch[0] = PITCH_DEFAULT;
+inline void normalize_pattern_times_only(Sequence &s) {
+  const uint8_t L = s.length;
+  if (L < 1) return;
+  bool all_tie = true;
+  for (uint8_t i = 0; i < L; ++i) {
+    if (s.time(i) != 2) { all_tie = false; break; }
   }
+  if (all_tie) sequence_set_time_at(s, 0, 1);
+  if (s.time(0) == 2) sequence_set_time_at(s, 0, 1);
+  for (uint8_t i = 0; i < L; ++i) {
+    const uint8_t nxt = uint8_t((unsigned(i) + 1u) % unsigned(L));
+    if (s.time(i) == 0 && s.time(nxt) == 2) sequence_set_time_at(s, i, 1);
+  }
+}
 
+inline void normalize_pattern_times(Sequence &s) {
+  const uint8_t L = s.length;
+  if (L < 1) return;
+  bool all_tie = true;
+  for (uint8_t i = 0; i < L; ++i) {
+    if (s.time(i) != 2) { all_tie = false; break; }
+  }
+  if (all_tie) sequence_write_time_with_pitch_sync(s, 0, 1);
+  if (s.time(0) == 2) sequence_write_time_with_pitch_sync(s, 0, 1);
   for (uint8_t i = 0; i < L; ++i) {
     const uint8_t nxt = uint8_t((unsigned(i) + 1u) % unsigned(L));
     if (s.time(i) == 0 && s.time(nxt) == 2) {
-      sequence_set_time_at(s, i, 1);
-      if (s.pitch_is_empty(i))
-        s.pitch[i] = PITCH_DEFAULT;
+      sequence_write_time_with_pitch_sync(s, i, 1);
     }
   }
+}
+
+// Helper to roll a random pitch byte (semi 0..12, oct 0..3, no flags).
+static inline uint8_t fast_rand_pitch_byte() {
+  const uint8_t semi = fast_rand(13);  // 0..12 inclusive
+  const uint8_t oct  = fast_rand(4);   // 0..3
+  return pack_pitch(semi, oct);
 }

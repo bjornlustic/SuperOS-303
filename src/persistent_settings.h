@@ -1,23 +1,52 @@
 // Copyright (c) 2026, Nicholas J. Michalek
 //
-// persistent_settings.h -- EEPROM layout + pattern read/write.
-// Depends on sequence.h for Sequence struct and MAX_STEPS etc.
+// persistent_settings.h -- EEPROM layout (OS-303 v0.6 compatible) +
+// pattern read/write. Depends on sequence.h for Sequence struct.
 //
-// EEPROM signature versions:
-//   "PewPewPew!!2" -- original: pitch slots packed sequentially by NOTE event
-//   "PewPewPew!!3" -- 1:1 pitch/time model, 64-step, 16 patterns
-//   "PewPewPew!!4" -- 1:1 pitch/time model, 16-step max, 4 groups x 16 patterns
-//   "PewPewPew!!5" -- groups 0-2: 16-step compact; group 3: 64-step full blob
+// EEPROM layout (4096 bytes total, byte-for-byte compatible with OS-303 v0.6):
+//   0    .. 127    SETTINGS     (128 B)  signature[16] + flags + reserved
+//   128  .. 2175   PITCH_DATA   (2048 B) 64 patterns x 32 bytes (pitch[32])
+//   2176 .. 3199   TIME_DATA    (1024 B) 64 patterns x 16 bytes (time_data[16])
+//   3200 .. 3711   PATTERN_META (512 B)  64 patterns x 8 bytes (reserved[5] + transpose + engine_select + length)
+//   3712 .. 3967   TRACK_DATA   (256 B)  8 tracks x 32 bytes (p_chain[16] + t_chain[16])
+//   3968 .. 4095   AUX_DATA     (128 B)  free
+//
+// Patterns are addressed by a flat index 0..63: bank * 16 + pattern_in_bank.
 
 #pragma once
 #include <Arduino.h>
 #include <EEPROM.h>
 #include "sequence.h"
 
-static constexpr int SETTINGS_SIZE = 128;
-static constexpr int PATTERN_SIZE = MAX_STEPS * 2; // in-RAM / SysEx blob size (128 bytes)
+static constexpr int SETTINGS_SIZE       = 128;
+static constexpr int SETTINGS_OFFSET     = 0;
+static constexpr int PITCH_DATA_SIZE     = 64 * MAX_STEPS;        // 2048
+static constexpr int PITCH_DATA_OFFSET   = SETTINGS_OFFSET + SETTINGS_SIZE; // 128
+static constexpr int TIME_DATA_SIZE      = 64 * (MAX_STEPS / 2);  // 1024
+static constexpr int TIME_DATA_OFFSET    = PITCH_DATA_OFFSET + PITCH_DATA_SIZE; // 2176
+static constexpr int PATTERN_META_SIZE   = 64 * METADATA_SIZE;    // 512
+static constexpr int PATTERN_META_OFFSET = TIME_DATA_OFFSET + TIME_DATA_SIZE; // 3200
+static constexpr int TRACK_DATA_SIZE     = 8 * 32;                // 256
+static constexpr int TRACK_DATA_OFFSET   = PATTERN_META_OFFSET + PATTERN_META_SIZE; // 3712
+static constexpr int AUX_DATA_OFFSET     = TRACK_DATA_OFFSET + TRACK_DATA_SIZE;     // 3968
+static constexpr int AUX_DATA_SIZE       = 4096 - AUX_DATA_OFFSET;                  // 128
 
-const char *const sig_pew = "PewPewPew!!5"; // v5: groups 0-2=16-step, group 3=64-step
+// SysEx pattern blob = 56 raw bytes (pitch[32] + time_data[16] + 8 metadata).
+static constexpr int PATTERN_SIZE = MAX_STEPS + (MAX_STEPS / 2) + METADATA_SIZE;
+
+// Sig is prefix-matched: anything starting with sig_compat_prefix passes.
+// OS-303's own firmware uses sig_compat_prefix as its full sig, so EEPROM
+// written by either firmware is readable by the other.
+//
+// signature[] is 16 bytes (locked by OS-303's settings layout). The full sig
+// "OS-303-v0.6+superOS" is 19 chars + null = 20 bytes, so it doesn't fit
+// strcpy'd. We write via memcpy with fixed 16-byte length, so EEPROM bytes
+// 0..15 hold the first 16 chars ("OS-303-v0.6+supe"). Prefix match (11 chars)
+// works in both directions.
+const char *const sig_pew = "OS-303-v0.6+superOS";
+const char *const sig_compat_prefix = "OS-303-v0.6";
+static constexpr int kSigCompatPrefixLen = 11;
+static constexpr int kSigEepromLen = 16;
 
 extern EEPROMClass storage;
 
@@ -31,7 +60,7 @@ struct PersistentSettings {
   uint8_t sequence_direction = 0; // DIR_FORWARD
   /// When true, MIDI IN messages are forwarded to MIDI OUT (software MIDI thru).
   bool midi_thru = false;
-  /// LED brightness 1..8 (8 = full). PWM via Leds::Send tick counter.
+  /// LED brightness 1..8 (8 = full).
   uint8_t led_brightness = 8;
 
   static constexpr int kEepromMidiChannel   = 16;
@@ -45,8 +74,8 @@ struct PersistentSettings {
   void Save() { storage.put(0, signature); }
 
   bool Validate() const {
-    if (strncmp(signature, sig_pew, 12) == 0) return true;
-    strcpy((char *)signature, sig_pew);
+    if (strncmp(signature, sig_compat_prefix, kSigCompatPrefixLen) == 0) return true;
+    memcpy((char *)signature, sig_pew, kSigEepromLen);
     return false;
   }
 
@@ -74,56 +103,34 @@ struct PersistentSettings {
 
 extern PersistentSettings GlobalSettings;
 
-// Compact EEPROM format (32 bytes):
-//   [0..15]  pitch[0..15]
-//   [16..23] time_data[0..7]  (covers 16 steps)
-//   [24..25] step_lock[0..1]
-//   [26..29] ratchets for steps 0-15 (reserved[1..4])
-//   [30]     bits[2:0]=direction, bits[7:3]=stash_count
-//   [31]     length
-inline void WritePattern(Sequence &seq, int idx, int group) {
-  if (group == 3) {
-    // Group 3: full 128-byte blob directly (supports 64 steps)
-    const uint8_t *blob = seq.pitch; // pitch[] is the start of the 128-byte in-RAM layout
-    int off = G4_EEPROM_BASE + idx * EEPROM_G4_PATTERN_SIZE;
-    for (uint8_t i = 0; i < EEPROM_G4_PATTERN_SIZE; ++i)
-      storage.update(off + i, blob[i]);
-    return;
+// -----------------------------------------------------------------------------
+// Pattern read/write -- 4-region OS-303 layout, flat index 0..63 = bank*16 + pat.
+// -----------------------------------------------------------------------------
+inline void WritePatternFlat(Sequence &seq, uint8_t flat_idx) {
+  flat_idx &= 0x3F;
+  storage.put(PITCH_DATA_OFFSET + (int(flat_idx) * MAX_STEPS), seq.pitch);
+  storage.put(TIME_DATA_OFFSET  + (int(flat_idx) * (MAX_STEPS / 2)), seq.time_data);
+  // Metadata block: reserved[0..4], transpose, engine_select, length (8 bytes,
+  // contiguous in struct memory because all uint8_t).
+  uint8_t *src = seq.reserved;
+  for (uint8_t i = 0; i < METADATA_SIZE; ++i) {
+    storage.update(PATTERN_META_OFFSET + (int(flat_idx) * METADATA_SIZE) + i, src[i]);
   }
-  uint8_t compact[EEPROM_PATTERN_SIZE];
-  memcpy(compact,       seq.pitch,        16);
-  memcpy(compact + 16,  seq.time_data,     8);
-  memcpy(compact + 24,  seq.step_lock,     2);
-  memcpy(compact + 26,  seq.reserved + 1,  4); // ratchets for steps 0-15
-  uint8_t stash = (seq.reserved[21] < MAX_USER_STEPS) ? seq.reserved[21] : 0;
-  compact[30] = (seq.reserved[0] & 0x07) | uint8_t(stash << 3);
-  compact[31] = seq.length;
-  int off = SETTINGS_SIZE + (group * NUM_PATTERNS + idx) * EEPROM_PATTERN_SIZE;
-  for (uint8_t i = 0; i < EEPROM_PATTERN_SIZE; ++i)
-    storage.update(off + i, compact[i]);
 }
-inline void ReadPattern(Sequence &seq, int idx, int group) {
-  if (group == 3) {
-    // Group 3: full 128-byte blob directly (supports 64 steps)
-    int off = G4_EEPROM_BASE + idx * EEPROM_G4_PATTERN_SIZE;
-    uint8_t *blob = seq.pitch;
-    for (uint8_t i = 0; i < EEPROM_G4_PATTERN_SIZE; ++i)
-      blob[i] = storage.read(off + i);
-    return;
+inline void ReadPatternFlat(Sequence &seq, uint8_t flat_idx) {
+  flat_idx &= 0x3F;
+  storage.get(PITCH_DATA_OFFSET + (int(flat_idx) * MAX_STEPS), seq.pitch);
+  storage.get(TIME_DATA_OFFSET  + (int(flat_idx) * (MAX_STEPS / 2)), seq.time_data);
+  uint8_t *dst = seq.reserved;
+  for (uint8_t i = 0; i < METADATA_SIZE; ++i) {
+    dst[i] = storage.read(PATTERN_META_OFFSET + (int(flat_idx) * METADATA_SIZE) + i);
   }
-  int off = SETTINGS_SIZE + (group * NUM_PATTERNS + idx) * EEPROM_PATTERN_SIZE;
-  uint8_t compact[EEPROM_PATTERN_SIZE];
-  for (uint8_t i = 0; i < EEPROM_PATTERN_SIZE; ++i)
-    compact[i] = storage.read(off + i);
-  memset(seq.pitch,     PITCH_EMPTY, MAX_STEPS);
-  memset(seq.time_data, 0,           sizeof(seq.time_data));
-  memset(seq.step_lock, 0,           sizeof(seq.step_lock));
-  memset(seq.reserved,  0,           sizeof(seq.reserved));
-  memcpy(seq.pitch,        compact,      16);
-  memcpy(seq.time_data,    compact + 16,  8);
-  memcpy(seq.step_lock,    compact + 24,  2);
-  memcpy(seq.reserved + 1, compact + 26,  4); // ratchets
-  seq.reserved[0]  = compact[30] & 0x07;        // direction
-  seq.reserved[21] = (compact[30] >> 3) & 0x1F; // stash_count
-  seq.length = compact[31];
+}
+
+// Back-compat shim for engine.h's (idx, group) call style.
+inline void WritePattern(Sequence &seq, int idx, int bank) {
+  WritePatternFlat(seq, uint8_t(bank * NUM_PATTERNS + (idx & 0x0F)));
+}
+inline void ReadPattern(Sequence &seq, int idx, int bank) {
+  ReadPatternFlat(seq, uint8_t(bank * NUM_PATTERNS + (idx & 0x0F)));
 }

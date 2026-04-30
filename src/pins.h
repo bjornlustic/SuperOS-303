@@ -242,6 +242,47 @@ struct PinState {
 };
 
 // =============================================================================
+// Modal modifiers + dial position, sampled once per loop iteration.
+// `track_sel` and `write_mode` are dial bits (the 4-position rotary). The four
+// (track_sel, write_mode) combinations correspond to the four DialMode values.
+// =============================================================================
+struct InputState {
+  bool track_sel;   // dial: TRACK position when held
+  bool write_mode;  // dial: WRITE position when held (TRACK_WRITE or PATTERN_WRITE)
+  bool edit;        // TAP_NEXT held (edit-mode modifier)
+  bool fn;          // FUNCTION_KEY held
+  bool pitch;       // PITCH_KEY held
+  bool time;        // TIME_KEY held
+  bool clear;       // CLEAR_KEY held
+};
+
+// Forward decl needed because PinState is defined just above and InputIndex is
+// defined further up; this struct depends on both.
+inline InputState read_input_state(const PinState *inputs) {
+  InputState s;
+  s.track_sel  = inputs[TRACK_SEL].held();
+  s.write_mode = inputs[WRITE_MODE].held();
+  s.edit       = inputs[TAP_NEXT].held();
+  s.fn         = inputs[FUNCTION_KEY].held();
+  s.pitch      = inputs[PITCH_KEY].held();
+  s.time       = inputs[TIME_KEY].held();
+  s.clear      = inputs[CLEAR_KEY].held();
+  return s;
+}
+
+enum class DialMode : uint8_t {
+  PatternWrite = 0,
+  PatternPlay  = 1,
+  TrackWrite   = 2,
+  TrackPlay    = 3,
+};
+
+inline DialMode dial_mode_of(const InputState &s) {
+  if (s.track_sel) return s.write_mode ? DialMode::TrackWrite : DialMode::TrackPlay;
+  return s.write_mode ? DialMode::PatternWrite : DialMode::PatternPlay;
+}
+
+// =============================================================================
 // Matrix cell table: mux select, LED pin, button index (16 cells + 4 direct LEDs)
 // =============================================================================
 const MatrixPin switched_leds[16 + 4] = {
