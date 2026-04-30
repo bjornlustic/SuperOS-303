@@ -253,6 +253,14 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     // only; engine.stale causes the natural save points (RUN stop, WRITE
     // exit) to persist.
     if (!g_eng->import_pattern_blob(pat, raw, /*persist_eeprom=*/false)) { send_ack(2); return; }
+    // Pattern blob carries the per-pattern direction in reserved[0] bits[2:0],
+    // but import_pattern_blob only updates pattern[].pitch — the engine's
+    // live direction_ member is untouched. Apply it explicitly when the active
+    // pattern was just rewritten so a web-editor direction change takes effect.
+    if (pat == g_eng->get_patsel()) {
+      const uint8_t d = g_eng->pattern[pat].get_direction_stored();
+      g_eng->SetDirection(static_cast<SequenceDirection>(d));
+    }
     g_eng->stale = true;
     mark_pat_dirty(pat);
     send_ack(0);
@@ -541,11 +549,15 @@ void midi_audition_note_off() {
 }
 
 // --- Step position broadcast (SysEx 0x15) ---------------------------------------
-// Disabled: per-16th SysEx TX activity coupled into the analog audio rail as an
-// audible click. The web editor does not need a live playhead; the function is
-// kept as a no-op for ABI stability. Re-enable only if you have a hardware fix
-// for the MIDI-OUT current-loop noise.
-void midi_send_step_position(uint8_t /*pat*/, uint8_t /*step*/) {}
+// Wrap-only anchor: callers must send this only at pattern wrap (time_pos -> 0)
+// or other low-rate events. Per-16th sends produced an audible click because the
+// 7-byte burst current-pulse coupled into the analog audio rail. The web editor
+// counts incoming 24 PPQN MIDI clock to interpolate steps between anchors.
+void midi_send_step_position(uint8_t pat, uint8_t step) {
+  const uint8_t grp = g_eng ? g_eng->get_group() : 0;
+  const uint8_t inner[5] = {0x7D, 0x15, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), (uint8_t)(grp & 0x03)};
+  tx_push_message(inner, 5);
+}
 
 // --- Length update broadcast (SysEx 0x18) ----------------------------------------
 void midi_send_length_update(uint8_t pat, uint8_t len) {

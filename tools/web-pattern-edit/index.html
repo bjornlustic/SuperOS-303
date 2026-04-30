@@ -1213,7 +1213,14 @@
   var activePat    = 0;   // 0-15 within the group
   var playingPat   = -1;  // hardware-reported playing pattern (0-15), -1 = unknown
   var editLiveMode = false; // when true: display a pattern without changing what plays
-  var playingStep = -1;  // hardware-reported playing step (unused: live playhead disabled)
+  var playingStep = -1;  // current playhead step (clock-derived, anchor-corrected)
+  // Local clock-derived playhead: count incoming 24 PPQN MIDI clock bytes
+  // (0xF8) and divide by ticksPerStep (6 normal, 8 triplet) to get the step.
+  // Snaps to absolute on 0x15 anchors (sent at every pattern wrap).
+  var clkRunning  = false;
+  var clkSubTick  = -1;
+  var clkLocalStep = -1;
+  var clkPpDir   = 1;
   var queuedPat   = -1;  // pattern queued for next play (sent via PC)
   var patChain       = [];    // active chain (2-4 patterns)
   var queuedChain    = [];    // chain waiting to activate after current finishes
@@ -1940,7 +1947,59 @@
     track.addEventListener('pointercancel', onUp);
   }
 
-  // ── Playing step update (pattern-change broadcast only) ──────────
+  // ── MIDI realtime: derive playhead from clock ─────────────────────
+  // Forward / Reverse / Ping-Pong are exact; Random / Half-Random / Brownian
+  // are unpredictable so the dot is left where it is and snapped back to step 0
+  // on the next 0x15 anchor (sent at every pattern wrap).
+  function advanceClkStep(blob) {
+    var len = blob ? getLength(blob) : 16;
+    if (len < 1) len = 1;
+    var dir = blob ? getDirection(blob) : 0;
+    if (clkLocalStep < 0) {
+      clkLocalStep = (dir === 1) ? (len - 1) : 0;
+      clkPpDir = 1;
+      return;
+    }
+    if (dir === 0) {
+      clkLocalStep = (clkLocalStep + 1) % len;
+    } else if (dir === 1) {
+      clkLocalStep = (clkLocalStep - 1 + len) % len;
+    } else if (dir === 2) {
+      if (len === 1) { clkLocalStep = 0; clkPpDir = 1; return; }
+      var next = clkLocalStep + clkPpDir;
+      if (next >= len) { clkPpDir = -1; next = len - 2; }
+      else if (next < 0) { clkPpDir = 1; next = 1; }
+      clkLocalStep = next;
+    }
+  }
+
+  function handleRealtime(b) {
+    if (b === 0xF8) {
+      if (!clkRunning) return;
+      var pat = (playingPat >= 0) ? playingPat : activePat;
+      var blob = (hwGroup >= 0 ? groups[hwGroup] : groups[activeGroup])[pat];
+      var ticksPerStep = (blob && isTriplet(blob)) ? 8 : 6;
+      clkSubTick = (clkSubTick + 1) % ticksPerStep;
+      if (clkSubTick === 0) {
+        advanceClkStep(blob);
+        updatePlayingStep(pat, clkLocalStep);
+      }
+    } else if (b === 0xFA) {
+      clkRunning = true;
+      clkSubTick = -1;
+      clkLocalStep = -1;
+      clkPpDir = 1;
+      hwRunning = true;
+    } else if (b === 0xFB) {
+      clkRunning = true;
+      hwRunning = true;
+    } else if (b === 0xFC) {
+      clkRunning = false;
+      hwRunning = false;
+    }
+  }
+
+  // ── Playing step update (clock-derived + 0x15 anchor) ────────────
   function updatePlayingStep(pat, step) {
     if (pat !== playingPat) {
       playingPat = pat;
@@ -2274,9 +2333,24 @@
       return;
     }
 
-    if (cmd === 0x15) {
-      // Legacy per-16th broadcast: firmware no longer sends this. Ignore
-      // gracefully if an older build is in use.
+    if (cmd === 0x15 && bytes.length >= 5) {
+      // Anchor: firmware sends this only at pattern wrap. Snap the
+      // clock-derived playhead so any drift accumulated between anchors
+      // is corrected. Also resets subtick to 0 (we just hit a 16th boundary).
+      var sPat = bytes[2] & 0x0f;
+      var sStep = bytes[3] & 0x3f;
+      var sGrp = bytes[4] & 0x03;
+      if (sGrp !== hwGroup) {
+        hwGroup = sGrp;
+        switchGroup(sGrp);
+        if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(sGrp, true); }
+      }
+      clkLocalStep = sStep;
+      clkSubTick = 0;
+      clkPpDir = 1;
+      clkRunning = true;
+      hwRunning = true;
+      updatePlayingStep(sPat, sStep);
       return;
     }
 
@@ -2475,7 +2549,7 @@
     var d = ev.data;
     if (!d || !d.length) return;
     if (d[0] >= 0x80 && d[0] < 0xf0) { for (var k = 0; k < d.length; k++) feedChannelByte(d[k]); return; }
-    if (d[0] >= 0xf8) return;  // realtime messages ignored (no live playhead)
+    if (d[0] >= 0xf8) { handleRealtime(d[0]); return; }
     if (d[0] === 0xf0) {
       rxBuf = [];
       for (var i = 0; i < d.length; i++) rxBuf.push(d[i]);
@@ -3090,6 +3164,12 @@
     }
   }
 
+  function takeFreshSnap(g, p) {
+    var src = groups[g][p], snap = new Uint8Array(MAX_STEPS);
+    for (var i = 0; i < MAX_STEPS; i++) snap[i] = src[i];
+    scaleLockSnaps[g][p] = snap;
+  }
+
   function applySnapToBlob(g, p) {
     var blob = groups[g][p], snap = scaleLockSnaps[g][p];
     if (!snap) return;
@@ -3123,36 +3203,82 @@
     }
   }
 
+  // Patterns the scale lock should affect: the full chain when one is active,
+  // otherwise just the displayed pattern.
+  function scaleLockAffectedPats() {
+    var pats = [];
+    if (patChain.length > 1) {
+      for (var i = 0; i < patChain.length; i++) pats.push({ g: activeGroup, p: patChain[i] });
+    } else {
+      pats.push({ g: activeGroup, p: activePat });
+    }
+    return pats;
+  }
+
+  function sendScaleLockPats(pats) {
+    if (!midiOut) return;
+    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+    var apat = activePat & 15;
+    for (var i = 0; i < pats.length; i++) {
+      var x = pats[i];
+      if (hwGroup >= 0 && x.g !== hwGroup) continue;
+      sendPattern(x.p, groups[x.g][x.p]);
+      if (x.g === activeGroup && x.p === apat) {
+        lastSentBlob = new Uint8Array(groups[x.g][x.p]);
+        lastSentPat  = apat;
+      }
+    }
+  }
+
   function enableScaleLock() {
     scaleLockEnabled = true;
-    ensureScaleSnap(activeGroup, activePat);
-    applySnapToBlob(activeGroup, activePat);
+    var pats = scaleLockAffectedPats();
+    for (var i = 0; i < pats.length; i++) {
+      // Force a fresh snap from the current blob so the immediate apply is
+      // always against the user's current pitches, not a leftover snap.
+      takeFreshSnap(pats[i].g, pats[i].p);
+      applySnapToBlob(pats[i].g, pats[i].p);
+      pushHistory(pats[i].g, pats[i].p);
+    }
     updateScaleLockUI();
     saveScaleLockToLS();
-    pushHistory(activeGroup, activePat);
     saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
-    log('Scale lock on — ' + NOTE_NAMES[scaleLockRoot] + ' ' + scaleLockName, 'log-ack');
+    sendScaleLockPats(pats);
+    log('Scale lock on — ' + NOTE_NAMES[scaleLockRoot] + ' ' + scaleLockName +
+        (pats.length > 1 ? ' (' + pats.length + ' patterns)' : ''), 'log-ack');
   }
 
   function disableScaleLock() {
     scaleLockEnabled = false;
+    // Restore every blob that has a snap (covers leftovers from prior chains)
+    // and collect them so the firmware sees the un-snap on every snapped pat.
+    var snapped = [];
     for (var g = 0; g < NUM_GROUPS; g++)
-      for (var p = 0; p < PATS_PER_GROUP; p++) restoreSnapForBlob(g, p);
+      for (var p = 0; p < PATS_PER_GROUP; p++) {
+        if (scaleLockSnaps[g][p] !== null) {
+          restoreSnapForBlob(g, p);
+          snapped.push({ g: g, p: p });
+          pushHistory(g, p);
+        }
+      }
     updateScaleLockUI();
     saveScaleLockToLS();
-    pushHistory(activeGroup, activePat);
     saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
-    log('Scale lock off — pitches restored', 'log-ack');
+    sendScaleLockPats(snapped);
+    log('Scale lock off — pitches restored' +
+        (snapped.length > 1 ? ' (' + snapped.length + ' patterns)' : ''), 'log-ack');
   }
 
   function reapplyScaleLock() {
     if (!scaleLockEnabled) return;
-    ensureScaleSnap(activeGroup, activePat);
-    applySnapToBlob(activeGroup, activePat);
+    var pats = scaleLockAffectedPats();
+    // Make sure any pat newly added to the chain since lock-on gets a snap.
+    for (var i = 0; i < pats.length; i++) {
+      ensureScaleSnap(pats[i].g, pats[i].p);
+      applySnapToBlob(pats[i].g, pats[i].p);
+    }
     saveGroupsToLS(); renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    sendScaleLockPats(pats);
   }
 
   function updateScaleLockUI() {
