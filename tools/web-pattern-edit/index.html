@@ -617,7 +617,7 @@
       <div class="seq-toolbar-steps">
         <span class="seq-toolbar-lbl">Steps</span>
         <button class="len-adj-btn" id="patLenDec" title="Fewer steps">−</button>
-        <input type="number" id="patLen" class="seq-pat-len" min="1" max="16" value="16" />
+        <input type="number" id="patLen" class="seq-pat-len" min="1" max="32" value="16" />
         <button class="len-adj-btn" id="patLenInc" title="More steps">+</button>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
@@ -629,6 +629,16 @@
         <button class="dir-btn" data-dir="4" title="Half-random">Half</button>
         <button class="dir-btn" data-dir="5" title="Brownian (random walk ±1 step)">Brn</button>
       </div>
+      <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
+        <span class="seq-toolbar-lbl" style="margin-right:4px">Mode</span>
+        <button class="dir-btn" id="btnTriplet" title="Triplet step (8 PPQN per step instead of 6); caps length at 24">Triplets</button>
+      </div>
+      <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
+        <span class="seq-toolbar-lbl" style="margin-right:4px">Transpose</span>
+        <button class="len-adj-btn" id="patTrDec" title="Transpose down">−</button>
+        <input type="number" id="patTr" class="seq-pat-len" min="0" max="47" value="0" />
+        <button class="len-adj-btn" id="patTrInc" title="Transpose up">+</button>
+      </div>
       <div class="seq-toolbar-steps" style="align-items:center">
         <label class="live-push-lbl" title="Unchecked: 303 octave row + buttons. Checked: one slider C0–C4.">
           <input type="checkbox" id="pitchModeFull" />
@@ -637,9 +647,9 @@
       </div>
       <span class="seq-hint">
         <b>N</b> note &nbsp;&middot;&nbsp; <b>T</b> tie &nbsp;&middot;&nbsp; <b>R</b> rest &nbsp;&mdash;&nbsp;
-        vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide &nbsp;&middot;&nbsp; <b>L</b> lock step
+        vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide
         &nbsp;&mdash;&nbsp;
-        up to <b>64</b> steps &nbsp;&middot;&nbsp; red dot = currently playing step
+        up to <b>32</b> steps (<b>24</b> in triplet mode) &nbsp;&middot;&nbsp; red dot = currently playing step
       </span>
     </div>
     <div class="seq-grid-wrap">
@@ -729,20 +739,45 @@
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────────
-  var PATTERN_SIZE = 128;
-  var MAX_STEPS    = 64;
-  function groupMaxSteps() { return activeGroup === 3 ? 64 : 16; }
-  /** Extra note pitches when there are fewer NOTE steps than stored stream (303-style). */
-  var STASH_COUNT_IDX = 125;
-  /** Ratchet data: 2 bits per step, 4 steps per byte, 16 bytes at reserved[1..16] = blob[105..120]. Values 0–2 = 1x–3x (max). */
-  var RATCHET_BASE = 105;
-  var PITCH_MAX    = 12 + 13 * 3; // 51 (supports DOUBLE_UP octave)
-  /** Full-range slider: linear semitones 0..48 (= unpack_pitch_linear), C0..C4 for natural notes at C boundaries. */
+  // In-memory blob layout (56 bytes, OS-303 v0.6 wire-compatible EXCEPT pitch
+  // is stored per-time-step here; we map to/from NOTE-event order at the
+  // SysEx boundary so the editor UI keeps "one knob per step" semantics).
+  //   bytes  0..31  pitch[32]    per time step, 0xFF = empty (rest/tie slot)
+  //   bytes 32..47  time_data[16] 4-bit nibbles (0=REST, 1=NOTE, 2=TIE)
+  //   byte  48      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
+  //   bytes 49..52  reserved[1..4] ratchet bitmap (1 bit/step, 32 bits)
+  //   byte  53      transpose
+  //   byte  54      engine_select (round-tripped untouched)
+  //   byte  55      length (1..32 normal, 1..24 triplet)
+  var PATTERN_SIZE   = 56;
+  var MAX_STEPS      = 32;
+  var TRIPLET_MAX_STEPS = 24;
+  var TIME_OFF       = 32;
+  var RES0_OFF       = 48;
+  var RAT_OFF        = 49;
+  var TRANSPOSE_OFF  = 53;
+  var ENGINE_OFF     = 54;
+  var LEN_OFF        = 55;
+  var PACKED_SIZE    = 64;  // 56 raw → 8 chunks × 8 packed bytes
+
+  var PITCH_PACK_MASK = 0x3F;
+  var PITCH_MAX       = 0x3C; // semi=12 | (oct=3 << 4)
+  var PITCH_DEFAULT   = 0x10; // semi=0, oct=1 (centre C)
+  var PITCH_EMPTY     = 0xFF;
+  var TRIPLET_FLAG    = 0x08;
+  var DIR_MASK        = 0x07;
+
+  // Linear pitch range: 0..48 semitones (4 octaves)
   var PITCH_FULL_LIN_MIN = 0;
   var PITCH_FULL_LIN_MAX = 48;
-  var NUM_GROUPS   = 4;
-  var LS_PITCH_MODE = 'superos303_pitch_mode';
-  var PATS_PER_GROUP = 16; // 2 banks of 8
+  var NUM_GROUPS         = 4;
+  var LS_PITCH_MODE      = 'superos303_pitch_mode';
+  var PATS_PER_GROUP     = 16; // 2 banks of 8
+
+  function patternMaxSteps(blob) {
+    return (blob && (blob[RES0_OFF] & TRIPLET_FLAG)) ? TRIPLET_MAX_STEPS : MAX_STEPS;
+  }
+  function groupMaxSteps() { return MAX_STEPS; } // hard ceiling; triplet cap is per-pattern
 
   var NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 
@@ -780,30 +815,32 @@
     bar.classList.toggle('is-open', open);
   });
 
-  // ── TB-303 pitch encoding ──────────────────────────────────────────
+  // ── OS-303 pitch encoding ──────────────────────────────────────────
+  // Packed pitch byte: bits[3:0]=semi (0..12), bits[5:4]=oct button (0..3),
+  // bit[6]=accent, bit[7]=slide. Linear pitch = semi + 12*oct, range 0..48.
+  // Note: semi=12 with oct in 0..2 reaches the high-C key in any register;
+  // semi=0 with oct=3 = DOUBLE_UP C. We never auto-normalise semi=12 to
+  // semi=0,oct+1 because the user's button intent is preserved.
   function unpackLinear(e) {
-    if (e > PITCH_MAX) return e & 0x3f;
-    return (e % 13) + 12 * Math.floor(e / 13);
+    return (e & 0x0F) + 12 * ((e >> 4) & 0x03);
   }
   function clampFullLinear(lin) {
     return Math.max(PITCH_FULL_LIN_MIN, Math.min(PITCH_FULL_LIN_MAX, lin | 0));
   }
-  /**
-   * Packed byte for a linear pitch 0..48: oct_btn = floor(lin/12) (cap 3), key = lin - 12*oct_btn.
-   * Keeps octave buttons (down / norm / up / 2×) aligned with the note in full-range mode.
-   * Aliases (e.g. same lin from different e) are normalized to this form.
-   */
+  /** Packed byte for a linear pitch 0..48: oct = floor(lin/12) (cap 3), semi = lin - 12*oct. */
   function linearToPacked(lin) {
     lin = clampFullLinear(lin);
-    var oct_btn = Math.min(3, Math.floor(lin / 12));
-    var key = lin - 12 * oct_btn;
-    return Math.min(key + 13 * oct_btn, PITCH_MAX);
+    var oct = Math.min(3, Math.floor(lin / 12));
+    var semi = lin - 12 * oct;
+    return (semi & 0x0F) | ((oct & 0x03) << 4);
   }
   function clampPackedByte(b) {
-    var fl = b & 0xc0;
-    var e = b & 0x3f;
-    if (e > PITCH_MAX) e = PITCH_MAX;
-    return (e | fl);
+    if (b === PITCH_EMPTY) return PITCH_EMPTY;
+    var fl = b & 0xC0;
+    var semi = b & 0x0F;
+    var oct  = (b >> 4) & 0x03;
+    if (semi > 12) semi = 12;
+    return fl | (semi & 0x0F) | (oct << 4);
   }
   /** Note label from firmware linear pitch (same as unpack_pitch_linear). */
   function noteNameFromLinear(lin) {
@@ -852,22 +889,31 @@
   }
   function xorBlob(u8) {
     var x = 0;
-    for (var i = 0; i < 128; i++) x ^= u8[i];
+    for (var i = 0; i < PATTERN_SIZE; i++) x ^= u8[i];
     return x & 0xff;
   }
 
   // ── Time nibble helpers ────────────────────────────────────────────
   function getTime(blob, s) {
     var idx = s & (MAX_STEPS - 1);
-    return (blob[64 + (idx >> 1)] >> (4 * (idx & 1))) & 0xf;
+    return (blob[TIME_OFF + (idx >> 1)] >> (4 * (idx & 1))) & 0x0F;
   }
   function setTime(blob, s, v) {
-    var idx = s & (MAX_STEPS - 1), p = 64 + (idx >> 1), sh = 4 * (idx & 1);
-    blob[p] = (blob[p] & ~(0xf << sh)) | ((v & 0xf) << sh);
+    var idx = s & (MAX_STEPS - 1), p = TIME_OFF + (idx >> 1), sh = 4 * (idx & 1);
+    blob[p] = (blob[p] & ~(0x0F << sh)) | ((v & 0x0F) << sh);
   }
+  function getLength(blob) {
+    return Math.min(MAX_STEPS, Math.max(1, blob[LEN_OFF] | 0));
+  }
+  function setLength(blob, len) {
+    var cap = patternMaxSteps(blob);
+    blob[LEN_OFF] = Math.min(cap, Math.max(1, len | 0));
+  }
+
   /**
    * Match firmware normalize_pattern_times: all-tie → first note; step 0 tie → note;
-   * rest followed by tie (including wrap last→first) → note on rest step. Empty pitch → default 13.
+   * rest followed by tie (including wrap last→first) → note on rest step.
+   * Empty pitch on the converted slot is initialized to PITCH_DEFAULT.
    */
   function normalizePatternTimes(blob, len) {
     len = Math.min(MAX_STEPS, Math.max(1, len | 0));
@@ -877,46 +923,49 @@
     }
     if (allTie) {
       setTime(blob, 0, 1);
-      if (blob[0] === 0xff) blob[0] = clampPackedByte(13);
+      if (blob[0] === PITCH_EMPTY) blob[0] = PITCH_DEFAULT;
     }
     if (getTime(blob, 0) === 2) {
       setTime(blob, 0, 1);
-      if (blob[0] === 0xff) blob[0] = clampPackedByte(13);
+      if (blob[0] === PITCH_EMPTY) blob[0] = PITCH_DEFAULT;
     }
     for (var j = 0; j < len; j++) {
       var nxt = (j + 1) % len;
       if (getTime(blob, j) === 0 && getTime(blob, nxt) === 2) {
         setTime(blob, j, 1);
-        if (blob[j] === 0xff) blob[j] = clampPackedByte(13);
+        if (blob[j] === PITCH_EMPTY) blob[j] = PITCH_DEFAULT;
       }
     }
   }
 
-  // step_lock bytes in firmware blob: index 96..103 (8 bytes, 64 bits)
-  function getStepLock(blob, s) {
-    var b = 96 + ((s & (MAX_STEPS - 1)) >> 3);
-    if (b >= 104) return false;
-    return !!(blob[b] & (1 << (s & 7)));
-  }
-  function toggleStepLock(blob, s) {
-    var b = 96 + ((s & (MAX_STEPS - 1)) >> 3);
-    if (b >= 104) return;
-    blob[b] ^= (1 << (s & 7));
-  }
-
-  // Ratchet: 2 bits per step packed into blob[RATCHET_BASE..RATCHET_BASE+15].
-  // Value 0=1x, 1=2x, 2=3x (max). Only meaningful on NOTE steps without slide.
+  // Ratchet: 1 bit per step at bytes RAT_OFF..RAT_OFF+3 (= reserved[1..4]).
+  // 0 = 1× (no ratchet), 1 = 2× ratchet. Only meaningful on NOTE steps without slide.
   function getRatchet(blob, s) {
     var idx = s & (MAX_STEPS - 1);
-    var b   = RATCHET_BASE + (idx >> 2);
-    var sh  = (idx & 3) << 1;
-    return (blob[b] >> sh) & 0x03;
+    return (blob[RAT_OFF + (idx >> 3)] >> (idx & 7)) & 0x01;
   }
   function setRatchet(blob, s, val) {
     var idx = s & (MAX_STEPS - 1);
-    var b   = RATCHET_BASE + (idx >> 2);
-    var sh  = (idx & 3) << 1;
-    blob[b] = (blob[b] & ~(0x03 << sh)) | ((val & 0x03) << sh);
+    var b = RAT_OFF + (idx >> 3);
+    var bit = 1 << (idx & 7);
+    blob[b] = (val & 1) ? (blob[b] | bit) : (blob[b] & ~bit);
+  }
+
+  // reserved[0]: bits[2:0]=direction (0..5), bit[3]=triplet flag.
+  function getDirection(blob) { return blob[RES0_OFF] & DIR_MASK; }
+  function setDirection(blob, d) {
+    blob[RES0_OFF] = (blob[RES0_OFF] & ~DIR_MASK) | (d & DIR_MASK);
+  }
+  function isTriplet(blob) { return !!(blob[RES0_OFF] & TRIPLET_FLAG); }
+  function setTriplet(blob, on) {
+    if (on) blob[RES0_OFF] |= TRIPLET_FLAG;
+    else    blob[RES0_OFF] &= ~TRIPLET_FLAG;
+    if (on && getLength(blob) > TRIPLET_MAX_STEPS) blob[LEN_OFF] = TRIPLET_MAX_STEPS;
+  }
+
+  function getTranspose(blob) { return blob[TRANSPOSE_OFF] | 0; }
+  function setTranspose(blob, t) {
+    blob[TRANSPOSE_OFF] = Math.max(0, Math.min(47, t | 0));
   }
 
   function snapshotTimes(blob, len) {
@@ -924,141 +973,83 @@
     for (var i = 0; i < len; i++) t.push(getTime(blob, i));
     return t;
   }
-  function getStashCount(blob) {
-    return Math.min(MAX_STEPS, Math.max(0, blob[STASH_COUNT_IDX] | 0));
-  }
-  function setStashCount(blob, n) {
-    blob[STASH_COUNT_IDX] = Math.min(MAX_STEPS, Math.max(0, n | 0));
-  }
-  /** Per-step pitch bytes + tail stash (blob[len..]) before a time edit. */
-  function snapshotPitchState(blob, len) {
-    var step = new Uint8Array(len);
-    for (var i = 0; i < len; i++) step[i] = blob[i];
-    var sc = getStashCount(blob);
-    var stash = [];
-    for (var k = 0; k < sc; k++) stash.push(blob[len + k]);
-    return { step: step, stash: stash };
-  }
-  function pitchByteOr13(r) {
-    return (r === 0xff || r === undefined) ? 13 : (r & 0xff);
-  }
-  // Build pitch stream from slots that were NOTE *or* had user-written pitch data.
-  // This ensures pitches entered via PITCH_MODE write survive the first TIME_MODE reflow.
-  function buildPitchStreamFromState(state, timesBefore, len) {
-    var stream = [];
-    for (var i = 0; i < len; i++) {
-      var wasNote = (timesBefore[i] === 1);
-      var hasPitch = (state.step[i] !== 0xff && state.step[i] !== undefined);
-      if (wasNote || hasPitch)
-        stream.push(hasPitch ? pitchByteOr13(state.step[i]) : 13);
-    }
-    for (var k = 0; k < state.stash.length; k++)
-      stream.push(pitchByteOr13(state.stash[k]));
-    return stream;
-  }
-  function clampStashToBlob(blob, len, stashCount) {
-    var maxS = Math.max(0, MAX_STEPS - len);
-    if (stashCount > maxS) stashCount = maxS;
-    return stashCount;
-  }
-  // Sequential redistribution with stash: NOTE steps get pitches in order from the stream;
-  // excess pitches go to stash tail; non-NOTE slots are cleared to 0xff.
-  function reflowPitchesAfterTimeChange(blob, len, timesBefore, state) {
-    var stream = buildPitchStreamFromState(state, timesBefore, len);
-    var newNoteCount = 0;
-    for (var i = 0; i < len; i++) if (getTime(blob, i) === 1) newNoteCount++;
-    if (newNoteCount === 0) {
-      var sc0 = clampStashToBlob(blob, len, stream.length);
-      setStashCount(blob, sc0);
-      for (var ks = 0; ks < sc0; ks++)
-        blob[len + ks] = clampPackedByte(stream[ks] & 0xff);
-      for (var z = 0; z < len; z++) blob[z] = 0xff;
-      return;
-    }
-    while (stream.length < newNoteCount) stream.push(13);
-    var excess = stream.length - newNoteCount;
-    var stashCount = clampStashToBlob(blob, len, excess);
-    if (newNoteCount + stashCount < stream.length)
-      stream = stream.slice(0, newNoteCount + stashCount);
-    var notePos = [];
-    for (var j = 0; j < len; j++) if (getTime(blob, j) === 1) notePos.push(j);
-    for (var n = 0; n < notePos.length; n++)
-      blob[notePos[n]] = clampPackedByte(stream[n] & 0xff);
-    setStashCount(blob, stashCount);
-    for (var t = 0; t < stashCount; t++)
-      blob[len + t] = clampPackedByte(stream[newNoteCount + t] & 0xff);
+
+  // ── NOTE-event ↔ time-step pitch mapping (for SysEx wire format) ──
+  // Wire pitch[32] is indexed by NOTE-event order. Editor stores pitch
+  // by time-step. These helpers convert between the two on send/receive.
+  function buildWireFromBlob(blob) {
+    var raw = new Uint8Array(PATTERN_SIZE);
+    raw.set(blob);
+    var len = getLength(blob);
+    for (var i = 0; i < MAX_STEPS; i++) raw[i] = PITCH_EMPTY;
+    var k = 0;
     for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) !== 1) blob[s] = 0xff;
+      if (getTime(blob, s) === 1) {
+        var pb = blob[s];
+        raw[k++] = (pb === PITCH_EMPTY) ? PITCH_DEFAULT : pb;
+      }
     }
+    return raw;
   }
-  function migratePitchStashOnResize(blob, oldLen, newLen) {
-    var sc = getStashCount(blob);
-    if (sc === 0 || oldLen === newLen) return;
-    var tmp = [];
-    for (var k = 0; k < sc; k++) tmp.push(blob[oldLen + k]);
-    sc = clampStashToBlob(blob, newLen, sc);
-    setStashCount(blob, sc);
-    for (k = 0; k < sc; k++) blob[newLen + k] = tmp[k];
-  }
-  function sanitizeStashAfterLoad(blob) {
-    var L = blob[127] | 0;
-    if (L < 1 || L > MAX_STEPS) return;
-    setStashCount(blob, clampStashToBlob(blob, L, getStashCount(blob)));
+  function applyWireToBlob(blob, raw) {
+    blob.set(raw);
+    var len = getLength(blob);
+    var pitchStream = [];
+    for (var i = 0; i < MAX_STEPS; i++) pitchStream.push(raw[i]);
+    var k = 0;
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) === 1) {
+        var pb = pitchStream[k++];
+        blob[s] = (pb === PITCH_EMPTY || pb === undefined) ? PITCH_DEFAULT : pb;
+      } else {
+        blob[s] = PITCH_EMPTY;
+      }
+    }
+    for (var s2 = len; s2 < MAX_STEPS; s2++) blob[s2] = PITCH_EMPTY;
   }
 
-  /// Packed pitch nibble (0..51) for the pitch you *hear* on this step (tie inherits previous note).
+  /// Packed pitch (bits 5:0) for what is *heard* at step s (TIE inherits prev NOTE).
   function effectivePacked6(blob, s, len) {
     s &= (MAX_STEPS - 1);
     len = Math.min(MAX_STEPS, Math.max(1, len | 0));
     var t = getTime(blob, s);
     if (t === 0) return null;
     if (t === 2) {
-      var g, tp, tt;
-      for (g = 1; g < len; g++) {
-        tp = (s + len - g) % len;
-        tt = getTime(blob, tp);
+      for (var g = 1; g < len; g++) {
+        var tp = (s + len - g) % len;
+        var tt = getTime(blob, tp);
         if (tt === 0) break;
         if (tt === 1) {
           var br = blob[tp];
-          return (br === 0xff) ? 13 : (br & 0x3f);
+          return (br === PITCH_EMPTY) ? PITCH_DEFAULT : (br & PITCH_PACK_MASK);
         }
       }
-      return 13;
+      return PITCH_DEFAULT;
     }
     var r = blob[s];
-    return (r === 0xff) ? null : (r & 0x3f);
+    return (r === PITCH_EMPTY) ? null : (r & PITCH_PACK_MASK);
   }
 
-  /**
-   * Which octave button is highlighted: OG uses packed band (key row 0..3). Full range uses
-   * heard linear pitch / 12 (same idea as firmware get_octave), so aliases still show correctly.
-   */
-  function octButtonFromPacked(packed6, editorFullRange) {
+  /** Octave button (0=DOWN, 1=CENTRE, 2=UP, 3=DOUBLE_UP) from packed pitch byte. */
+  function octButtonFromPacked(packed6, _editorFullRange) {
     if (packed6 == null) return 1;
-    var e = packed6 & 0x3f;
-    if (e > PITCH_MAX) e = PITCH_MAX;
-    if (editorFullRange) {
-      var lin = unpackLinear(e);
-      return Math.min(3, Math.max(0, Math.floor(lin / 12) | 0));
-    }
-    return Math.min(3, Math.max(0, Math.floor(e / 13) | 0));
+    return (packed6 >> 4) & 0x03;
   }
   function setOctaveOnStep(blob, si, octBtn) {
     octBtn = Math.max(0, Math.min(3, octBtn | 0));
     var r = blob[si];
-    if (r === 0xff) r = 13;
-    var k = (r & 0x3f) % 13;
-    var flags = r & 0xc0;
-    var e = k + 13 * octBtn;
-    if (e > PITCH_MAX) e = PITCH_MAX;
-    blob[si] = clampPackedByte((e & 0x3f) | (r & 0xc0));
+    if (r === PITCH_EMPTY) r = PITCH_DEFAULT;
+    var semi = r & 0x0F;
+    var flags = r & 0xC0;
+    blob[si] = flags | (semi & 0x0F) | (octBtn << 4);
   }
 
   // ── Storage ────────────────────────────────────────────────────────
-  // groups[g][p] = Uint8Array(128) for group g (0-3), pattern p (0-15)
-  // Hardware holds 16 patterns; groups 2-4 are stored locally in localStorage.
+  // groups[g][p] = Uint8Array(56) for group g (0-3), pattern p (0-15).
+  // Wire-compatible with OS-303 v0.6 (56-byte blob), but pitch is stored
+  // per-time-step in the editor (converted at SysEx boundary).
   var groups = []; // [4][16]
-  var LS_KEY = 'superos303_groups';
+  var LS_KEY = 'superos303_groups_v6'; // bumped for new layout; old key dropped
   var LS_SCALE_LOCK = 'superos303_scale_lock';
 
   // ── Scale definitions ──────────────────────────────────────────────
@@ -1108,24 +1099,26 @@
   var scaleLockRoot      = 0;
   var scaleLockName      = 'Major';
   var scaleLockIntervals = SCALES['Major'].slice(); // intervals relative to root (0–11)
-  var scaleLockSnaps     = [];  // [NUM_GROUPS][PATS_PER_GROUP] Uint8Array(64) | null
+  var scaleLockSnaps     = [];  // [NUM_GROUPS][PATS_PER_GROUP] Uint8Array(MAX_STEPS) | null
 
   function makeBlankPat() {
     var b = new Uint8Array(PATTERN_SIZE);
-    b[127] = 16;
-    b[STASH_COUNT_IDX] = 0;
-    for (var i = 0; i < 64; i++) b[i] = 13; // PITCH_DEFAULT (C, center oct)
+    for (var i = 0; i < MAX_STEPS; i++) b[i] = PITCH_EMPTY;
+    for (var t = 0; t < 16; t++) b[TIME_OFF + t] = 0;
+    b[RES0_OFF] = 0;
+    b[RAT_OFF] = b[RAT_OFF+1] = b[RAT_OFF+2] = b[RAT_OFF+3] = 0;
+    b[TRANSPOSE_OFF] = 0;
+    b[ENGINE_OFF] = 0;
+    b[LEN_OFF] = 16;
     return b;
   }
-  /** One step, rest, no pitch stash or step locks. */
+  /** One step, rest, no pitches set. Length collapses to 1. */
   function clearPatternMinimalRest(blob) {
-    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
-    setTime(blob, 0, 0);
-    for (var p = 0; p < 64; p++) blob[p] = 0xff;
-    blob[127] = 1;
-    setStashCount(blob, 0);
-    for (var L = 0; L < 8; L++) blob[96 + L] = 0;
-    for (var R = 0; R < 16; R++) blob[RATCHET_BASE + R] = 0;
+    for (var t = 0; t < 16; t++) blob[TIME_OFF + t] = 0;
+    for (var p = 0; p < MAX_STEPS; p++) blob[p] = PITCH_EMPTY;
+    blob[RES0_OFF] &= TRIPLET_FLAG; // keep triplet flag, clear direction
+    blob[RAT_OFF] = blob[RAT_OFF+1] = blob[RAT_OFF+2] = blob[RAT_OFF+3] = 0;
+    blob[LEN_OFF] = 1;
   }
   function cloneU8(u) { var x = new Uint8Array(u.length); x.set(u); return x; }
   function blobsEqual(a, b) { for (var i = 0; i < PATTERN_SIZE; i++) if (a[i] !== b[i]) return false; return true; }
@@ -1443,16 +1436,25 @@
     sendSysex(inner);
   }
 
+  function syncPatternToolbar() {
+    var blob = activeBlob();
+    var lenEl = document.getElementById('patLen');
+    lenEl.max = String(patternMaxSteps(blob));
+    lenEl.value = String(getLength(blob));
+    var tr = document.getElementById('patTr');
+    if (tr) tr.value = String(getTranspose(blob));
+    var tBtn = document.getElementById('btnTriplet');
+    if (tBtn) tBtn.classList.toggle('btn-primary', isTriplet(blob));
+    setActiveDirection(getDirection(blob));
+  }
+
   function switchGroup(g) {
     syncBlob();
     activeGroup = g;
-    var lenEl = document.getElementById('patLen');
-    var gmax = groupMaxSteps();
-    lenEl.max = String(gmax);
-    if (Number(lenEl.value) > gmax) { lenEl.value = String(gmax); syncBlob(); }
     if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat); applySnapToBlob(activeGroup, activePat); }
     var tabs = tabsEl.querySelectorAll('.group-tab');
     for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('is-active', i === g);
+    syncPatternToolbar();
     refreshAllPills();
     renderGrid();
     updateButtons();
@@ -1462,9 +1464,7 @@
     syncBlob();
     activePat = p & 15;
     if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat); applySnapToBlob(activeGroup, activePat); }
-    var lenEl = document.getElementById('patLen');
-    lenEl.max = String(groupMaxSteps());
-    lenEl.value = String(activeBlob()[127]);
+    syncPatternToolbar();
     // Refresh delta baseline so the first live edit on this pattern diffs
     // against the correct pre-edit state (303 already has this data).
     if (activeGroup === hwGroup) {
@@ -1492,7 +1492,7 @@
       pill.classList.toggle('is-drag-chain',   inDrag && !inActive && !inQueued);
       pill.classList.toggle('is-copied',       copiedFrom && copiedFrom.g === activeGroup && copiedFrom.p === p);
       var blob = groups[activeGroup][p];
-      var patLen = blob[127] || 16;
+      var patLen = getLength(blob);
       var patEmpty = true;
       for (var s = 0; s < patLen; s++) { if (getTime(blob, s) !== 0) { patEmpty = false; break; } }
       pill.innerHTML = String(p + 1) + '<span class="pat-pill-badge">' + (patEmpty ? 'E' : patLen) + '</span>';
@@ -1525,7 +1525,8 @@
   }
 
   function currentPatLen() {
-    return Math.min(groupMaxSteps(), Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    var blob = activeBlob();
+    return Math.min(patternMaxSteps(blob), Math.max(1, Number(document.getElementById('patLen').value) | 0));
   }
 
   function updateDisplayLabels(blob, s, len, nameEl) {
@@ -1536,24 +1537,9 @@
       nameEl.classList.add('is-muted');
     } else {
       nameEl.classList.remove('is-muted');
-      var u = eff != null ? eff : 13;
-      var pk = (u & 0x3f);
-      if (pk > PITCH_MAX) pk = PITCH_MAX;
-      nameEl.textContent = noteNameFromLinear(unpackLinear(pk));
+      var u = eff != null ? eff : PITCH_DEFAULT;
+      nameEl.textContent = noteNameFromLinear(unpackLinear(u & PITCH_PACK_MASK));
     }
-  }
-
-  function toggleStepLockAtStep(si) {
-    si = si | 0;
-    var blob2 = activeBlob();
-    var L = currentPatLen();
-    if (si < 0 || si >= L) return;
-    toggleStepLock(blob2, si);
-    pushHistory(activeGroup, activePat);
-    saveGroupsToLS();
-    renderGrid();
-    recomputeDirty();
-    scheduleLiveSend();
   }
 
   // ── Sequencer rendering ────────────────────────────────────────────
@@ -1563,12 +1549,11 @@
     for (var i = 1; i <= len; i++) {
       var prev = (s - i + len) % len;
       var pt = getTime(blob, prev);
-      if (pt === 0) return false; // REST cancels slide
-      if (pt === 1) {             // NOTE: check slide bit
+      if (pt === 0) return false;
+      if (pt === 1) {
         var pr = blob[prev];
-        return pr !== 0xff && !!(pr & 0x80);
+        return pr !== PITCH_EMPTY && !!(pr & 0x80);
       }
-      // TIE: keep looking back
     }
     return false;
   }
@@ -1583,7 +1568,7 @@
         var pi = patChain[ci];
         var isActive = (pi === activePat);
         var cblob = groups[activeGroup][pi];
-        var clen = cblob[127] || 16;
+        var clen = getLength(cblob);
         normalizePatternTimes(cblob, clen);
 
         var section = document.createElement('div');
@@ -1606,7 +1591,7 @@
         section.appendChild(header);
 
         var innerGrid = document.createElement('div');
-        innerGrid.className = 'seq-grid' + (clen > 32 ? ' cols-16' : '');
+        innerGrid.className = 'seq-grid' + (clen > 16 ? ' cols-16' : '');
         renderPatternCards(cblob, pi, clen, innerGrid, isActive);
         section.appendChild(innerGrid);
         grid.appendChild(section);
@@ -1614,9 +1599,9 @@
     } else {
       var blob = activeBlob();
       var len = currentPatLen();
-      blob[127] = len;
+      blob[LEN_OFF] = len;
       normalizePatternTimes(blob, len);
-      grid.className = 'seq-grid' + (len > 32 ? ' cols-16' : '');
+      grid.className = 'seq-grid' + (len > 16 ? ' cols-16' : '');
       renderPatternCards(blob, activePat, len, grid, true);
     }
   }
@@ -1625,13 +1610,12 @@
     for (var s = 0; s < len; s++) {
       var t      = getTime(blob, s);
       var raw    = blob[s];
-      var isEmpty = (raw === 0xff);
+      var isEmpty = (raw === PITCH_EMPTY);
       var eff    = effectivePacked6(blob, s, len);
-      var packedRaw = isEmpty ? 13 : (raw & 0x3f);
-      var dispPacked = t === 1 ? packedRaw : (eff != null ? eff : 13);
+      var packedRaw = isEmpty ? PITCH_DEFAULT : (raw & PITCH_PACK_MASK);
+      var dispPacked = t === 1 ? packedRaw : (eff != null ? eff : PITCH_DEFAULT);
       var acc     = t === 1 && !isEmpty && !!(raw & 0x40);
       var sl      = t === 1 && !isEmpty && !!(raw & 0x80);
-      var locked  = getStepLock(blob, s);
       var tieStep = (t === 2);
       var noteStep = (t === 1);
 
@@ -1642,7 +1626,6 @@
       else if (t === 1) cardCls += ' is-note';
       else if (t === 2) cardCls += ' is-tie';
       if (isPlayingStep) cardCls += ' is-playing-step';
-      if (locked) cardCls += ' is-locked';
 
       var card = document.createElement('div');
       card.className = cardCls;
@@ -1665,11 +1648,9 @@
         var b = document.createElement('button');
         b.className = 't-btn' + (t === val ? ' is-on' : '');
         b.textContent = lbl;
-        b.disabled = locked;
         b.addEventListener('click', (function(si, tv) {
           return function() {
             var blob2 = activeBlob();
-            if (getStepLock(blob2, si)) return;
             var L = currentPatLen();
             var nxt = (si + 1) % L;
             var prv = (si + L - 1) % L;
@@ -1681,11 +1662,14 @@
               showErrorToast('Cannot put rest before a tie.');
               return;
             }
-            var tb = snapshotTimes(blob2, L);
-            var st = snapshotPitchState(blob2, L);
+            var prevT = getTime(blob2, si);
             setTime(blob2, si, tv);
+            if (tv === 1 && blob2[si] === PITCH_EMPTY) blob2[si] = PITCH_DEFAULT;
+            if (tv !== 1 && prevT === 1) {
+              // Keep the pitch byte for restore-on-toggle-back; firmware
+              // ignores pitches on non-NOTE steps, but the editor preserves them.
+            }
             normalizePatternTimes(blob2, L);
-            reflowPitchesAfterTimeChange(blob2, L, tb, st);
             pushHistory(activeGroup, activePat);
             saveGroupsToLS();
             renderGrid();
@@ -1709,7 +1693,7 @@
       if (pitchEditorFullRange)
         pkWrap.dataset.lin = String(clampFullLinear(unpackLinear(uiPacked)));
       else
-        pkWrap.dataset.key = String(uiPacked % 13);
+        pkWrap.dataset.key = String(uiPacked & 0x0F);
       var track = document.createElement('div');
       track.className = 'pitch-knob-track';
       var fill  = document.createElement('div'); fill.className  = 'pitch-knob-fill';
@@ -1721,23 +1705,23 @@
         track.style.pointerEvents = 'none';
       }
       layoutPitchKnob(pkWrap, nameEl, blob, s, len);
-      if (noteStep && !locked && editable) bindPitchKnob(pkWrap, track, s, nameEl);
+      if (noteStep && editable) bindPitchKnob(pkWrap, track, s, nameEl);
       card.appendChild(pkWrap);
 
       var octSel = octButtonFromPacked(uiPacked, pitchEditorFullRange);
       var octRow = document.createElement('div');
       octRow.className = 'step-oct-row';
-      [[0, 'down'], [1, 'norm'], [2, 'up'], [3, '2x UP']].forEach(function(op) {
+      [[0, 'DOWN'], [1, 'CENTRE'], [2, 'UP'], [3, '2× UP']].forEach(function(op) {
         var ob = op[0], ol = op[1];
         var obtn = document.createElement('button');
         obtn.type = 'button';
         obtn.className = 'f-btn-o' + (octSel === ob ? ' is-on' : '');
         obtn.textContent = ol;
-        obtn.disabled = tieStep || locked;
-        obtn.addEventListener('click', (function(si, oi, btn) {
+        obtn.disabled = tieStep;
+        obtn.addEventListener('click', (function(si, oi) {
           return function() {
             var blob2 = activeBlob();
-            if (getStepLock(blob2, si) || getTime(blob2, si) === 2) return;
+            if (getTime(blob2, si) === 2) return;
             setOctaveOnStep(blob2, si, oi);
             pushHistory(activeGroup, activePat);
             saveGroupsToLS();
@@ -1745,7 +1729,7 @@
             recomputeDirty();
             scheduleLiveSend();
           };
-        })(s, ob, obtn));
+        })(s, ob));
         octRow.appendChild(obtn);
       });
       card.appendChild(octRow);
@@ -1755,13 +1739,12 @@
 
       var aBtn = document.createElement('button');
       aBtn.className = 'f-btn' + (acc ? ' f-on' : '');
-      aBtn.disabled = tieStep || locked;
+      aBtn.disabled = tieStep;
       aBtn.textContent = 'A';
       aBtn.addEventListener('click', (function(si, btn) {
         return function() {
           var blob2 = activeBlob();
-          if (getStepLock(blob2, si)) return;
-          if (blob2[si] === 0xff) blob2[si] = 13;
+          if (blob2[si] === PITCH_EMPTY) blob2[si] = PITCH_DEFAULT;
           blob2[si] ^= 0x40;
           btn.classList.toggle('f-on', !!(blob2[si] & 0x40));
           pushHistory(activeGroup, activePat);
@@ -1773,15 +1756,13 @@
 
       var sBtn = document.createElement('button');
       sBtn.className = 'f-btn' + (sl ? ' f-on' : '');
-      sBtn.disabled = tieStep || locked;
+      sBtn.disabled = tieStep;
       sBtn.textContent = 'S';
-      sBtn.addEventListener('click', (function(si, btn) {
+      sBtn.addEventListener('click', (function(si) {
         return function() {
           var blob2 = activeBlob();
-          if (getStepLock(blob2, si)) return;
-          if (blob2[si] === 0xff) blob2[si] = 13;
+          if (blob2[si] === PITCH_EMPTY) blob2[si] = PITCH_DEFAULT;
           blob2[si] ^= 0x80;
-          // If slide just turned on, reset ratchet to 1x
           if (!!(blob2[si] & 0x80)) setRatchet(blob2, si, 0);
           pushHistory(activeGroup, activePat);
           saveGroupsToLS();
@@ -1789,53 +1770,38 @@
           recomputeDirty();
           scheduleLiveSend();
         };
-      })(s, sBtn));
-
-      var lBtn = document.createElement('button');
-      lBtn.className = 'f-btn f-lock' + (locked ? ' f-on f-lock-active' : '');
-      lBtn.textContent = 'L';
-      lBtn.title = 'Step lock — locked steps ignore edits; click to toggle';
-      lBtn.addEventListener('click', (function(si) {
-        return function(ev) {
-          ev.preventDefault();
-          toggleStepLockAtStep(si);
-        };
       })(s));
 
       flagRow.appendChild(aBtn);
       flagRow.appendChild(sBtn);
-      flagRow.appendChild(lBtn);
       card.appendChild(flagRow);
 
-      // Ratchet row — only active on NOTE steps without slide or slide destination
+      // Ratchet — single 2× toggle, only active on NOTE steps without slide
       var ratchetRow = document.createElement('div');
       ratchetRow.className = 'step-ratchet';
       var curRatchet = getRatchet(blob, s);
       var isSlideTarget = noteStep && prevNoteHasSlide(blob, s, len);
-      var ratchetDisabled = !noteStep || sl || isSlideTarget || locked;
-      [0, 1, 2].forEach(function(rv) {
-        var rb = document.createElement('button');
-        rb.type = 'button';
-        rb.className = 'r-btn' + (curRatchet === rv ? ' is-on' : '');
-        rb.textContent = (rv + 1) + 'x';
-        rb.disabled = ratchetDisabled;
-        rb.title = (rv + 1) + 'x ratchet' + (!noteStep ? ' (note steps only)' : sl ? ' (disabled on slide source)' : isSlideTarget ? ' (disabled on slide destination)' : '');
-        rb.addEventListener('click', (function(si, val) {
-          return function() {
-            var blob2 = activeBlob();
-            if (getStepLock(blob2, si)) return;
-            if (getTime(blob2, si) !== 1) return;
-            if (blob2[si] !== 0xff && !!(blob2[si] & 0x80)) return; // slide on
-            setRatchet(blob2, si, val);
-            pushHistory(activeGroup, activePat);
-            saveGroupsToLS();
-            renderGrid();
-            recomputeDirty();
-            scheduleLiveSend();
-          };
-        })(s, rv));
-        ratchetRow.appendChild(rb);
-      });
+      var ratchetDisabled = !noteStep || sl || isSlideTarget;
+      var rb = document.createElement('button');
+      rb.type = 'button';
+      rb.className = 'r-btn' + (curRatchet ? ' is-on' : '');
+      rb.textContent = curRatchet ? '2×' : '1×';
+      rb.disabled = ratchetDisabled;
+      rb.title = '2× ratchet' + (!noteStep ? ' (note steps only)' : sl ? ' (disabled on slide source)' : isSlideTarget ? ' (disabled on slide destination)' : '');
+      rb.addEventListener('click', (function(si) {
+        return function() {
+          var blob2 = activeBlob();
+          if (getTime(blob2, si) !== 1) return;
+          if (blob2[si] !== PITCH_EMPTY && !!(blob2[si] & 0x80)) return;
+          setRatchet(blob2, si, getRatchet(blob2, si) ? 0 : 1);
+          pushHistory(activeGroup, activePat);
+          saveGroupsToLS();
+          renderGrid();
+          recomputeDirty();
+          scheduleLiveSend();
+        };
+      })(s));
+      ratchetRow.appendChild(rb);
       card.appendChild(ratchetRow);
 
       gridEl.appendChild(card);
@@ -1844,8 +1810,8 @@
 
   function syncBlob() {
     var blob = activeBlob();
-    var len = Math.min(groupMaxSteps(), Math.max(1, Number(document.getElementById('patLen').value) | 0));
-    blob[127] = len;
+    var len = Math.min(patternMaxSteps(blob), Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    blob[LEN_OFF] = len;
     var syncRoot = (patChain.length > 1)
       ? (document.querySelector('.chain-pat-section.is-active') || document)
       : document;
@@ -1853,10 +1819,9 @@
     for (var i = 0; i < cards.length; i++) {
       var si   = Number(cards[i].dataset.s);
       if (getTime(blob, si) !== 1) continue;
-      if (getStepLock(blob, si)) continue;
       var wrap = cards[i].querySelector('.pitch-knob-wrap');
       if (wrap) {
-        var flags = blob[si] & 0xc0;
+        var flags = blob[si] & 0xC0;
         var pk;
         if (pitchEditorFullRange) {
           var lin = Number(wrap.dataset.lin);
@@ -1865,14 +1830,12 @@
           var key = Number(wrap.dataset.key);
           if (!isNaN(key)) {
             key = Math.max(0, Math.min(12, key | 0));
-            var e0 = blob[si] & 0x3f;
-            if (e0 > PITCH_MAX) e0 = PITCH_MAX;
-            var oct = Math.floor(e0 / 13);
-            pk = Math.min(key + 13 * oct, PITCH_MAX);
+            var oct = (blob[si] !== PITCH_EMPTY) ? ((blob[si] >> 4) & 0x03) : 1;
+            pk = (key & 0x0F) | (oct << 4);
           }
         }
         if (pk !== undefined) {
-          if (blob[si] !== 0xff) blob[si] = pk | flags;
+          if (blob[si] !== PITCH_EMPTY) blob[si] = pk | flags;
           else blob[si] = pk;
         }
       }
@@ -1885,14 +1848,14 @@
     var pct;
     if (pitchEditorFullRange) {
       var lin = Number(wrap.dataset.lin);
-      if (isNaN(lin)) lin = clampFullLinear(unpackLinear(blob[s] & 0x3f));
+      if (isNaN(lin)) lin = clampFullLinear(unpackLinear(blob[s] & PITCH_PACK_MASK));
       else lin = clampFullLinear(lin);
       wrap.dataset.lin = String(lin);
       var spanF = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
       pct = spanF > 0 ? ((lin - PITCH_FULL_LIN_MIN) / spanF) * 100 : 0;
     } else {
       var keyIdx = Number(wrap.dataset.key);
-      if (isNaN(keyIdx)) keyIdx = (blob[s] & 0x3f) % 13;
+      if (isNaN(keyIdx)) keyIdx = blob[s] & 0x0F;
       keyIdx = Math.max(0, Math.min(12, keyIdx | 0));
       wrap.dataset.key = String(keyIdx);
       pct = (keyIdx / 12) * 100;
@@ -1900,11 +1863,11 @@
     thumb.style.bottom = pct + '%';
     fill.style.height  = pct + '%';
     if (blob && nameEl) updateDisplayLabels(blob, s, len, nameEl);
-    if (pitchEditorFullRange && blob && wrap && getTime(blob, s) === 1 && !getStepLock(blob, s))
+    if (pitchEditorFullRange && blob && wrap && getTime(blob, s) === 1)
       syncOctRowFromBlob(wrap, blob, s);
   }
 
-  /** Live-update down/norm/up/2× highlights while dragging full-range slider (renderGrid only sets them once). */
+  /** Live-update DOWN/CENTRE/UP/2×UP highlights while dragging full-range slider. */
   function syncOctRowFromBlob(wrap, blob, s) {
     if (!wrap || !blob) return;
     var card = wrap.closest('.step-card');
@@ -1912,8 +1875,8 @@
     var row = card.querySelector('.step-oct-row');
     if (!row) return;
     var raw = blob[s];
-    if (raw === 0xff) return;
-    var sel = octButtonFromPacked(raw & 0x3f, true);
+    if (raw === PITCH_EMPTY) return;
+    var sel = octButtonFromPacked(raw & PITCH_PACK_MASK, true);
     var btns = row.querySelectorAll('.f-btn-o');
     for (var i = 0; i < btns.length; i++)
       btns[i].classList.toggle('is-on', i === sel);
@@ -1931,7 +1894,6 @@
     }
     var dragging = false;
     function onDown(ev) {
-      if (getStepLock(activeBlob(), step)) return;
       track.setPointerCapture(ev.pointerId);
       dragging = true;
       applyDrag(ev.clientY);
@@ -1953,27 +1915,24 @@
     function applyDrag(clientY) {
       var blob2 = activeBlob();
       var L = currentPatLen();
-      if (getStepLock(blob2, step) || getTime(blob2, step) === 2) return;
+      if (getTime(blob2, step) === 2) return;
       var pk, v = valueFromY(clientY);
-      var flags = blob2[step] & 0xc0;
+      var flags = blob2[step] & 0xC0;
       if (pitchEditorFullRange) {
         pk = linearToPacked(v);
         wrap.dataset.lin = String(v);
       } else {
-        var e0 = blob2[step] & 0x3f;
-        if (e0 > PITCH_MAX) e0 = PITCH_MAX;
-        var oct = Math.floor(e0 / 13);
-        pk = Math.min(v + 13 * oct, PITCH_MAX);
+        var oct = (blob2[step] !== PITCH_EMPTY) ? ((blob2[step] >> 4) & 0x03) : 1;
+        pk = (v & 0x0F) | (oct << 4);
         wrap.dataset.key = String(v);
       }
       if (scaleLockEnabled) {
-        // Update snapshot with intended (unsnapped) value so lock-off restores it
         if (scaleLockSnaps[activeGroup] && scaleLockSnaps[activeGroup][activePat]) {
-          scaleLockSnaps[activeGroup][activePat][step] = (blob2[step] !== 0xff) ? (pk | flags) : pk;
+          scaleLockSnaps[activeGroup][activePat][step] = (blob2[step] !== PITCH_EMPTY) ? (pk | flags) : pk;
         }
-        pk = linearToPacked(snapLinToScale(unpackLinear(pk & 0x3f)));
+        pk = linearToPacked(snapLinToScale(unpackLinear(pk & PITCH_PACK_MASK)));
       }
-      blob2[step] = (blob2[step] !== 0xff) ? (pk | flags) : pk;
+      blob2[step] = (blob2[step] !== PITCH_EMPTY) ? (pk | flags) : pk;
       layoutPitchKnob(wrap, nameEl, blob2, step, L);
     }
     track.addEventListener('pointerdown', onDown);
@@ -2037,7 +1996,8 @@
     midiOut.send(msg);
   }
   function requestPattern(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15])); }
-  function sendPattern(pat, raw) {
+  function sendPattern(pat, blob) {
+    var raw = buildWireFromBlob(blob);
     var x = xorBlob(raw), packed = pack7(raw);
     var inner = new Uint8Array(5 + packed.length);
     inner[0] = 0x7d; inner[1] = 0x12; inner[2] = pat & 15;
@@ -2046,7 +2006,7 @@
     sendSysex(inner);
   }
   var currentDirection = 0;
-  var kDirNames = ['Fwd', 'Rev', 'Ping', 'Rnd', 'Half'];
+  var kDirNames = ['Fwd', 'Rev', 'Ping', 'Rnd', 'Half', 'Brn'];
 
   function setActiveDirection(dir) {
     currentDirection = dir & 0x07;
@@ -2085,7 +2045,8 @@
     }, 1500);
   }
   function sendCfgWrite(ch, flags, dir, bri) {
-    var d = (dir === undefined) ? currentDirection : (dir & 0x07);
+    // <dir> kept for protocol compatibility but ignored by firmware (per-pattern now).
+    var d = (dir === undefined) ? 0 : (dir & 0x07);
     var b = (bri === undefined) ? 8 : (bri & 0x7f);
     sendSysex(new Uint8Array([0x7d, 0x22, ch & 0x7f, flags & 0x7f, d & 0x7f, b]));
   }
@@ -2103,17 +2064,13 @@
   function sendLengthUpdate(pat, len) {
     sendSysex(new Uint8Array([0x7d, 0x18, pat & 0x0f, len & 0x7f]));
   }
-  function sendStepLockUpdate(pat, step, locked) {
-    sendSysex(new Uint8Array([0x7d, 0x19, pat & 0x0f, step & 0x3f, locked ? 1 : 0]));
-  }
   function sendRatchetUpdate(pat, step, val) {
-    sendSysex(new Uint8Array([0x7d, 0x1b, pat & 0x0f, step & 0x3f, val & 0x03]));
+    sendSysex(new Uint8Array([0x7d, 0x1b, pat & 0x0f, step & 0x3f, val & 0x01]));
   }
 
   /** Send per-step deltas to the 303 by diffing current blob against lastSentBlob. */
   function sendDelta(pat, blob) {
-    var len = blob[127];
-    // Send changed steps (pitch byte + time nibble)
+    var len = getLength(blob);
     for (var i = 0; i < len; i++) {
       var pitchChanged = !lastSentBlob || blob[i] !== lastSentBlob[i];
       var timeChanged  = !lastSentBlob || getTime(blob, i) !== getTime(lastSentBlob, i);
@@ -2121,27 +2078,12 @@
         sendStepUpdate(pat, i, blob[i], getTime(blob, i));
       }
     }
-    // Send step lock changes
-    for (var i = 0; i < len; i++) {
-      var curLock  = getStepLock(blob, i);
-      var prevLock = lastSentBlob ? getStepLock(lastSentBlob, i) : false;
-      if (curLock !== prevLock) {
-        sendStepLockUpdate(pat, i, curLock);
-      }
+    for (var j = 0; j < len; j++) {
+      var curRat  = getRatchet(blob, j);
+      var prevRat = lastSentBlob ? getRatchet(lastSentBlob, j) : 0;
+      if (curRat !== prevRat) sendRatchetUpdate(pat, j, curRat);
     }
-    // Send ratchet changes
-    for (var i = 0; i < len; i++) {
-      var curRat  = getRatchet(blob, i);
-      var prevRat = lastSentBlob ? getRatchet(lastSentBlob, i) : 0;
-      if (curRat !== prevRat) {
-        sendRatchetUpdate(pat, i, curRat);
-      }
-    }
-    // Send length change
-    if (!lastSentBlob || len !== lastSentBlob[127]) {
-      sendLengthUpdate(pat, len);
-    }
-    // Update snapshot
+    if (!lastSentBlob || len !== getLength(lastSentBlob)) sendLengthUpdate(pat, len);
     lastSentBlob = new Uint8Array(blob);
     lastSentPat  = pat;
   }
@@ -2159,7 +2101,7 @@
     syncBlob();
     var pat  = activePat & 15;
     var blob = activeBlob();
-    log('Push pattern ' + (pat + 1) + ' to 303 (' + blob[127] + ' steps)', 'log-syx');
+    log('Push pattern ' + (pat + 1) + ' to 303 (' + getLength(blob) + ' steps)', 'log-syx');
     sendPattern(pat, blob);
     lastSentBlob = new Uint8Array(blob);
     lastSentPat  = pat;
@@ -2174,36 +2116,35 @@
       liveTimer = null;
       var pat  = activePat & 15;
       var blob = activeBlob();
-      // Only block when we *know* the hardware is on a different group. If
-      // hwGroup is -1 we haven't heard back from the 303 yet (MIDI IN not
-      // routed) — proceed anyway; dropping silently makes the editor look
-      // like it's doing nothing.
       if (hwGroup >= 0 && activeGroup !== hwGroup) {
         log('Live send skipped: activeGroup ' + (activeGroup+1) + ' != hwGroup ' + (hwGroup+1), 'log-err');
         return;
       }
       var haveBaseline = !!lastSentBlob && lastSentPat === pat;
-      var len = blob[127] | 0;
+      var len = getLength(blob);
       var diffCount = 0;
+      // Per-step diffs we can ship via 0x16 / 0x1B
       if (haveBaseline) {
         for (var d = 0; d < len; d++) {
           if (blob[d] !== lastSentBlob[d]) diffCount++;
           else if (getTime(blob, d) !== getTime(lastSentBlob, d)) diffCount++;
-          else if (getStepLock(blob, d) !== getStepLock(lastSentBlob, d)) diffCount++;
           else if (getRatchet(blob, d) !== getRatchet(lastSentBlob, d)) diffCount++;
         }
       } else {
         diffCount = len;
       }
-      // One 0x12 (~154 bytes) beats many 0x16s (~9 bytes each) once diffs pile up.
-      // 6 step deltas ≈ one full-pattern send; above that, send the blob once.
-      if (diffCount > 6) {
+      // Pattern-level fields that don't have a per-field SysEx → force full pattern
+      // push if any of these changed (direction, triplet, transpose, engine_select).
+      var metaChanged = !haveBaseline ||
+        blob[RES0_OFF] !== lastSentBlob[RES0_OFF] ||
+        blob[TRANSPOSE_OFF] !== lastSentBlob[TRANSPOSE_OFF] ||
+        blob[ENGINE_OFF] !== lastSentBlob[ENGINE_OFF];
+      if (metaChanged || diffCount > 6) {
         sendPattern(pat, blob);
       } else if (haveBaseline) {
         sendDelta(pat, blob);
       } else {
         for (var i = 0; i < len; i++) sendStepUpdate(pat, i, blob[i], getTime(blob, i));
-        for (var j = 0; j < len; j++) sendStepLockUpdate(pat, j, getStepLock(blob, j));
         for (var k = 0; k < len; k++) sendRatchetUpdate(pat, k, getRatchet(blob, k));
         sendLengthUpdate(pat, len);
       }
@@ -2237,7 +2178,7 @@
     log('syxInner: cmd=0x' + cmd.toString(16) + ' len=' + bytes.length + ' expectDump=' + expectDump, 'log-syx');
 
     if (cmd === 0x11) {
-      if (bytes.length < 5 + 147) { log('0x11 too short', 'log-err'); return; }
+      if (bytes.length < 5 + PACKED_SIZE) { log('0x11 too short (' + bytes.length + ')', 'log-err'); return; }
       var pat = bytes[2];
       var cx  = bytes[3] | (bytes[4] << 7);
       var raw = unpack7(bytes.subarray(5), PATTERN_SIZE);
@@ -2256,22 +2197,21 @@
           bulkNextPat = -1;
           hideSyncOverlay();
         } else {
-          // Request next pattern immediately
           sendSysex(new Uint8Array([0x7d, 0x10, bulkNextPat & 15]));
           bulkNextPat++;
         }
       } else {
         log('Pattern ' + (pat+1) + ' received', 'log-syx');
       }
-      // Bulk dump: fill the group that was active when the request started. Single request / save
-      // echo: use the group currently being edited.
       var g = inBulk ? patternBulkTargetGroup : activeGroup;
-      sanitizeStashAfterLoad(raw);
-      normalizePatternTimes(raw, raw[127]);
-      groups[g][pat].set(raw);
-      // Keep delta baseline in sync with what the hardware has
+      // Wire blob has pitch[] in NOTE-event order. Expand to per-time-step
+      // for the editor's in-memory layout.
+      var dst = new Uint8Array(PATTERN_SIZE);
+      applyWireToBlob(dst, raw);
+      normalizePatternTimes(dst, getLength(dst));
+      groups[g][pat].set(dst);
       if (g === hwGroup) {
-        lastSentBlob = new Uint8Array(raw);
+        lastSentBlob = new Uint8Array(dst);
         lastSentPat  = pat;
       }
       pushHistory(g, pat);
@@ -2279,7 +2219,7 @@
       saveGroupsToLS();
 
       if (activeGroup === g && pat === activePat) {
-        document.getElementById('patLen').value = String(raw[127]);
+        syncPatternToolbar();
         renderGrid();
       }
       recomputeDirty();
@@ -2371,42 +2311,11 @@
       var pitchByte = (bytes[4] & 0x7f) | ((bytes[5] & 0x01) << 7);
       var timeNibble = bytes[6] & 0x0f;
       var rBlob = groups[hwGroup][rPat];
-      rBlob[rStep] = pitchByte;
+      rBlob[rStep] = (timeNibble === 1) ? pitchByte : PITCH_EMPTY;
       setTime(rBlob, rStep, timeNibble);
-      // Keep delta baseline in sync so we don't re-send hardware's own edits
       if (lastSentBlob && lastSentPat === rPat) {
-        lastSentBlob[rStep] = pitchByte;
+        lastSentBlob[rStep] = (timeNibble === 1) ? pitchByte : PITCH_EMPTY;
         setTime(lastSentBlob, rStep, timeNibble);
-      }
-      saveGroupsToLS();
-      // Re-render if this is the currently visible pattern
-      if (activeGroup === hwGroup && rPat === activePat) {
-        renderGrid();
-      }
-      recomputeDirty();
-      if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
-      reflect303HistTimer = setTimeout(function() {
-        reflect303HistTimer = null;
-        pushHistory(hwGroup, rPat);
-        recomputeDirty();
-      }, 1200);
-      return;
-    }
-
-    if (cmd === 0x19 && bytes.length >= 5) {
-      if (!reflect303Enabled) return;
-      var rPat  = bytes[2] & 0x0f;
-      var rStep = bytes[3] & 0x3f;
-      var rLock = bytes[4] & 0x01;
-      var rBlob = groups[hwGroup][rPat];
-      var byteIdx = 96 + (rStep >> 3);
-      if (byteIdx < 104) {
-        if (rLock) rBlob[byteIdx] |= (1 << (rStep & 7));
-        else rBlob[byteIdx] &= ~(1 << (rStep & 7));
-      }
-      if (lastSentBlob && lastSentPat === rPat && byteIdx < 104) {
-        if (rLock) lastSentBlob[byteIdx] |= (1 << (rStep & 7));
-        else lastSentBlob[byteIdx] &= ~(1 << (rStep & 7));
       }
       saveGroupsToLS();
       if (activeGroup === hwGroup && rPat === activePat) renderGrid();
@@ -2420,11 +2329,16 @@
       return;
     }
 
+    if (cmd === 0x19) {
+      // Step-lock SysEx is a no-op in v0.6 (RAM-only on hardware, no UI here).
+      return;
+    }
+
     if (cmd === 0x1b && bytes.length >= 5) {
       if (!reflect303Enabled) return;
       var rPat  = bytes[2] & 0x0f;
       var rStep = bytes[3] & 0x3f;
-      var rVal  = bytes[4] & 0x03;
+      var rVal  = bytes[4] & 0x01;
       var rBlob = groups[hwGroup][rPat];
       setRatchet(rBlob, rStep, rVal);
       if (lastSentBlob && lastSentPat === rPat) setRatchet(lastSentBlob, rStep, rVal);
@@ -2435,19 +2349,27 @@
     }
 
     if (cmd === 0x17 && bytes.length >= 3) {
-      setActiveDirection(bytes[2] & 0x07);
-      log('Direction: ' + (kDirNames[currentDirection] || currentDirection), 'log-ack');
+      var newDir = bytes[2] & DIR_MASK;
+      if (hwGroup >= 0 && playingPat >= 0) {
+        setDirection(groups[hwGroup][playingPat], newDir);
+        if (lastSentBlob && lastSentPat === playingPat) setDirection(lastSentBlob, newDir);
+        saveGroupsToLS();
+      }
+      setActiveDirection(newDir);
+      log('Direction: ' + (kDirNames[newDir] || newDir), 'log-ack');
       return;
     }
 
     if (cmd === 0x18 && bytes.length >= 4) {
+      var lPat = bytes[2] & 0x0f;
+      var lBlob = (hwGroup >= 0 && lPat < 16) ? groups[hwGroup][lPat] : null;
+      var cap = lBlob ? patternMaxSteps(lBlob) : MAX_STEPS;
       var newLen = bytes[3] & 0x7f;
       if (newLen < 1) newLen = 1;
-      if (newLen > 16) newLen = 16;
-      var lPat = bytes[2] & 0x0f;
-      if (lPat < 16) groups[hwGroup][lPat][127] = newLen;
-      if (lastSentBlob && lastSentPat === lPat) lastSentBlob[127] = newLen;
-      if (lPat === activePat) {
+      if (newLen > cap) newLen = cap;
+      if (lBlob) lBlob[LEN_OFF] = newLen;
+      if (lastSentBlob && lastSentPat === lPat) lastSentBlob[LEN_OFF] = newLen;
+      if (activeGroup === hwGroup && lPat === activePat) {
         document.getElementById('patLen').value = String(newLen);
         renderGrid();
       }
@@ -2483,7 +2405,7 @@
       document.getElementById('cfgMidiCh').value   = String(ch);
       document.getElementById('cfgMidiClk').value  = String(fl & 1);
       document.getElementById('cfgMidiThru').value = String((fl >> 1) & 1);
-      if (bytes.length >= 5) setActiveDirection(bytes[4] & 0x07);
+      // Byte 4 (legacy global direction) is ignored — direction is per-pattern in v0.6.
       var briStr = '';
       if (bytes.length >= 6) {
         var br = bytes[5];
@@ -2689,28 +2611,31 @@
   }
 
   // ── Save JSON ──────────────────────────────────────────────────────
-  var JSON_VERSION = 2;
+  // v3: OS-303 v0.6 layout. drops pitch_stash, adds direction/triplet/transpose/ratchet.
+  var JSON_VERSION = 3;
   function nowISO() { return new Date().toISOString(); }
 
   function patternToJSON(g, p) {
     var blob = groups[g][p];
-    var len = blob[127];
+    var len = getLength(blob);
     var steps = [];
     for (var s = 0; s < len; s++) {
       var raw = blob[s], t = getTime(blob, s);
       steps.push({
-        time:   t,
-        pitch:  (raw === 0xff) ? null : (raw & 0x3f),
-        accent: (raw !== 0xff) ? !!(raw & 0x40) : false,
-        slide:  (raw !== 0xff) ? !!(raw & 0x80) : false
+        time:    t,
+        pitch:   (raw === PITCH_EMPTY) ? null : (raw & PITCH_PACK_MASK),
+        accent:  (raw !== PITCH_EMPTY) ? !!(raw & 0x40) : false,
+        slide:   (raw !== PITCH_EMPTY) ? !!(raw & 0x80) : false,
+        ratchet: !!getRatchet(blob, s)
       });
     }
-    var sc = getStashCount(blob);
-    var stash = [];
-    for (var k = 0; k < sc; k++) stash.push(blob[len + k] & 0xff);
     return {
-      group: g + 1, pattern: p + 1, length: len, steps: steps,
-      pitch_stash_count: sc, pitch_stash: stash
+      group: g + 1, pattern: p + 1, length: len,
+      direction: getDirection(blob),
+      triplet: isTriplet(blob),
+      transpose: getTranspose(blob),
+      engine_select: blob[ENGINE_OFF] | 0,
+      steps: steps
     };
   }
 
@@ -2763,7 +2688,7 @@
     if (![0,1,2].includes(step.time))
       throw new Error('Step ' + stepIdx + ': invalid time ' + step.time);
     if (step.pitch !== null) {
-      if (typeof step.pitch !== 'number' || !Number.isInteger(step.pitch) || step.pitch < 0 || step.pitch > PITCH_MAX)
+      if (typeof step.pitch !== 'number' || !Number.isInteger(step.pitch) || step.pitch < 0 || step.pitch > 0xFF)
         throw new Error('Step ' + stepIdx + ': invalid pitch ' + step.pitch);
     }
     if (typeof step.accent !== 'boolean')
@@ -2783,51 +2708,35 @@
     if (!Array.isArray(pd.steps) || pd.steps.length !== pd.length)
       throw new Error('Pattern ' + patIdx + ': steps length mismatch');
     for (var si = 0; si < pd.steps.length; si++) validateStep(pd.steps[si], si + 1);
-    if (pd.pitch_stash_count != null || pd.pitch_stash != null) {
-      if (typeof pd.pitch_stash_count !== 'number' || pd.pitch_stash_count < 0 || pd.pitch_stash_count > MAX_STEPS)
-        throw new Error('Pattern ' + patIdx + ': invalid pitch_stash_count');
-      if (!Array.isArray(pd.pitch_stash))
-        throw new Error('Pattern ' + patIdx + ': pitch_stash must be an array');
-      if (pd.pitch_stash.length !== pd.pitch_stash_count)
-        throw new Error('Pattern ' + patIdx + ': pitch_stash length mismatch');
-      for (var pj = 0; pj < pd.pitch_stash.length; pj++) {
-        var ps = pd.pitch_stash[pj];
-        if (typeof ps !== 'number' || !Number.isInteger(ps) || ps < 0 || ps > 255)
-          throw new Error('Pattern ' + patIdx + ': invalid pitch_stash[' + pj + ']');
-      }
-    }
   }
   function applyPatJSON(pd) {
     var g = pd.group - 1, p = pd.pattern - 1;
     var blob = groups[g][p];
-    var len = pd.length;
-    blob[127] = len;
-    // Clear time data
-    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    // Reset blob (preserve nothing — JSON is the source of truth)
+    for (var z = 0; z < PATTERN_SIZE; z++) blob[z] = 0;
+    for (var z2 = 0; z2 < MAX_STEPS; z2++) blob[z2] = PITCH_EMPTY;
+    setTriplet(blob, !!pd.triplet);
+    setDirection(blob, (pd.direction | 0) & DIR_MASK);
+    setTranspose(blob, pd.transpose | 0);
+    blob[ENGINE_OFF] = (pd.engine_select | 0) & 0xFF;
+    var len = Math.min(patternMaxSteps(blob), pd.length);
+    blob[LEN_OFF] = len;
     for (var s = 0; s < len; s++) {
       var st = pd.steps[s];
       setTime(blob, s, st.time);
       if (st.pitch !== null) {
         var flags = (st.accent ? 0x40 : 0) | (st.slide ? 0x80 : 0);
-        blob[s] = (st.pitch & 0x3f) | flags;
+        blob[s] = clampPackedByte((st.pitch & PITCH_PACK_MASK) | flags);
       } else {
-        blob[s] = 0xff;
+        blob[s] = PITCH_EMPTY;
       }
+      setRatchet(blob, s, st.ratchet ? 1 : 0);
     }
-    for (var sc = 0; sc < len; sc++)
-      if (blob[sc] !== 0xff) blob[sc] = clampPackedByte(blob[sc]);
     normalizePatternTimes(blob, len);
-    setStashCount(blob, 0);
-    if (pd.pitch_stash_count != null && Array.isArray(pd.pitch_stash) && pd.pitch_stash.length > 0) {
-      var scn = clampStashToBlob(blob, len, pd.pitch_stash_count);
-      setStashCount(blob, scn);
-      for (var ks = 0; ks < scn; ks++)
-        blob[len + ks] = clampPackedByte(pd.pitch_stash[ks] & 0xff);
-    }
     pushHistory(g, p);
     saveGroupsToLS();
     if (g === activeGroup && p === activePat) {
-      document.getElementById('patLen').value = String(len);
+      syncPatternToolbar();
       renderGrid();
     }
     recomputeDirty();
@@ -2844,7 +2753,7 @@
         var obj = JSON.parse(e.target.result);
         // Top-level validation
         if (typeof obj !== 'object' || obj === null)          throw new Error('Root is not an object');
-        if (obj.version !== 1 && obj.version !== 2)           throw new Error('Version mismatch: expected 1 or 2, got ' + obj.version);
+        if (obj.version !== 3)                                throw new Error('Version mismatch: expected 3, got ' + obj.version);
         if (!['pattern','bank','group','all'].includes(obj.type)) throw new Error('Unknown type: ' + obj.type);
         if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('data array missing or empty');
         // Validate all patterns before applying any
@@ -2926,10 +2835,10 @@
   };
   document.getElementById('btnClearPat').onclick = function() {
     var blob = activeBlob();
-    var keepLen = Math.max(1, blob[127] | 0);
+    var keepLen = Math.max(1, getLength(blob));
     clearPatternMinimalRest(blob);
-    blob[127] = keepLen;
-    document.getElementById('patLen').value = String(keepLen);
+    blob[LEN_OFF] = keepLen;
+    syncPatternToolbar();
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
     renderGrid();
@@ -2939,98 +2848,81 @@
   };
 
   // ── Randomize ──────────────────────────────────────────────────────
-  /** Returns true if the step-lock bit is set for step s (blob bytes 96–103). */
-  function isStepLocked(blob, s) {
-    return !!(blob[96 + (s >> 3)] & (1 << (s & 7)));
-  }
   /**
-   * Apply random packed pitches (0–38, 3 TB-303 octaves) to all NOTE steps.
-   * Accent and slide flags on existing steps are preserved unless clearFlags is true.
+   * Random pitch on every NOTE step. Octave weighted DOWN 25 / CENTRE 40 /
+   * UP 25 / DOUBLE_UP 10. Accent/slide flags preserved.
    */
+  function pickWeightedOctave() {
+    var r = Math.random();
+    if (r < 0.25) return 0; // DOWN
+    if (r < 0.65) return 1; // CENTRE
+    if (r < 0.90) return 2; // UP
+    return 3;               // DOUBLE_UP
+  }
   function applyRandomPitches(blob, len) {
     for (var s = 0; s < len; s++) {
-      if (isStepLocked(blob, s)) continue;
       if (getTime(blob, s) === 1) {
-        var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : 0;
-        blob[s] = (Math.floor(Math.random() * 39)) | flags; // 0..38 = 3 octaves
+        var flags = (blob[s] !== PITCH_EMPTY) ? (blob[s] & 0xC0) : 0;
+        var semi = Math.floor(Math.random() * 13);
+        blob[s] = ((semi & 0x0F) | (pickWeightedOctave() << 4)) | flags;
       }
     }
   }
-  /**
-   * Randomly assign time values (note/rest/tie) across all steps, then normalize
-   * and reflow pitch bytes to keep the pitch stream intact.
-   */
+  /** Random time: NOTE 60% / REST 25% / TIE 15% (TIE→REST guard preserved). */
   function applyRandomTime(blob, len) {
-    var timesBefore = snapshotTimes(blob, len);
-    var pitchState = snapshotPitchState(blob, len);
-    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    for (var t = 0; t < 16; t++) blob[TIME_OFF + t] = 0;
+    var prev = 1;
     for (var s = 0; s < len; s++) {
-      if (isStepLocked(blob, s)) { setTime(blob, s, timesBefore[s]); continue; }
       var r = Math.random();
-      setTime(blob, s, r < 0.55 ? 1 : r < 0.80 ? 0 : 2); // ~55% note, ~25% rest, ~20% tie
+      var tv;
+      if (s === 0)         tv = (r < 0.85) ? 1 : 0;       // first step never TIE
+      else if (prev === 0) tv = (r < 0.70) ? 1 : 0;       // can't TIE after REST
+      else                 tv = (r < 0.60) ? 1 : (r < 0.85) ? 0 : 2;
+      setTime(blob, s, tv);
+      if (tv !== 1) setRatchet(blob, s, 0);
+      prev = tv;
     }
     normalizePatternTimes(blob, len);
-    reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
+    // Initialize pitch on any newly-NOTE slot that's empty.
+    for (var k = 0; k < len; k++) {
+      if (getTime(blob, k) === 1 && blob[k] === PITCH_EMPTY) blob[k] = PITCH_DEFAULT;
+      if (getTime(blob, k) !== 1) blob[k] = PITCH_EMPTY;
+    }
   }
-  /**
-   * Randomize octave button (down/norm/up/2×up) on each NOTE step,
-   * keeping the note letter and accent/slide flags unchanged.
-   */
+  /** Random octave per NOTE step using the same weighted distribution. */
   function applyRandomOctave(blob, len) {
     for (var s = 0; s < len; s++) {
-      if (isStepLocked(blob, s)) continue;
-      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
-        var flags = blob[s] & 0xc0;
-        var p6 = blob[s] & 0x3f;
-        var key = p6 % 13;                        // note within octave (0-12)
-        var newOct = Math.floor(Math.random() * 4); // 0=down 1=norm 2=up 3=2xup
-        var newPacked = key + 13 * newOct;
-        if (newPacked > PITCH_MAX) newPacked = PITCH_MAX;
-        blob[s] = newPacked | flags;
+      if (getTime(blob, s) === 1 && blob[s] !== PITCH_EMPTY) {
+        var flags = blob[s] & 0xC0;
+        var semi = blob[s] & 0x0F;
+        blob[s] = flags | (semi & 0x0F) | (pickWeightedOctave() << 4);
       }
     }
   }
-  /**
-   * Randomly assign ratchet values to unlocked NOTE steps without slide.
-   * Distribution: ~50% no ratchet (1x), ~33% 2x, ~17% 3x.
-   * Clears ratchet on all other steps.
-   */
+  /** Random 2× ratchets, ~25% probability, only on NOTE steps without slide. */
   function applyRandomRatchets(blob, len) {
     for (var s = 0; s < len; s++) {
-      if (isStepLocked(blob, s)) continue;
-      var slide = blob[s] !== 0xff && (blob[s] & 0x80);
-      if (getTime(blob, s) === 1 && !slide) {
-        var r = Math.random();
-        var rv = r < 0.50 ? 0 : r < 0.83 ? 1 : 2;
-        setRatchet(blob, s, rv);
-      } else {
-        setRatchet(blob, s, 0);
-      }
+      var slide = blob[s] !== PITCH_EMPTY && (blob[s] & 0x80);
+      if (getTime(blob, s) === 1 && !slide && Math.random() < 0.25) setRatchet(blob, s, 1);
+      else setRatchet(blob, s, 0);
     }
   }
 
-  /**
-   * Randomly set accent (~20% probability) on existing NOTE steps, preserving pitch and slide.
-   */
+  /** Random accent flag (~30% on / 70% off) on existing NOTE steps. */
   function applyRandomAccent(blob, len) {
     for (var s = 0; s < len; s++) {
-      if (isStepLocked(blob, s)) continue;
-      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
-        blob[s] = (blob[s] & 0xbf) | (Math.random() < 0.20 ? 0x40 : 0);
+      if (getTime(blob, s) === 1 && blob[s] !== PITCH_EMPTY) {
+        blob[s] = (blob[s] & 0xBF) | (Math.random() < 0.30 ? 0x40 : 0);
       }
     }
   }
 
-  /**
-   * Randomly set slide (~15% probability) on existing NOTE steps, preserving pitch and accent.
-   * Clears ratchet on any step that gains a slide flag.
-   */
+  /** Random slide flag (~20% on / 80% off) on existing NOTE steps. */
   function applyRandomSlide(blob, len) {
     for (var s = 0; s < len; s++) {
-      if (isStepLocked(blob, s)) continue;
-      if (getTime(blob, s) === 1 && blob[s] !== 0xff) {
-        var slide = Math.random() < 0.15;
-        blob[s] = (blob[s] & 0x7f) | (slide ? 0x80 : 0);
+      if (getTime(blob, s) === 1 && blob[s] !== PITCH_EMPTY) {
+        var slide = Math.random() < 0.20;
+        blob[s] = (blob[s] & 0x7F) | (slide ? 0x80 : 0);
         if (slide) setRatchet(blob, s, 0);
       }
     }
@@ -3112,19 +3004,15 @@
    */
   function applyBrownianPitches(blob, len) {
     var STEP_MAX = 4;
-    var curLin = 12; // seed: C3
+    var curLin = 12; // seed: C centre
     for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) === 1 && blob[s] !== 0xff) { curLin = unpackLinear(blob[s] & 0x3f); break; }
+      if (getTime(blob, s) === 1 && blob[s] !== PITCH_EMPTY) { curLin = unpackLinear(blob[s] & PITCH_PACK_MASK); break; }
     }
-    for (var s = 0; s < len; s++) {
-      if (getTime(blob, s) !== 1) continue;
-      if (isStepLocked(blob, s)) {
-        if (blob[s] !== 0xff) curLin = unpackLinear(blob[s] & 0x3f);
-        continue;
-      }
+    for (var s2 = 0; s2 < len; s2++) {
+      if (getTime(blob, s2) !== 1) continue;
       curLin = Math.max(0, Math.min(48, curLin + Math.round((Math.random() * 2 - 1) * STEP_MAX)));
-      var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : 0;
-      blob[s] = linearToPacked(curLin) | flags;
+      var flags = (blob[s2] !== PITCH_EMPTY) ? (blob[s2] & 0xC0) : 0;
+      blob[s2] = linearToPacked(curLin) | flags;
     }
   }
   document.getElementById('btnRandBrownian').onclick = function() {
@@ -3157,14 +3045,14 @@
   }
 
   function snapPackedToScale(raw) {
-    if (raw === 0xff) return raw;
-    return linearToPacked(snapLinToScale(unpackLinear(raw & 0x3f))) | (raw & 0xc0);
+    if (raw === PITCH_EMPTY) return raw;
+    return linearToPacked(snapLinToScale(unpackLinear(raw & PITCH_PACK_MASK))) | (raw & 0xC0);
   }
 
   function ensureScaleSnap(g, p) {
     if (scaleLockSnaps[g][p] === null) {
-      var src = groups[g][p], snap = new Uint8Array(64);
-      for (var i = 0; i < 64; i++) snap[i] = src[i];
+      var src = groups[g][p], snap = new Uint8Array(MAX_STEPS);
+      for (var i = 0; i < MAX_STEPS; i++) snap[i] = src[i];
       scaleLockSnaps[g][p] = snap;
     }
   }
@@ -3172,13 +3060,12 @@
   function applySnapToBlob(g, p) {
     var blob = groups[g][p], snap = scaleLockSnaps[g][p];
     if (!snap) return;
-    var len = blob[127] || 16;
+    var len = getLength(blob);
     for (var s = 0; s < len; s++) {
-      if (isStepLocked(blob, s) || getTime(blob, s) !== 1) continue;
-      if (snap[s] === 0xff) { blob[s] = 0xff; continue; }
-      // Preserve current accent/slide flags; only snap the pitch bits.
-      var flags = (blob[s] !== 0xff) ? (blob[s] & 0xc0) : (snap[s] & 0xc0);
-      blob[s] = linearToPacked(snapLinToScale(unpackLinear(snap[s] & 0x3f))) | flags;
+      if (getTime(blob, s) !== 1) continue;
+      if (snap[s] === PITCH_EMPTY) { blob[s] = PITCH_EMPTY; continue; }
+      var flags = (blob[s] !== PITCH_EMPTY) ? (blob[s] & 0xC0) : (snap[s] & 0xC0);
+      blob[s] = linearToPacked(snapLinToScale(unpackLinear(snap[s] & PITCH_PACK_MASK))) | flags;
     }
   }
 
@@ -3186,12 +3073,11 @@
     var snap = scaleLockSnaps[g][p];
     if (!snap) return;
     var blob = groups[g][p];
-    for (var i = 0; i < 64; i++) {
-      if (snap[i] === 0xff || blob[i] === 0xff) {
-        blob[i] = snap[i]; // PITCH_EMPTY state: restore as-is
+    for (var i = 0; i < MAX_STEPS; i++) {
+      if (snap[i] === PITCH_EMPTY || blob[i] === PITCH_EMPTY) {
+        blob[i] = snap[i];
       } else {
-        // Restore pre-lock pitch bits only; keep current accent/slide flags.
-        blob[i] = (snap[i] & 0x3f) | (blob[i] & 0xc0);
+        blob[i] = (snap[i] & PITCH_PACK_MASK) | (blob[i] & 0xC0);
       }
     }
     scaleLockSnaps[g][p] = null;
@@ -3361,11 +3247,9 @@
   function nudgePattern(blob, len, mode, direction) {
     if (len < 2) return;
 
-    // ── Helpers shared by NOTE-step modes ──────────────────────────
-    function noteUnlocked() {
+    function noteSteps() {
       var a = [];
-      for (var s = 0; s < len; s++)
-        if (getTime(blob, s) === 1 && !getStepLock(blob, s)) a.push(s);
+      for (var s = 0; s < len; s++) if (getTime(blob, s) === 1) a.push(s);
       return a;
     }
     function rotate(arr) {
@@ -3374,7 +3258,7 @@
     }
 
     if (mode === 'pitch') {
-      var ns = noteUnlocked(); if (ns.length < 2) return;
+      var ns = noteSteps(); if (ns.length < 2) return;
       var pitches  = ns.map(function(s) { return blob[s]; });
       var ratchets = ns.map(function(s) { return getRatchet(blob, s); });
       rotate(pitches); rotate(ratchets);
@@ -3384,73 +3268,62 @@
       }
 
     } else if (mode === 'octave') {
-      // Rotate the packed octave button (0–3) among NOTE steps; key and flags stay put.
-      var ns = noteUnlocked(); if (ns.length < 2) return;
-      var octs = ns.map(function(s) { return Math.floor((blob[s] & 0x3f) / 13); });
+      var ns2 = noteSteps(); if (ns2.length < 2) return;
+      var octs = ns2.map(function(s) { return (blob[s] >> 4) & 0x03; });
       rotate(octs);
-      for (var i = 0; i < ns.length; i++) {
-        var key   = (blob[ns[i]] & 0x3f) % 13;
-        var flags = blob[ns[i]] & 0xc0;
-        blob[ns[i]] = (key + 13 * octs[i]) | flags;
+      for (var io = 0; io < ns2.length; io++) {
+        var semi = blob[ns2[io]] & 0x0F;
+        var flags = blob[ns2[io]] & 0xC0;
+        blob[ns2[io]] = flags | (semi & 0x0F) | (octs[io] << 4);
       }
 
     } else if (mode === 'accent') {
-      // Rotate accent flags (bit 6) among NOTE steps.
-      var ns = noteUnlocked(); if (ns.length < 2) return;
-      var accs = ns.map(function(s) { return (blob[s] >> 6) & 1; });
+      var ns3 = noteSteps(); if (ns3.length < 2) return;
+      var accs = ns3.map(function(s) { return (blob[s] >> 6) & 1; });
       rotate(accs);
-      for (var i = 0; i < ns.length; i++)
-        blob[ns[i]] = (blob[ns[i]] & 0xbf) | (accs[i] << 6);
+      for (var ia = 0; ia < ns3.length; ia++)
+        blob[ns3[ia]] = (blob[ns3[ia]] & 0xBF) | (accs[ia] << 6);
 
     } else if (mode === 'slide') {
-      // Rotate slide flags (bit 7) among NOTE steps.
-      var ns = noteUnlocked(); if (ns.length < 2) return;
-      var sls = ns.map(function(s) { return (blob[s] >> 7) & 1; });
+      var ns4 = noteSteps(); if (ns4.length < 2) return;
+      var sls = ns4.map(function(s) { return (blob[s] >> 7) & 1; });
       rotate(sls);
-      for (var i = 0; i < ns.length; i++)
-        blob[ns[i]] = (blob[ns[i]] & 0x7f) | (sls[i] << 7);
+      for (var is = 0; is < ns4.length; is++)
+        blob[ns4[is]] = (blob[ns4[is]] & 0x7F) | (sls[is] << 7);
 
     } else if (mode === 'ratchet') {
-      // Rotate ratchet values among NOTE steps.
-      var ns = noteUnlocked(); if (ns.length < 2) return;
-      var rats = ns.map(function(s) { return getRatchet(blob, s); });
+      var ns5 = noteSteps(); if (ns5.length < 2) return;
+      var rats = ns5.map(function(s) { return getRatchet(blob, s); });
       rotate(rats);
-      for (var i = 0; i < ns.length; i++) setRatchet(blob, ns[i], rats[i]);
+      for (var ir = 0; ir < ns5.length; ir++) setRatchet(blob, ns5[ir], rats[ir]);
 
     } else if (mode === 'time') {
-      // Rotate time values + ratchets among all unlocked steps; pitches reflow.
-      var ul = [];
-      for (var s = 0; s < len; s++) if (!getStepLock(blob, s)) ul.push(s);
-      if (ul.length < 2) return;
-      var timesBefore = snapshotTimes(blob, len);
-      var pitchState  = snapshotPitchState(blob, len);
-      var times    = ul.map(function(s) { return getTime(blob, s); });
-      var ratchets = ul.map(function(s) { return getRatchet(blob, s); });
-      rotate(times); rotate(ratchets);
-      for (var i = 0; i < ul.length; i++) {
-        setTime(blob, ul[i], times[i]);
-        setRatchet(blob, ul[i], ratchets[i]);
+      var times    = []; for (var st = 0; st < len; st++) times.push(getTime(blob, st));
+      var ratchets2 = []; for (var st2 = 0; st2 < len; st2++) ratchets2.push(getRatchet(blob, st2));
+      rotate(times); rotate(ratchets2);
+      for (var iz = 0; iz < len; iz++) {
+        setTime(blob, iz, times[iz]);
+        setRatchet(blob, iz, ratchets2[iz]);
       }
       normalizePatternTimes(blob, len);
-      reflowPitchesAfterTimeChange(blob, len, timesBefore, pitchState);
-      for (var s = 0; s < len; s++) if (getTime(blob, s) !== 1) setRatchet(blob, s, 0);
+      for (var sk = 0; sk < len; sk++) {
+        if (getTime(blob, sk) === 1 && blob[sk] === PITCH_EMPTY) blob[sk] = PITCH_DEFAULT;
+        if (getTime(blob, sk) !== 1) { blob[sk] = PITCH_EMPTY; setRatchet(blob, sk, 0); }
+      }
 
     } else { // 'all' — rotate every attribute as a unit
-      var ul = [];
-      for (var s = 0; s < len; s++) if (!getStepLock(blob, s)) ul.push(s);
-      if (ul.length < 2) return;
-      var steps = ul.map(function(s) {
-        return { t: getTime(blob, s), p: blob[s], r: getRatchet(blob, s) };
-      });
-      rotate(steps);
-      for (var i = 0; i < ul.length; i++) {
-        setTime(blob, ul[i], steps[i].t);
-        blob[ul[i]] = steps[i].p;
-        setRatchet(blob, ul[i], steps[i].r);
+      var stepsAll = [];
+      for (var sa = 0; sa < len; sa++)
+        stepsAll.push({ t: getTime(blob, sa), p: blob[sa], r: getRatchet(blob, sa) });
+      rotate(stepsAll);
+      for (var ja = 0; ja < len; ja++) {
+        setTime(blob, ja, stepsAll[ja].t);
+        blob[ja] = stepsAll[ja].p;
+        setRatchet(blob, ja, stepsAll[ja].r);
       }
       normalizePatternTimes(blob, len);
-      for (var s = 0; s < len; s++) {
-        if (getTime(blob, s) !== 1) { blob[s] = 0xff; setRatchet(blob, s, 0); }
+      for (var sb = 0; sb < len; sb++) {
+        if (getTime(blob, sb) !== 1) { blob[sb] = PITCH_EMPTY; setRatchet(blob, sb, 0); }
       }
     }
   }
@@ -3536,10 +3409,9 @@
 
   document.getElementById('patLen').addEventListener('change', function() {
     var blob = activeBlob();
-    var oldLen = Math.min(groupMaxSteps(), Math.max(1, blob[127] | 0));
-    var newLen = Math.min(groupMaxSteps(), Math.max(1, Number(document.getElementById('patLen').value) | 0));
-    migratePitchStashOnResize(blob, oldLen, newLen);
-    blob[127] = newLen;
+    var cap = patternMaxSteps(blob);
+    var newLen = Math.min(cap, Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    blob[LEN_OFF] = newLen;
     syncBlob();
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
@@ -3549,8 +3421,9 @@
   // ── patLen +/- buttons ────────────────────────────────────────────
   function nudgePatLen(delta) {
     var el = document.getElementById('patLen');
-    var cur = Math.min(groupMaxSteps(), Math.max(1, Number(el.value) | 0));
-    var next = Math.min(groupMaxSteps(), Math.max(1, cur + delta));
+    var cap = patternMaxSteps(activeBlob());
+    var cur = Math.min(cap, Math.max(1, Number(el.value) | 0));
+    var next = Math.min(cap, Math.max(1, cur + delta));
     if (next === cur) return;
     el.value = String(next);
     el.dispatchEvent(new Event('change'));
@@ -3566,7 +3439,7 @@
     el.addEventListener('pointerdown', function(e) {
       if (e.button !== 0) return;
       dragStartY   = e.clientY;
-      dragStartVal = Math.min(groupMaxSteps(), Math.max(1, Number(el.value) | 0));
+      dragStartVal = Math.min(patternMaxSteps(activeBlob()), Math.max(1, Number(el.value) | 0));
       dragging = true;
       moved    = false;
       el.setPointerCapture(e.pointerId);
@@ -3576,7 +3449,8 @@
       if (!dragging) return;
       var delta = Math.round((dragStartY - e.clientY) / 4); // 4px per step
       if (delta !== 0) moved = true;
-      var next = Math.min(groupMaxSteps(), Math.max(1, dragStartVal + delta));
+      var cap = patternMaxSteps(activeBlob());
+      var next = Math.min(cap, Math.max(1, dragStartVal + delta));
       if (Number(el.value) !== next) {
         el.value = String(next);
         el.dispatchEvent(new Event('change'));
@@ -3584,9 +3458,43 @@
     });
     el.addEventListener('pointerup', function(e) {
       dragging = false;
-      if (moved) e.preventDefault(); // suppress click-to-focus text cursor
+      if (moved) e.preventDefault();
     });
   })();
+
+  // ── Triplet toggle (per-pattern) ──────────────────────────────────
+  document.getElementById('btnTriplet').addEventListener('click', function() {
+    var blob = activeBlob();
+    var newTriplet = !isTriplet(blob);
+    setTriplet(blob, newTriplet);
+    var lenEl = document.getElementById('patLen');
+    lenEl.max = String(patternMaxSteps(blob));
+    lenEl.value = String(getLength(blob));
+    this.classList.toggle('btn-primary', newTriplet);
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid(); recomputeDirty(); scheduleLiveSend();
+  });
+
+  // ── Per-pattern transpose ─────────────────────────────────────────
+  function applyTranspose(t) {
+    var blob = activeBlob();
+    setTranspose(blob, t);
+    document.getElementById('patTr').value = String(getTranspose(blob));
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    recomputeDirty();
+    scheduleLiveSend();
+  }
+  document.getElementById('patTr').addEventListener('change', function() {
+    applyTranspose(Number(this.value) | 0);
+  });
+  document.getElementById('patTrDec').addEventListener('click', function() {
+    applyTranspose(getTranspose(activeBlob()) - 1);
+  });
+  document.getElementById('patTrInc').addEventListener('click', function() {
+    applyTranspose(getTranspose(activeBlob()) + 1);
+  });
   // ── Config panel ───────────────────────────────────────────────────
   document.getElementById('btnCfgRead').onclick = function() {
     sendCfgRead();
@@ -3602,20 +3510,18 @@
     log('\u2190 Set config: ch=' + ch + ' clock_rx=' + clk + ' thru=' + thru + ' dir=' + (kDirNames[currentDirection] || currentDirection) + ' bri=' + bri, 'log-syx');
   };
 
-  // Direction buttons
-  document.querySelectorAll('.dir-btn').forEach(function(btn) {
+  // Direction buttons \u2014 per-pattern (writes reserved[0] bits[2:0])
+  document.querySelectorAll('.dir-btn[data-dir]').forEach(function(btn) {
     btn.addEventListener('click', function() {
       var dir = parseInt(btn.getAttribute('data-dir'), 10);
+      var blob = activeBlob();
+      setDirection(blob, dir);
       setActiveDirection(dir);
-      if (midiOut) {
-        var ch   = parseInt(document.getElementById('cfgMidiCh').value,   10);
-        var clk  = parseInt(document.getElementById('cfgMidiClk').value,  10);
-        var thru = parseInt(document.getElementById('cfgMidiThru').value, 10);
-        var bri  = parseInt(document.getElementById('cfgLedBri').value,   10);
-        var fl   = (clk & 1) | ((thru & 1) << 1);
-        sendCfgWrite(ch, fl, dir, bri);
-        log('\u2190 Direction: ' + (kDirNames[dir] || dir), 'log-syx');
-      }
+      pushHistory(activeGroup, activePat);
+      saveGroupsToLS();
+      recomputeDirty();
+      scheduleLiveSend();
+      log('\u2190 Direction: ' + (kDirNames[dir] || dir) + ' (pattern ' + (activePat+1) + ')', 'log-syx');
     });
   });
 
@@ -3697,31 +3603,27 @@
 
   function libApplyPdToActive(pd) {
     var blob = activeBlob();
-    var len = pd.length;
-    blob[127] = len;
-    for (var i = 0; i < 32; i++) blob[64 + i] = 0;
+    for (var z = 0; z < PATTERN_SIZE; z++) blob[z] = 0;
+    for (var z2 = 0; z2 < MAX_STEPS; z2++) blob[z2] = PITCH_EMPTY;
+    setTriplet(blob, !!pd.triplet);
+    setDirection(blob, (pd.direction | 0) & DIR_MASK);
+    setTranspose(blob, pd.transpose | 0);
+    blob[ENGINE_OFF] = (pd.engine_select | 0) & 0xFF;
+    var len = Math.min(patternMaxSteps(blob), pd.length);
+    blob[LEN_OFF] = len;
     for (var s = 0; s < len; s++) {
       var st = pd.steps[s];
       setTime(blob, s, st.time);
       if (st.pitch !== null && st.pitch !== undefined) {
         var flags = (st.accent ? 0x40 : 0) | (st.slide ? 0x80 : 0);
-        blob[s] = (st.pitch & 0x3f) | flags;
+        blob[s] = clampPackedByte((st.pitch & PITCH_PACK_MASK) | flags);
       } else {
-        blob[s] = 0xff;
+        blob[s] = PITCH_EMPTY;
       }
+      setRatchet(blob, s, st.ratchet ? 1 : 0);
     }
-    for (var sc = 0; sc < len; sc++)
-      if (blob[sc] !== 0xff) blob[sc] = clampPackedByte(blob[sc]);
     normalizePatternTimes(blob, len);
-    setStashCount(blob, 0);
-    if (pd.pitch_stash_count != null && Array.isArray(pd.pitch_stash) && pd.pitch_stash.length > 0) {
-      var scn = clampStashToBlob(blob, len, pd.pitch_stash_count);
-      setStashCount(blob, scn);
-      for (var ks = 0; ks < scn; ks++)
-        blob[len + ks] = clampPackedByte(pd.pitch_stash[ks] & 0xff);
-    }
-    document.getElementById('patLen').value = String(len);
-    syncBlob();
+    syncPatternToolbar();
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
     renderGrid();

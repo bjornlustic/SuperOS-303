@@ -1662,11 +1662,7 @@ void loop() {
     if (clk_run) {
       if (engine.Clock()) {
         midi_after_clock(engine, transpose);
-        // SysEx 0x15 step broadcast disabled inline -- web editor mirror is
-        // offline and the per-16th SysEx was eating ~8% of MIDI bandwidth at
-        // 240 BPM, slowing the main loop and causing missed CLOCK rising
-        // edges (audible tempo drop). Re-enable when the web editor relaunches.
-        // midi_send_step_position(engine.get_patsel(), engine.get_time_pos());
+        midi_send_step_position(engine.get_patsel(), engine.get_time_pos());
         // Metronome tap-write: record time data for the step that just played
         if (s_metronome_active) {
           const uint8_t len = engine.get_length();
