@@ -304,18 +304,18 @@ void input_time(bool mod = false, bool clk_run = false) {
   sequence_pack_per_time(s, after_pt);
 
   const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
-  // Always broadcast the diff immediately. The earlier !clk_run branch deferred
-  // a full pattern sync via s_pat_sync_*, but rapid time-mode edits would reset
-  // s_pat_sync_pos to 0 before the previous walk reached the high steps, so the
-  // web editor never received updates for any step past wherever the sync got
-  // before the next press. Per-edit diffs are small (only steps whose stream
-  // slot mapping shifted) and easily fit in the TX ring.
+  // Send tp FIRST, then the diff loop. The web editor's 0x16 handler computes
+  // noteIdx(blob, step) against the blob's current time_data; if a later step's
+  // pitch update arrives before tp's time change is applied, noteIdx counts
+  // tp as a NOTE and writes the pitch into the wrong stream slot, corrupting
+  // pitch[]. Sending tp first lets the editor update time_data at tp so every
+  // subsequent step computes the same K-th-NOTE index the firmware did.
   const uint8_t pat = engine.get_patsel();
+  midi_send_step_update(pat, tp, after_pt[tp], written_time);
   for (uint8_t i = 0; i < len; ++i) {
     if (i != tp && before_pt[i] != after_pt[i])
       midi_send_step_update(pat, i, after_pt[i], s.time(i));
   }
-  midi_send_step_update(pat, tp, after_pt[tp], written_time);
 }
 
 
