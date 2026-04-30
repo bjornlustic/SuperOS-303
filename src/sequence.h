@@ -630,14 +630,12 @@ static inline uint8_t fast_rand_pitch_byte() {
   return pack_pitch(semi, oct);
 }
 
-// Weighted octave: DOWN 25% / CENTRE 40% / UP 25% / DOUBLE_UP 10%.
-// CENTRE is the "no octave shift" outcome.
+// Weighted octave: DOWN 25% / CENTRE 50% / UP 25%. DOUBLE_UP excluded.
 static inline uint8_t fast_rand_octave_weighted() {
   const uint8_t r = fast_rand(20);
   if (r < 5)  return 0;
-  if (r < 13) return 1;
-  if (r < 18) return 2;
-  return 3;
+  if (r < 15) return 1;
+  return 2;
 }
 static inline uint8_t fast_rand_pitch_byte_weighted() {
   return pack_pitch(fast_rand(13), fast_rand_octave_weighted());
