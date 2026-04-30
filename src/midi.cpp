@@ -541,11 +541,11 @@ void midi_audition_note_off() {
 }
 
 // --- Step position broadcast (SysEx 0x15) ---------------------------------------
-void midi_send_step_position(uint8_t pat, uint8_t step) {
-  const uint8_t grp = g_eng ? g_eng->get_group() : 0;
-  const uint8_t inner[5] = {0x7D, 0x15, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), (uint8_t)(grp & 0x03)};
-  tx_push_message(inner, 5);
-}
+// Disabled: per-16th SysEx TX activity coupled into the analog audio rail as an
+// audible click. The web editor does not need a live playhead; the function is
+// kept as a no-op for ABI stability. Re-enable only if you have a hardware fix
+// for the MIDI-OUT current-loop noise.
+void midi_send_step_position(uint8_t /*pat*/, uint8_t /*step*/) {}
 
 // --- Length update broadcast (SysEx 0x18) ----------------------------------------
 void midi_send_length_update(uint8_t pat, uint8_t len) {

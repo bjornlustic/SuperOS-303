@@ -1213,12 +1213,7 @@
   var activePat    = 0;   // 0-15 within the group
   var playingPat   = -1;  // hardware-reported playing pattern (0-15), -1 = unknown
   var editLiveMode = false; // when true: display a pattern without changing what plays
-  var playingStep = -1;  // hardware-reported playing step
-  // Local clock-derived playhead state (reconstructed from incoming MIDI clock).
-  var clkRunning  = false;   // true after 0xFA Start until 0xFC Stop
-  var clkSubTick  = -1;      // tick counter within the current step (resets at ticksPerStep)
-  var clkLocalStep = -1;     // -1 = pre-roll (first tick lands on first step)
-  var clkPpDir   = 1;        // +1 / -1 for ping-pong sub-state
+  var playingStep = -1;  // hardware-reported playing step (unused: live playhead disabled)
   var queuedPat   = -1;  // pattern queued for next play (sent via PC)
   var patChain       = [];    // active chain (2-4 patterns)
   var queuedChain    = [];    // chain waiting to activate after current finishes
@@ -1945,64 +1940,7 @@
     track.addEventListener('pointercancel', onUp);
   }
 
-  // ── MIDI realtime: derive playhead from clock ─────────────────────
-  /** Advance clkLocalStep by one step honoring the pattern's stored direction.
-   * Forward / Reverse / Ping-Pong are exact; Random / Half-Random / Brownian
-   * cannot be predicted client-side, so the dot is left where it is. */
-  function advanceClkStep(blob) {
-    var len = blob ? getLength(blob) : 16;
-    if (len < 1) len = 1;
-    var dir = blob ? getDirection(blob) : 0;
-    if (clkLocalStep < 0) {
-      // First step after Start / pattern change.
-      clkLocalStep = (dir === 1) ? (len - 1) : 0;
-      clkPpDir = 1;
-      return;
-    }
-    if (dir === 0) {                // Forward
-      clkLocalStep = (clkLocalStep + 1) % len;
-    } else if (dir === 1) {         // Reverse
-      clkLocalStep = (clkLocalStep - 1 + len) % len;
-    } else if (dir === 2) {         // Ping-Pong
-      if (len === 1) { clkLocalStep = 0; clkPpDir = 1; return; }
-      var next = clkLocalStep + clkPpDir;
-      if (next >= len) { clkPpDir = -1; next = len - 2; }
-      else if (next < 0) { clkPpDir = 1; next = 1; }
-      clkLocalStep = next;
-    }
-    // dir === 3,4,5 (Random / Half-Random / Brownian): hardware drives a
-    // path the editor cannot predict — leave the dot in place.
-  }
-
-  function handleRealtime(b) {
-    if (b === 0xF8) {
-      if (!clkRunning) return;
-      var pat = (playingPat >= 0) ? playingPat : activePat;
-      var blob = (hwGroup >= 0 ? groups[hwGroup] : groups[activeGroup])[pat];
-      var ticksPerStep = (blob && isTriplet(blob)) ? 8 : 6;
-      clkSubTick = (clkSubTick + 1) % ticksPerStep;
-      if (clkSubTick === 0) {
-        advanceClkStep(blob);
-        updatePlayingStep(pat, clkLocalStep);
-      }
-    } else if (b === 0xFA) {
-      // Start: reset; first 0xF8 lands on the pattern's first step.
-      clkRunning = true;
-      clkSubTick = -1;
-      clkLocalStep = -1;
-      clkPpDir = 1;
-      hwRunning = true;
-      if (hwRunningTimer) clearTimeout(hwRunningTimer);
-    } else if (b === 0xFB) {
-      clkRunning = true;
-      hwRunning = true;
-    } else if (b === 0xFC) {
-      clkRunning = false;
-      hwRunning = false;
-    }
-  }
-
-  // ── Playing step update (local clock-derived or pattern-change broadcast) ──
+  // ── Playing step update (pattern-change broadcast only) ──────────
   function updatePlayingStep(pat, step) {
     if (pat !== playingPat) {
       playingPat = pat;
@@ -2350,13 +2288,7 @@
         switchGroup(aGrp);
         if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(aGrp, true); }
       }
-      // New active pattern: reset clock-derived state so the dot lands on
-      // the new pattern's first step at the next tick boundary (direction
-      // and triplet are read from the pattern's blob inside advanceClkStep).
-      clkSubTick = -1;
-      clkLocalStep = -1;
-      clkPpDir = 1;
-      updatePlayingStep(aPat, 0);
+      updatePlayingStep(aPat, -1);
       return;
     }
 
@@ -2543,14 +2475,7 @@
     var d = ev.data;
     if (!d || !d.length) return;
     if (d[0] >= 0x80 && d[0] < 0xf0) { for (var k = 0; k < d.length; k++) feedChannelByte(d[k]); return; }
-    if (d[0] >= 0xf8) {
-      // Realtime: count incoming clock to drive the local playhead. We
-      // ignore 0x15 broadcasts entirely (firmware no longer sends them
-      // because the per-16th SysEx adds audible TX noise), so the editor
-      // synthesises step position from 24 PPQN clock + 0xFA/0xFC framing.
-      handleRealtime(d[0]);
-      return;
-    }
+    if (d[0] >= 0xf8) return;  // realtime messages ignored (no live playhead)
     if (d[0] === 0xf0) {
       rxBuf = [];
       for (var i = 0; i < d.length; i++) rxBuf.push(d[i]);

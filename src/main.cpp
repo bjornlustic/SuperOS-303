@@ -1993,7 +1993,6 @@ void loop() {
       engine.SetPattern(s_chain_pats[0], true);
       emit_chain_state();
     }
-    midi_send_step_position(engine.get_patsel(), 0);
   }
 
   // Incremental pattern sync: send 2 step updates per loop iteration.
