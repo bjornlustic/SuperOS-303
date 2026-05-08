@@ -19,36 +19,37 @@
       --rule-sm: 1px solid #000;
       --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
       --mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      --pad: clamp(10px, 2.5vw, 16px);
     }
 
     html { background: var(--white); color: var(--black); font-family: var(--font); font-size: 14px; -webkit-font-smoothing: antialiased; }
     body { min-height: 100vh; margin: 0; overflow-x: hidden; }
     .app {
-      padding: clamp(16px, 3vw, 36px) clamp(16px, 3vw, 36px) clamp(24px, 4vw, 48px);
-      max-width: 100%;
+      padding: var(--pad) var(--pad) clamp(16px, 3vw, 48px);
+      max-width: 1400px;
+      margin: 0 auto;
       min-width: 0;
-      box-sizing: border-box;
     }
 
     /* ── Header ── */
     .header {
       display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
-      gap: 8px 20px; padding-bottom: 12px; border-bottom: var(--rule); margin-bottom: 24px;
+      gap: 4px 20px; padding-bottom: 10px; border-bottom: var(--rule); margin-bottom: clamp(12px, 2vw, 24px);
       min-width: 0;
     }
-    .logo { font-size: clamp(22px, 5vw, 30px); font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase; line-height: 1; }
-    .logo-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gray-4); align-self: flex-end; padding-bottom: 4px; flex-shrink: 0; }
+    .logo { font-size: clamp(20px, 4.5vw, 30px); font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase; line-height: 1; }
+    .logo-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gray-4); padding-bottom: 2px; flex-shrink: 0; }
 
     /* ── Banner ── */
-    .banner { display: none; padding: 10px 14px; border: var(--rule); margin-bottom: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: var(--black); color: var(--white); }
+    .banner { display: none; padding: 8px var(--pad); border: var(--rule); margin-bottom: 6px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: var(--black); color: var(--white); word-break: break-word; }
     .banner.visible { display: block; }
 
     /* ── Toast ── */
     #downloadToast { position: fixed; bottom: 18px; right: 18px; padding: 8px 14px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: #c00; color: var(--white); border: var(--rule); opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 999; }
     #downloadToast.visible { opacity: 1; }
-    #syncOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.82); display: none; align-items: center; justify-content: center; z-index: 10000; }
+    #syncOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.82); display: none; align-items: center; justify-content: center; z-index: 10000; padding: 16px; }
     #syncOverlay.visible { display: flex; }
-    #syncOverlay .sync-card { background: var(--white); border: 2px solid var(--black); padding: 22px 28px; min-width: 320px; box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
+    #syncOverlay .sync-card { background: var(--white); border: 2px solid var(--black); padding: 20px 24px; min-width: 0; max-width: 360px; width: 100%; box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
     #syncOverlay .sync-title { font-size: 12px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 8px; }
     #syncOverlay .sync-msg { font-size: 11px; color: var(--gray-4); margin-bottom: 14px; font-family: var(--mono); }
     #syncOverlay .sync-bar-outer { width: 100%; height: 12px; border: 1px solid var(--black); background: var(--gray-1); }
@@ -56,120 +57,162 @@
     #syncOverlay .sync-count { font-size: 10px; color: var(--gray-3); margin-top: 6px; font-family: var(--mono); text-align: right; }
 
     /* ── Control strips ── */
-    .strip { display: flex; flex-wrap: wrap; align-items: stretch; border: var(--rule); margin-bottom: 6px; min-width: 0; }
-    .group { display: flex; align-items: center; gap: 0; padding: 0 14px; border-right: var(--rule); min-width: 0; flex: 0 1 auto; }
-    .group:last-child { border-right: none; }
-    .group--grow { flex: 1 1 220px; min-width: min(100%, 220px); }
-    .group-inner { display: flex; align-items: center; gap: 6px; padding: 10px 0; flex-wrap: wrap; min-width: 0; }
-    .lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); white-space: nowrap; padding-right: 10px; border-right: var(--rule-sm); margin-right: 10px; align-self: stretch; display: flex; align-items: center; }
+    .strip {
+      display: flex; flex-wrap: wrap; align-items: stretch;
+      border: var(--rule); margin-bottom: 6px; min-width: 0;
+    }
+    .group {
+      display: flex; align-items: center; gap: 0;
+      padding: 0 var(--pad);
+      border-bottom: var(--rule-sm);
+      min-width: 0; flex: 1 1 100%;
+    }
+    .group:last-child { border-bottom: none; }
+    .group--grow { flex: 1 1 100%; }
+    .group-inner {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 0; flex-wrap: wrap; min-width: 0;
+      flex: 1;
+    }
+    .lbl {
+      font-size: 8px; font-weight: 900; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--gray-4); white-space: nowrap;
+      padding-right: 8px; border-right: var(--rule-sm); margin-right: 8px;
+      align-self: stretch; display: flex; align-items: center;
+      flex-shrink: 0;
+    }
 
-    /* Live / Edits / Clipboard — grid sections, label above controls */
+    @media (min-width: 640px) {
+      .group {
+        flex: 0 1 auto; border-bottom: none;
+        border-right: var(--rule-sm);
+      }
+      .group:last-child { border-right: none; }
+      .group--grow { flex: 1 1 220px; min-width: min(100%, 220px); }
+    }
+
+    /* Live / Edits / Clipboard -- grid sections, label above controls */
     .strip--action-bar {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 0;
-      align-items: stretch;
+      display: grid; grid-template-columns: 1fr;
+      gap: 0; align-items: stretch;
     }
     .strip--action-bar .group {
-      flex-direction: column;
-      align-items: stretch;
-      align-self: stretch;
-      gap: 0;
-      padding: 14px 16px 16px;
-      border-right: none;
-      border-bottom: var(--rule);
-      flex: initial;
-      min-width: 0;
+      flex-direction: column; align-items: stretch; align-self: stretch;
+      gap: 0; padding: 6px var(--pad) 8px;
+      border-right: none; border-bottom: var(--rule);
+      flex: initial; min-width: 0;
     }
     .strip--action-bar .group:last-child { border-bottom: none; }
     .strip--action-bar .group .lbl {
-      border-right: none;
-      margin-right: 0;
-      padding: 0 0 10px 0;
-      margin-bottom: 12px;
-      border-bottom: var(--rule-sm);
-      align-self: stretch;
-      justify-content: flex-start;
-      letter-spacing: 0.2em;
+      border-right: none; margin-right: 0;
+      padding: 0 0 5px 0; margin-bottom: 6px;
+      border-bottom: var(--rule-sm); align-self: stretch;
+      justify-content: flex-start; letter-spacing: 0.2em;
     }
-    .strip--action-bar .group-inner {
-      padding: 0;
-      align-items: flex-start;
-    }
+    .strip--action-bar .group-inner { padding: 0; align-items: flex-start; }
     .strip--action-bar .live-group-inner { align-self: stretch; flex: 0 0 auto; }
-    .group-inner--edits {
-      gap: 8px 10px;
-      flex-wrap: wrap;
-    }
-    .group-inner--clipboard {
-      gap: 8px 10px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
+    .group-inner--edits { gap: 6px; flex-wrap: wrap; }
+    .group-inner--clipboard { gap: 6px; flex-wrap: wrap; align-items: center; }
     .strip--action-bar #copyStatus {
-      padding-left: 0;
-      flex: 1 1 auto;
-      min-width: 0;
-      line-height: 1.35;
-      white-space: normal;
+      padding-left: 0; flex: 1 1 auto; min-width: 0;
+      line-height: 1.35; white-space: normal;
     }
-    @media (min-width: 960px) {
+    @media (min-width: 760px) {
       .strip--action-bar {
-        grid-template-columns: minmax(220px, 1fr) minmax(340px, 1.75fr) minmax(200px, 1fr);
+        grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.5fr);
       }
       .strip--action-bar .group {
-        border-bottom: none;
-        border-right: var(--rule);
+        border-bottom: none; border-right: var(--rule);
       }
       .strip--action-bar .group:last-child { border-right: none; }
     }
 
     /* ── Inputs ── */
-    input[type="number"], select { height: 30px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 13px; font-weight: 600; outline: none; border-radius: 0; appearance: none; transition: background 0.08s; }
+    input[type="number"], select {
+      height: 30px; padding: 0 8px; background: var(--white);
+      border: var(--rule-sm); color: var(--black); font-family: var(--font);
+      font-size: 13px; font-weight: 600; outline: none; border-radius: 0;
+      appearance: none; transition: background 0.08s;
+    }
     input[type="number"]:focus, select:focus { background: var(--black); color: var(--white); }
     input[type="number"] { width: 54px; text-align: center; }
-    select { min-width: min(150px, 100%); max-width: 100%; cursor: pointer; padding-right: 8px; }
+    select { min-width: 0; width: 100%; max-width: 100%; cursor: pointer; padding-right: 8px; }
     input[type="file"] { display: none; }
 
     /* ── Buttons ── */
-    .btn { height: 30px; padding: 0 14px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; white-space: nowrap; border-radius: 0; transition: background 0.08s, color 0.08s; }
+    .btn {
+      height: 28px; padding: 0 10px; background: var(--white);
+      border: var(--rule-sm); color: var(--black); font-family: var(--font);
+      font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; cursor: pointer; white-space: nowrap;
+      border-radius: 0; transition: background 0.08s, color 0.08s;
+    }
     .btn:hover:not(:disabled) { background: var(--black); color: var(--white); }
     .btn:disabled { opacity: 0.25; cursor: default; }
     .btn-primary { background: var(--black); color: var(--white); border-color: var(--black); font-weight: 900; }
     .btn-primary:hover:not(:disabled) { background: var(--gray-4); border-color: var(--gray-4); }
     .btn-green { background: #1a7a3a; color: var(--white); border-color: #1a7a3a; font-weight: 900; }
     .btn-green:hover:not(:disabled) { background: #155e2d; border-color: #155e2d; }
-    .btn-ghost { height: 30px; padding: 0 14px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; }
+    .btn-ghost {
+      height: 28px; padding: 0 10px; background: var(--white);
+      border: var(--rule-sm); color: var(--black); font-family: var(--font);
+      font-size: 9px; font-weight: 900; letter-spacing: 0.18em;
+      text-transform: uppercase; cursor: pointer; border-radius: 0;
+      transition: background 0.08s, color 0.08s;
+    }
     .btn-ghost:hover { background: var(--black); color: var(--white); }
     .btn-ghost.is-connected { background: var(--black); color: var(--white); }
-    .dir-btn { height: 26px; padding: 0 10px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; }
+    .dir-btn {
+      height: 30px; padding: 0 10px; background: var(--white);
+      border: var(--rule-sm); color: var(--black); font-family: var(--font);
+      font-size: 9px; font-weight: 900; letter-spacing: 0.12em;
+      text-transform: uppercase; cursor: pointer; border-radius: 0;
+      transition: background 0.08s, color 0.08s;
+    }
     .dir-btn:hover { background: var(--gray-2); }
     .dir-btn.btn-primary { background: var(--black); color: var(--white); border-color: var(--black); }
 
     /* ── MIDI status ── */
-    #midiStatus { font-size: 11px; font-weight: 600; color: var(--gray-3); letter-spacing: 0.02em; padding-left: 10px; }
+    #midiStatus { font-size: 11px; font-weight: 600; color: var(--gray-3); letter-spacing: 0.02em; padding-left: 8px; }
     #midiStatus.is-ok { color: var(--black); }
     #midiStatus.is-warn { color: var(--gray-4); }
 
     /* ── Group tabs + Bank A/B (one bar) ── */
-    .bank-group-bar { display: flex; align-items: stretch; flex-wrap: wrap; border: var(--rule); margin-bottom: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
-    .bank-group-bar .group-tabs { display: flex; flex-direction: row; flex-shrink: 0; border-right: var(--rule); margin: 0; }
+    .bank-group-bar {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      border: var(--rule); margin-bottom: 6px;
+      min-width: 0; max-width: 100%;
+    }
+    .bank-group-bar .group-tabs {
+      display: flex; flex-direction: row; flex-shrink: 0;
+      border-right: var(--rule); margin: 0;
+      grid-column: 1 / -1;
+      border-bottom: var(--rule-sm);
+    }
     .bank-group-bar .group-tab {
-      flex: 0 0 auto; min-width: 44px; min-height: 36px; padding: 0 8px; box-sizing: border-box;
+      flex: 1 1 0; min-width: 0; min-height: 36px; padding: 0 6px;
       display: flex; align-items: center; justify-content: center; cursor: pointer;
-      font-size: 9px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase;
-      border-right: var(--rule-sm); background: var(--white); color: var(--gray-4); transition: all 0.08s; user-select: none;
+      font-size: 9px; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase;
+      border-right: var(--rule-sm); background: var(--white); color: var(--gray-4);
+      transition: all 0.08s; user-select: none;
     }
     .bank-group-bar .group-tab:last-child { border-right: none; }
     .bank-group-bar .group-tab:hover:not(.is-active) { background: var(--gray-1); color: var(--black); }
     .bank-group-bar .group-tab.is-active { background: var(--black); color: var(--white); }
 
     /* ── Bank + Pattern pills (inside .bank-group-bar) ── */
-    .bank-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); padding: 0 12px; display: flex; align-items: center; border-right: var(--rule-sm); white-space: nowrap; flex-shrink: 0; }
-    .bank-label-sep { border-left: var(--rule); margin-left: -1px; }
-    .pat-pills { display: flex; gap: 0; flex-shrink: 0; }
+    .bank-label {
+      font-size: 9px; font-weight: 900; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--gray-4);
+      padding: 0 8px; display: flex; align-items: center;
+      border-right: var(--rule-sm); white-space: nowrap; flex-shrink: 0;
+    }
+    .bank-label-sep { border-left: var(--rule); margin-left: -1px; border-top: var(--rule-sm); }
+    .pat-pills { display: flex; gap: 0; flex: 1; min-width: 0; }
     .pat-pill {
-      width: 36px; height: 36px; border: var(--rule-sm); margin-right: -1px;
+      flex: 1 1 0; min-width: 0; height: 36px;
+      border: var(--rule-sm); margin-right: -1px;
       background: var(--white); color: var(--gray-3); font-family: var(--mono);
       font-size: 10px; font-weight: 700; cursor: pointer; display: flex;
       align-items: center; justify-content: center; transition: all 0.08s;
@@ -179,7 +222,6 @@
     .pat-pill.is-active { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
     .pat-pill.is-dirty:not(.is-active) { box-shadow: inset 0 -2px 0 0 var(--black); color: var(--black); }
     .pat-pill.is-queued:not(.is-active) { outline: 2px dashed var(--black); outline-offset: -2px; }
-    /* Blinking playing indicator */
     .pat-pill.is-playing { animation: pill-blink 0.5s steps(1) infinite; }
     .pat-pill.is-playing.is-active { animation: pill-blink-inv 0.5s steps(1) infinite; }
     .pat-pill.is-copied { box-shadow: inset 0 0 0 2px var(--red); color: var(--black); font-weight: 900; }
@@ -187,9 +229,10 @@
 
     /* Edit Live toggle */
     .edit-live-btn {
-      flex: 0 0 auto; margin-left: auto; padding: 0 14px; min-height: 36px;
+      grid-column: 1 / -1;
+      padding: 0 var(--pad); min-height: 32px;
       display: flex; align-items: center; justify-content: center;
-      border: none; border-left: var(--rule-sm);
+      border: none; border-top: var(--rule-sm);
       background: var(--white); color: var(--gray-4);
       font-family: var(--font); font-size: 9px; font-weight: 900;
       letter-spacing: 0.14em; text-transform: uppercase;
@@ -210,16 +253,36 @@
     }
     .pat-pill.is-active .pat-pill-badge { opacity: 0.7; }
 
+    @media (min-width: 640px) {
+      .bank-group-bar {
+        display: flex; align-items: stretch; flex-wrap: nowrap;
+        overflow-x: auto; -webkit-overflow-scrolling: touch;
+      }
+      .bank-group-bar .group-tabs {
+        grid-column: auto; border-bottom: none; flex-shrink: 0;
+      }
+      .bank-group-bar .group-tab { flex: 0 0 auto; min-width: 44px; padding: 0 8px; }
+      .bank-label-sep { border-top: none; }
+      .pat-pills { flex: 0 0 auto; }
+      .pat-pill { flex: 0 0 auto; width: 36px; }
+      .edit-live-btn {
+        grid-column: auto; margin-left: auto;
+        border-top: none; border-left: var(--rule-sm);
+        flex: 0 0 auto; padding: 0 14px;
+      }
+    }
+
     /* ── Sequencer panel ── */
     .seq-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
     .seq-toolbar {
-      display: flex; align-items: center; justify-content: flex-start; padding: 10px 14px; border-bottom: var(--rule);
-      flex-wrap: wrap; gap: 10px 14px; min-width: 0;
+      display: flex; align-items: center; justify-content: flex-start;
+      padding: 8px var(--pad); border-bottom: var(--rule);
+      flex-wrap: wrap; gap: 8px 12px; min-width: 0;
     }
     .live-group-inner { padding: 0 !important; align-self: stretch; flex: 1; min-width: 0; }
     .live-toggle {
       display: flex; align-items: center; justify-content: flex-start;
-      width: 100%; min-height: 36px; padding: 10px 14px; box-sizing: border-box;
+      width: 100%; min-height: 36px; padding: 10px var(--pad); box-sizing: border-box;
       border: none;
       background: var(--white); color: var(--black);
       font-family: var(--font); font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
@@ -234,23 +297,26 @@
     .live-push-lbl { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 
     .seq-toolbar-lbl { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
-    .seq-toolbar-steps { display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-width: 0; }
+    .seq-toolbar-steps { display: flex; align-items: center; gap: 6px; flex-shrink: 0; min-width: 0; flex-wrap: wrap; }
     .seq-pat-len { width: 36px; text-align: center; flex-shrink: 0; }
-    .len-adj-btn { width: 22px; height: 30px; padding: 0; border: var(--rule-sm); background: var(--white); color: var(--black); font-size: 14px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .len-adj-btn {
+      width: 26px; height: 30px; padding: 0; border: var(--rule-sm);
+      background: var(--white); color: var(--black); font-size: 14px; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
     .len-adj-btn:hover { background: var(--gray-1); }
     .len-adj-btn:active { background: var(--black); color: var(--white); }
     .seq-hint {
-      font-size: 11px; font-weight: 500; color: var(--gray-3); letter-spacing: 0.02em;
-      flex: 1 1 260px; min-width: 0; max-width: 100%;
+      font-size: 10px; font-weight: 500; color: var(--gray-3); letter-spacing: 0.02em;
+      flex: 1 1 100%; min-width: 0; max-width: 100%;
     }
     .seq-hint b { color: var(--black); font-weight: 700; }
-    .seq-grid-wrap { padding: 12px; overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
-    /* Column min scales down on narrow viewports; when min track sum exceeds the wrap, horizontal scroll appears */
+    @media (min-width: 960px) {
+      .seq-hint { flex: 1 1 260px; }
+    }
+    .seq-grid-wrap { padding: 8px; overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
     .seq-grid {
-      display: grid;
-      width: 100%;
-      min-width: 0;
-      box-sizing: border-box;
+      display: grid; width: 100%; min-width: 0; box-sizing: border-box;
       grid-template-columns: repeat(8, minmax(clamp(44px, 10vw, 72px), 1fr));
       gap: 0; border-top: var(--rule-sm); border-left: var(--rule-sm);
     }
@@ -262,7 +328,8 @@
     .chain-pat-section.is-active .chain-pat-header { background: var(--black); color: var(--white); }
     .chain-pat-header {
       padding: 4px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
-      text-transform: uppercase; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px;
+      text-transform: uppercase; cursor: pointer; user-select: none;
+      display: flex; align-items: center; gap: 6px;
       background: var(--gray-1); color: var(--gray-4); border-bottom: var(--rule-sm);
     }
     .chain-pat-header:hover { background: var(--gray-2); }
@@ -275,7 +342,11 @@
     .chain-pat-section.is-playing-pat .chain-pat-play-dot { display: block; }
 
     /* ── Step card ── */
-    .step-card { background: var(--white); border-right: var(--rule-sm); border-bottom: var(--rule-sm); padding: 8px 8px 8px; display: flex; flex-direction: column; gap: 6px; transition: background 0.08s; min-width: 0; position: relative; }
+    .step-card {
+      background: var(--white); border-right: var(--rule-sm); border-bottom: var(--rule-sm);
+      padding: 6px; display: flex; flex-direction: column; gap: 4px;
+      transition: background 0.08s; min-width: 0; position: relative;
+    }
     .step-card:hover { background: var(--gray-1); }
     .step-card.is-note { background: var(--black); color: var(--white); }
     .step-card.is-note:hover { background: #222; }
@@ -285,7 +356,7 @@
     .step-card.is-rest:hover { opacity: 0.8; }
     .seq-grid > .step-card:nth-child(4n) { border-right: var(--rule); }
 
-    /* Playing step indicator — small red dot top-right */
+    /* Playing step indicator */
     .step-play-dot {
       position: absolute; top: 3px; right: 3px;
       width: 6px; height: 6px; border-radius: 50%;
@@ -299,7 +370,7 @@
     .is-tie  .step-num { color: var(--gray-4); }
 
     .step-time { display: flex; gap: 0; }
-    .t-btn { flex: 1; height: 18px; border: var(--rule-sm); margin-right: -1px; font-size: 8px; font-weight: 900; letter-spacing: 0.08em; cursor: pointer; background: var(--white); color: var(--gray-3); font-family: var(--font); text-transform: uppercase; border-radius: 0; transition: all 0.08s; }
+    .t-btn { flex: 1; height: 22px; border: var(--rule-sm); margin-right: -1px; font-size: 8px; font-weight: 900; letter-spacing: 0.08em; cursor: pointer; background: var(--white); color: var(--gray-3); font-family: var(--font); text-transform: uppercase; border-radius: 0; transition: all 0.08s; }
     .t-btn:last-child { margin-right: 0; }
     .t-btn:hover { background: var(--gray-2); color: var(--black); }
     .t-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
@@ -312,13 +383,13 @@
     .is-note .t-btn:disabled, .is-tie .t-btn:disabled { opacity: 0.22; }
     .step-card.is-locked.is-note .pitch-knob-track { pointer-events: none; cursor: default; opacity: 0.42; }
 
-    .step-name { text-align: center; font-size: 20px; font-weight: 900; letter-spacing: -0.04em; line-height: 1; height: 22px; overflow: hidden; color: var(--black); }
+    .step-name { text-align: center; font-size: 18px; font-weight: 900; letter-spacing: -0.04em; line-height: 1; height: 20px; overflow: hidden; color: var(--black); }
     .is-note .step-name { color: var(--white); }
     .is-tie  .step-name { color: var(--black); }
     .is-rest .step-name { color: var(--black); }
 
-    .pitch-knob-wrap { display: flex; flex-direction: row; align-items: stretch; gap: 6px; min-height: 72px; user-select: none; touch-action: none; }
-    .pitch-knob-track { flex: 1; position: relative; height: 72px; border: var(--rule-sm); background: var(--gray-1); cursor: ns-resize; }
+    .pitch-knob-wrap { display: flex; flex-direction: row; align-items: stretch; gap: 4px; min-height: 60px; user-select: none; touch-action: none; }
+    .pitch-knob-track { flex: 1; position: relative; height: 60px; border: var(--rule-sm); background: var(--gray-1); cursor: ns-resize; }
     .is-note .pitch-knob-track { border-color: rgba(255,255,255,0.35); background: rgba(255,255,255,0.08); }
     .is-tie  .pitch-knob-track { border-color: var(--gray-3); }
     .pitch-knob-fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--gray-3); pointer-events: none; }
@@ -327,7 +398,7 @@
     .is-note .pitch-knob-thumb { background: var(--white); border-color: var(--white); }
 
     .step-flags { display: flex; gap: 0; }
-    .f-btn { flex: 1; height: 18px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 8px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; }
+    .f-btn { flex: 1; height: 22px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 8px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; }
     .f-btn:last-child { margin-right: 0; }
     .f-btn:disabled { opacity: 0.15; cursor: default; }
     .f-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
@@ -374,7 +445,7 @@
 
     /* ── Config panel ── */
     .config-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
-    .config-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .config-bar { display: flex; align-items: center; gap: 10px; padding: 10px var(--pad); cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
     .config-bar:hover { background: var(--gray-1); }
     .config-bar.is-open { border-bottom: var(--rule-sm); }
     .config-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
@@ -382,14 +453,14 @@
     .config-bar.is-open .config-bar-arrow { transform: rotate(90deg); }
     .config-body { display: none; }
     .config-body.is-open { display: block; }
-    .config-inner { padding: 14px; display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
-    .config-field { display: flex; flex-direction: column; gap: 4px; }
+    .config-inner { padding: var(--pad); display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+    .config-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 140px; min-width: 0; }
     .config-field label { font-size: 9px; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray-4); }
     .config-status { font-size: 11px; color: var(--gray-4); font-weight: 600; align-self: center; }
 
     /* ── Log ── */
     .log-panel { border: var(--rule); min-width: 0; max-width: 100%; }
-    .log-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .log-bar { display: flex; align-items: center; gap: 10px; padding: 10px var(--pad); cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
     .log-bar:hover { background: var(--gray-1); }
     .log-bar.is-open { border-bottom: var(--rule-sm); }
     .log-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
@@ -398,15 +469,15 @@
     .log-bar-count { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; }
     .log-body { display: none; }
     .log-body.is-open { display: block; }
-    #log { font-family: var(--mono); font-size: 11px; font-weight: 500; background: var(--gray-1); padding: 12px 14px; min-height: 132px; height: clamp(120px, 25vh, 220px); max-height: 50vh; overflow: auto; white-space: pre-wrap; color: var(--gray-4); line-height: 1.9; letter-spacing: 0.02em; }
+    #log { font-family: var(--mono); font-size: 11px; font-weight: 500; background: var(--gray-1); padding: 12px var(--pad); min-height: 100px; height: clamp(100px, 20vh, 200px); max-height: 50vh; overflow: auto; white-space: pre-wrap; color: var(--gray-4); line-height: 1.9; letter-spacing: 0.02em; }
     .log-note { color: var(--black); font-weight: 700; }
     .log-syx  { color: var(--black); }
     .log-err  { color: var(--red); font-weight: 700; }
     .log-ack  { color: var(--gray-4); }
 
     /* ── Scale Lock ── */
-    .scale-select { height: 30px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 11px; font-weight: 700; cursor: pointer; border-radius: 0; min-width: 168px; }
-    .scale-root-btn, .scale-note-btn { height: 26px; padding: 0 6px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; white-space: nowrap; }
+    .scale-select { height: 36px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 11px; font-weight: 700; cursor: pointer; border-radius: 0; min-width: 0; width: 100%; }
+    .scale-root-btn, .scale-note-btn { height: 30px; padding: 0 6px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; border-radius: 0; transition: background 0.08s, color 0.08s; white-space: nowrap; }
     .scale-root-btn:hover, .scale-note-btn:hover { background: var(--gray-2); }
     .scale-root-btn.active, .scale-note-btn.active { background: var(--black); color: var(--white); border-color: var(--black); }
     .scale-root-btn.is-black, .scale-note-btn.is-black { background: var(--gray-2); color: var(--black); }
@@ -416,7 +487,7 @@
 
     /* ── Library ── */
     .lib-panel { border: var(--rule); margin-bottom: 6px; min-width: 0; max-width: 100%; }
-    .lib-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
+    .lib-bar { display: flex; align-items: center; gap: 10px; padding: 10px var(--pad); cursor: pointer; user-select: none; border-bottom: 1px solid transparent; transition: background 0.08s; }
     .lib-bar:hover { background: var(--gray-1); }
     .lib-bar.is-open { border-bottom: var(--rule-sm); }
     .lib-bar-label { font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gray-4); }
@@ -425,18 +496,12 @@
     .lib-count { font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; margin-left: auto; font-family: var(--mono); }
     .lib-body { display: none; }
     .lib-body.is-open { display: block; }
-    .lib-inner { padding: 14px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .lib-inner { padding: var(--pad); display: flex; flex-direction: column; gap: 10px; }
     .lib-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
-    .lib-list { display: flex; flex-direction: column; gap: 4px; max-height: 420px; overflow-y: auto; border: var(--rule-sm); padding: 6px; }
-    .lib-item { display: flex; flex-direction: column; gap: 6px; padding: 8px 8px; border-bottom: 1px solid var(--gray-1); }
+    .lib-list { display: flex; flex-direction: column; gap: 4px; max-height: 280px; overflow-y: auto; border: var(--rule-sm); padding: 6px; }
+    .lib-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-bottom: 1px solid var(--gray-1); }
     .lib-item:last-child { border-bottom: none; }
-    .lib-item-header { display: flex; align-items: center; gap: 8px; }
-    .lib-item-src { font-size: 10px; font-weight: 700; font-family: var(--mono); color: var(--gray-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-    .lib-item-info { font-size: 10px; font-family: var(--mono); color: var(--gray-3); line-height: 1.5; }
-    .lib-item-info b { color: var(--black); font-weight: 700; }
-    .lib-item-notes { font-size: 9px; font-family: var(--mono); color: var(--gray-3); letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .lib-item-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-    .lib-item-actions select { font-size: 10px; font-family: var(--mono); padding: 2px 4px; border: var(--rule-sm); background: var(--white); }
+    .lib-item-label { flex: 1; font-size: 11px; font-family: var(--mono); color: var(--black); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .lib-empty { padding: 8px; font-size: 10px; color: var(--gray-3); text-align: center; }
 
     /* ── Error toast ── */
@@ -486,7 +551,7 @@
       <span class="lbl">303 &#8594; In</span>
       <div class="group-inner"><select id="selIn" disabled></select></div>
     </div>
-    <div class="group">
+    <div class="group" style="display:none">
       <span class="lbl">Keyboard &#8594; 303</span>
       <div class="group-inner">
         <select id="selKbd" disabled></select>
@@ -513,6 +578,13 @@
         <button class="btn" id="btnSaveAll">All Groups</button>
       </div>
     </div>
+    <div class="group">
+      <span class="lbl">Load JSON</span>
+      <div class="group-inner" style="gap:6px">
+        <button class="btn" id="btnLoadJson">&#8593; Upload JSON</button>
+        <input type="file" id="fileInput" accept=".json" />
+      </div>
+    </div>
   </div>
 
   <div class="bank-group-bar">
@@ -532,6 +604,7 @@
         <button class="btn" id="btnUndo" disabled>&#8592; Undo</button>
         <button class="btn" id="btnRedo" disabled>Redo &#8594;</button>
         <button class="btn" id="btnResetBefore" disabled>Reset to Saved</button>
+        <button class="btn" id="btnResetAfter" disabled>Reset to Latest</button>
         <button class="btn" id="btnClearPat">Clear pattern</button>
       </div>
     </div>
@@ -591,7 +664,6 @@
       <span class="lbl">Scale<br>Lock</span>
       <div class="group-inner">
         <button type="button" class="btn" id="btnScaleLockToggle">Off</button>
-        <button type="button" class="btn" id="btnScaleLockCommit" disabled title="Bake scale-snapped pitches into the pattern permanently">Commit</button>
       </div>
     </div>
     <div class="group">
@@ -1355,15 +1427,9 @@
     dragChain   = [];
     chainDragMoved = false;
 
-    // Edit Live: switch display only, never touch hardware chain or send MIDI.
-    // If clicked pattern is in the active chain, re-enter chain view.
+    // Edit Live: only switch the display, never touch the chain or send MIDI
     if (editLiveMode) {
-      if (patChain.length > 1 && patChain.indexOf(chainAnchor) !== -1) {
-        switchToPat(chainAnchor);
-        renderGrid();
-      } else {
-        switchToPat(chainAnchor);
-      }
+      switchToPat(chainAnchor);
       refreshAllPills();
       return;
     }
@@ -1374,11 +1440,12 @@
       chainHoldActive = false;
       sendChainState(patChain, queuedChain);
     } else if (wasDrag && drag.length > 1) {
-      queuedPat = -1;
-      if (patChain.length > 1 && clkRunning) {
+      if (patChain.length > 1) {
+        // Already in chain: queue the new chain — hardware plays current chain to end first
         queuedChain = drag;
         sendChainState(patChain, queuedChain);
       } else {
+        // Not in chain: activate immediately
         patChain    = drag;
         queuedChain = [];
         switchToPat(patChain[0]);
@@ -1387,12 +1454,13 @@
     } else {
       // Tap (single pattern or single key release)
       if (patChain.length > 1) {
-        patChain = [];
+        // In chain: tap queues a single pattern (deactivates chain when reached)
+        var prevChain = patChain.slice(); // save before clearing
+        patChain = []; // clear chain on web side so next tap acts as single-pattern click
         queuedChain = [];
-        queuedPat = -1;
         switchToPat(chainAnchor);
-        sendChainState([chainAnchor], []);
-        sendProgramChange(chainAnchor);
+        sendChainState(prevChain, [chainAnchor]); // tell hardware: finish chain then play single
+        queuedPat = chainAnchor;
       } else {
         queuedChain = [];
         pillClick(chainAnchor);
@@ -1403,19 +1471,22 @@
 
   function pillClick(p) {
     if (editLiveMode) {
+      // Edit Live: only switch the display, never touch the playing pattern or chain
       switchToPat(p);
       return;
     }
     var hadChain = patChain.length > 1;
-    patChain    = [];
+    patChain    = []; // single click clears any chain
     queuedChain = [];
-    queuedPat   = -1;
     switchToPat(p);
     if (midiOut) {
       if (hadChain) {
+        // Tell hardware to clear chain and queue this single pattern
         sendChainState([p], []);
+      } else if (p !== playingPat) {
+        sendProgramChange(p);
       }
-      sendProgramChange(p);
+      queuedPat = p;
     }
   }
 
@@ -1511,7 +1582,9 @@
     var dirty = isDirty(activeGroup, activePat);
     document.getElementById('btnUndo').disabled        = !canUndo(activeGroup, activePat);
     document.getElementById('btnRedo').disabled        = !canRedo(activeGroup, activePat);
-    document.getElementById('btnResetBefore').disabled = !dirty;
+    document.getElementById('btnResetBefore').disabled = !canUndo(activeGroup, activePat);
+    document.getElementById('btnResetAfter').disabled  = !canRedo(activeGroup, activePat);
+    void dirty;
     refreshAllPills();
   }
 
@@ -1562,8 +1635,7 @@
     var grid = document.getElementById('seqGrid');
     grid.innerHTML = '';
 
-    var showChainView = patChain.length > 1 && patChain.indexOf(activePat) !== -1;
-    if (showChainView) {
+    if (patChain.length > 1) {
       grid.className = 'chain-view';
       for (var ci = 0; ci < patChain.length; ci++) {
         var pi = patChain[ci];
@@ -2482,7 +2554,7 @@
       if (patChain.length !== prevChainLen) {
         if (patChain.length > 1 && patChain.indexOf(activePat) === -1) {
           activePat = patChain[0];
-          document.getElementById('patLen').value = String(getLength(groups[activeGroup][activePat]));
+          document.getElementById('patLen').value = String(groups[activeGroup][activePat][127] || 16);
         }
         renderGrid();
       }
@@ -2702,11 +2774,9 @@
   }
 
   // ── Save JSON ──────────────────────────────────────────────────────
-  // v5: superOS-2bit format (48-byte blob, 2-bit time cells, 32 steps max).
-  // Times[] is per time step, pitches[] is the separate NOTE-event-order
-  // pitch stream (matches firmware data structure). Loader accepts v4 too
-  // since the JSON schema is identical -- only the underlying blob size changed.
-  var JSON_VERSION = 5;
+  // v4: OS-303 v0.6 stream model. Times[] is per time step, pitches[] is the
+  // separate NOTE-event-order pitch stream (matches firmware data structure).
+  var JSON_VERSION = 4;
   function nowISO() { return new Date().toISOString(); }
 
   function patternToJSON(g, p) {
@@ -2812,6 +2882,68 @@
     for (var ti = 0; ti < pd.times.length; ti++)   validateTime(pd.times[ti],   ti + 1);
     for (var pi = 0; pi < pd.pitches.length; pi++) validatePitch(pd.pitches[pi], pi + 1);
   }
+  function applyPatJSON(pd) {
+    var g = pd.group - 1, p = pd.pattern - 1;
+    var blob = groups[g][p];
+    for (var z = 0; z < PATTERN_SIZE; z++) blob[z] = 0;
+    for (var z2 = 0; z2 < MAX_STEPS; z2++) blob[z2] = PITCH_EMPTY;
+    setTriplet(blob, !!pd.triplet);
+    setDirection(blob, (pd.direction | 0) & DIR_MASK);
+    setTranspose(blob, pd.transpose | 0);
+    blob[ENGINE_OFF] = (pd.engine_select | 0) & 0xFF;
+    var len = Math.min(patternMaxSteps(blob), pd.length);
+    blob[LEN_OFF] = len;
+    for (var s = 0; s < len; s++) {
+      var trec = pd.times[s];
+      setTime(blob, s, trec.time);
+      setRatchet(blob, s, trec.ratchet ? 1 : 0);
+    }
+    for (var k = 0; k < pd.pitches.length; k++) {
+      var prec = pd.pitches[k];
+      if (prec.pitch !== null) {
+        var flags = (prec.accent ? 0x40 : 0) | (prec.slide ? 0x80 : 0);
+        blob[k] = clampPackedByte((prec.pitch & PITCH_PACK_MASK) | flags);
+      } else {
+        blob[k] = PITCH_EMPTY;
+      }
+    }
+    normalizePatternTimes(blob, len);
+    pushHistory(g, p);
+    saveGroupsToLS();
+    if (g === activeGroup && p === activePat) {
+      syncPatternToolbar();
+      renderGrid();
+    }
+    recomputeDirty();
+  }
+
+  document.getElementById('btnLoadJson').onclick = function() {
+    document.getElementById('fileInput').click();
+  };
+  document.getElementById('fileInput').onchange = function(ev) {
+    var file = ev.target.files[0]; if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        var obj = JSON.parse(e.target.result);
+        // Top-level validation
+        if (typeof obj !== 'object' || obj === null)          throw new Error('Root is not an object');
+        if (obj.version !== 4)                                throw new Error('Version mismatch: expected 4, got ' + obj.version);
+        if (!['pattern','bank','group','all'].includes(obj.type)) throw new Error('Unknown type: ' + obj.type);
+        if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('data array missing or empty');
+        // Validate all patterns before applying any
+        for (var i = 0; i < obj.data.length; i++) validatePatJSON(obj.data[i], i + 1);
+        // Apply
+        for (var j = 0; j < obj.data.length; j++) applyPatJSON(obj.data[j]);
+        log('Loaded ' + obj.data.length + ' pattern(s) from JSON (' + obj.type + ', saved ' + (obj.saved_at || 'unknown') + ')', 'log-syx');
+      } catch(err) {
+        alert('JSON load error: ' + err.message);
+        log('JSON load error: ' + err.message, 'log-err');
+      }
+      ev.target.value = '';
+    };
+    reader.readAsText(file);
+  };
 
   // ── Edit Live ──────────────────────────────────────────────────────
   document.getElementById('btnEditLive').onclick = function() {
@@ -2835,7 +2967,7 @@
   document.getElementById('btnPaste').onclick = function() {
     if (!clipboard) return;
     activeBlob().set(clipboard);
-    document.getElementById('patLen').value = String(getLength(clipboard));
+    document.getElementById('patLen').value = String(clipboard[127]);
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
     renderGrid();
@@ -2847,55 +2979,47 @@
   // ── Undo / redo / reset ────────────────────────────────────────────
   document.getElementById('btnUndo').onclick = function() {
     doUndo(activeGroup, activePat);
-    syncPatternToolbar();
-    saveGroupsToLS();
+    document.getElementById('patLen').value = String(activeBlob()[127]);
     renderGrid(); recomputeDirty();
-    pushFullPatternNow();
+    if (midiOut) scheduleLiveSend();
   };
   document.getElementById('btnRedo').onclick = function() {
     doRedo(activeGroup, activePat);
-    syncPatternToolbar();
-    saveGroupsToLS();
+    document.getElementById('patLen').value = String(activeBlob()[127]);
     renderGrid(); recomputeDirty();
-    pushFullPatternNow();
+    if (midiOut) scheduleLiveSend();
   };
   document.getElementById('btnResetBefore').onclick = function() {
+    // Jump to commit baseline
     var ci = commitIdx[activeGroup][activePat];
     var h  = history[activeGroup][activePat];
     if (h[ci]) {
-      groups[activeGroup][activePat].set(h[ci]);
       histIdx[activeGroup][activePat] = ci;
-      h.splice(ci + 1);
-      syncPatternToolbar();
-      saveGroupsToLS();
+      groups[activeGroup][activePat].set(h[ci]);
+      document.getElementById('patLen').value = String(activeBlob()[127]);
       renderGrid(); recomputeDirty();
-      pushFullPatternNow();
-      log('Reset to saved state', 'log-ack');
     }
+  };
+  document.getElementById('btnResetAfter').onclick = function() {
+    // Jump to latest (end of history)
+    var h  = history[activeGroup][activePat];
+    histIdx[activeGroup][activePat] = h.length - 1;
+    groups[activeGroup][activePat].set(h[h.length - 1]);
+    document.getElementById('patLen').value = String(activeBlob()[127]);
+    renderGrid(); recomputeDirty();
   };
   document.getElementById('btnClearPat').onclick = function() {
     var blob = activeBlob();
     var keepLen = Math.max(1, getLength(blob));
-    var keepDir = getDirection(blob);
-    var keepTriplet = isTriplet(blob);
-    var keepTranspose = getTranspose(blob);
-    for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
-    for (var p = 0; p < MAX_STEPS; p++) blob[p] = PITCH_DEFAULT;
-    blob[RAT_OFF] = blob[RAT_OFF+1] = blob[RAT_OFF+2] = blob[RAT_OFF+3] = 0;
+    clearPatternMinimalRest(blob);
     blob[LEN_OFF] = keepLen;
-    setDirection(blob, keepDir);
-    setTriplet(blob, keepTriplet);
-    setTranspose(blob, keepTranspose);
-    setTime(blob, 0, 1);
-    for (var s = 1; s < keepLen; s++) setTime(blob, s, 0);
-    ensurePitchStream(blob);
     syncPatternToolbar();
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
     renderGrid();
     recomputeDirty();
     pushFullPatternNow();
-    log('Cleared pattern (' + keepLen + ' steps)', 'log-ack');
+    log('Cleared pattern (' + keepLen + ' steps, all rest)', 'log-ack');
   };
 
   // ── Randomize ──────────────────────────────────────────────────────
@@ -3229,25 +3353,10 @@
     sendScaleLockPats(pats);
   }
 
-  function commitScaleLock() {
-    if (!scaleLockEnabled) return;
-    var pats = scaleLockAffectedPats();
-    for (var i = 0; i < pats.length; i++) {
-      var g = pats[i].g, p = pats[i].p;
-      scaleLockSnaps[g][p] = null;
-      takeFreshSnap(g, p);
-      pushHistory(g, p);
-    }
-    saveGroupsToLS(); recomputeDirty();
-    log('Scale lock committed — pitches baked into ' +
-        (pats.length > 1 ? pats.length + ' patterns' : 'pattern'), 'log-ack');
-  }
-
   function updateScaleLockUI() {
     var toggleBtn = document.getElementById('btnScaleLockToggle');
     toggleBtn.textContent = scaleLockEnabled ? 'On' : 'Off';
     toggleBtn.classList.toggle('is-on', scaleLockEnabled);
-    document.getElementById('btnScaleLockCommit').disabled = !scaleLockEnabled;
     var rootBtns = document.getElementById('scaleRootBtns').querySelectorAll('.scale-root-btn');
     rootBtns.forEach(function(b) {
       b.classList.toggle('active', parseInt(b.dataset.root, 10) === scaleLockRoot);
@@ -3348,9 +3457,6 @@
     // Toggle
     document.getElementById('btnScaleLockToggle').addEventListener('click', function() {
       if (scaleLockEnabled) disableScaleLock(); else enableScaleLock();
-    });
-    document.getElementById('btnScaleLockCommit').addEventListener('click', function() {
-      commitScaleLock();
     });
     updateScaleLockUI();
   }
@@ -3738,8 +3844,8 @@
     try { localStorage.setItem(LIB_LS_KEY, JSON.stringify(libEntries)); } catch (e) {}
   }
 
-  function libApplyPd(pd, g, p) {
-    var blob = groups[g][p];
+  function libApplyPdToActive(pd) {
+    var blob = activeBlob();
     for (var z = 0; z < PATTERN_SIZE; z++) blob[z] = 0;
     for (var z2 = 0; z2 < MAX_STEPS; z2++) blob[z2] = PITCH_EMPTY;
     setTriplet(blob, !!pd.triplet);
@@ -3764,34 +3870,12 @@
       }
     }
     normalizePatternTimes(blob, len);
-    pushHistory(g, p);
+    syncPatternToolbar();
+    pushHistory(activeGroup, activePat);
     saveGroupsToLS();
-    if (g === activeGroup && p === activePat) {
-      syncPatternToolbar();
-      renderGrid();
-    }
+    renderGrid();
     recomputeDirty();
-    if (liveEnabled && midiOut && g === activeGroup && p === activePat) scheduleLiveSend();
-  }
-
-  function libSummarizePd(pd) {
-    var nc = 0, rc = 0, tc = 0, ac = 0, sc = 0;
-    for (var i = 0; i < pd.times.length; i++) {
-      var t = pd.times[i].time;
-      if (t === 1) nc++;
-      else if (t === 2) tc++;
-      else rc++;
-    }
-    var pitches = pd.pitches || [];
-    var noteSeq = [];
-    for (var k = 0; k < pitches.length; k++) {
-      var pr = pitches[k];
-      if (pr.accent) ac++;
-      if (pr.slide) sc++;
-      if (pr.pitch !== null && pr.pitch !== undefined)
-        noteSeq.push(noteNameFromLinear(unpackLinear(pr.pitch & PITCH_PACK_MASK)));
-    }
-    return { nc: nc, rc: rc, tc: tc, ac: ac, sc: sc, noteSeq: noteSeq };
+    if (liveEnabled && midiOut) scheduleLiveSend();
   }
 
   function libRender() {
@@ -3807,19 +3891,18 @@
       return;
     }
     libEntries.forEach(function(entry, idx) {
-      var pd = entry.pd;
-      var sum = libSummarizePd(pd);
-      var dir = kDirNames[pd.direction] || 'Fwd';
-      var tp = pd.transpose | 0;
-
       var row = document.createElement('div');
       row.className = 'lib-item';
-
-      var header = document.createElement('div');
-      header.className = 'lib-item-header';
-      var srcEl = document.createElement('span');
-      srcEl.className = 'lib-item-src';
-      srcEl.textContent = entry.src + '  G' + entry.group + ' P' + entry.pattern;
+      var lbl = document.createElement('span');
+      lbl.className = 'lib-item-label';
+      lbl.textContent = entry.src + ' \u203A G' + entry.group + 'P' + entry.pattern + ' (len ' + entry.length + ')';
+      var loadBtn = document.createElement('button');
+      loadBtn.className = 'btn btn-primary';
+      loadBtn.textContent = 'Load';
+      loadBtn.addEventListener('click', function() {
+        libApplyPdToActive(entry.pd);
+        log('Library: loaded "' + entry.src + '" G' + entry.group + 'P' + entry.pattern + ' into G' + (activeGroup+1) + 'P' + (activePat+1), 'log-ack');
+      });
       var delBtn = document.createElement('button');
       delBtn.className = 'btn';
       delBtn.textContent = '\u2715';
@@ -3829,65 +3912,9 @@
         libSaveToLS();
         libRender();
       });
-      header.appendChild(srcEl);
-      header.appendChild(delBtn);
-
-      var info = document.createElement('div');
-      info.className = 'lib-item-info';
-      info.innerHTML = '<b>Len</b> ' + pd.length +
-        ' &middot; <b>Notes</b> ' + sum.nc +
-        ' &middot; <b>Ties</b> ' + sum.tc +
-        ' &middot; <b>Rests</b> ' + sum.rc +
-        ' &middot; <b>Dir</b> ' + dir +
-        (tp ? ' &middot; <b>Tr</b> ' + tp : '') +
-        (sum.ac ? ' &middot; <b>Acc</b> ' + sum.ac : '') +
-        (sum.sc ? ' &middot; <b>Sld</b> ' + sum.sc : '') +
-        (pd.triplet ? ' &middot; <b>Triplet</b>' : '');
-
-      var notesEl = document.createElement('div');
-      notesEl.className = 'lib-item-notes';
-      notesEl.textContent = sum.noteSeq.length ? sum.noteSeq.join(' ') : '(no notes)';
-
-      var actions = document.createElement('div');
-      actions.className = 'lib-item-actions';
-
-      var gSel = document.createElement('select');
-      gSel.title = 'Destination group';
-      for (var gi = 0; gi < NUM_GROUPS; gi++) {
-        var o = document.createElement('option');
-        o.value = gi; o.textContent = 'G' + (gi + 1);
-        if (gi === activeGroup) o.selected = true;
-        gSel.appendChild(o);
-      }
-      var pSel = document.createElement('select');
-      pSel.title = 'Destination pattern';
-      for (var pi = 0; pi < PATS_PER_GROUP; pi++) {
-        var o2 = document.createElement('option');
-        o2.value = pi; o2.textContent = 'P' + (pi + 1);
-        if (pi === activePat) o2.selected = true;
-        pSel.appendChild(o2);
-      }
-
-      var loadBtn = document.createElement('button');
-      loadBtn.className = 'btn btn-primary';
-      loadBtn.textContent = 'Load';
-      loadBtn.addEventListener('click', (function(e, gs, ps) {
-        return function() {
-          var tg = parseInt(gs.value, 10);
-          var tp2 = parseInt(ps.value, 10);
-          libApplyPd(e.pd, tg, tp2);
-          log('Library: loaded "' + e.src + '" into G' + (tg+1) + ' P' + (tp2+1), 'log-ack');
-        };
-      })(entry, gSel, pSel));
-
-      actions.appendChild(gSel);
-      actions.appendChild(pSel);
-      actions.appendChild(loadBtn);
-
-      row.appendChild(header);
-      row.appendChild(info);
-      row.appendChild(notesEl);
-      row.appendChild(actions);
+      row.appendChild(lbl);
+      row.appendChild(loadBtn);
+      row.appendChild(delBtn);
       listEl.appendChild(row);
     });
   }
@@ -3899,7 +3926,7 @@
         try {
           var obj = JSON.parse(e.target.result);
           if (typeof obj !== 'object' || obj === null) throw new Error('not an object');
-          if (obj.version !== 5) throw new Error('bad version: expected 5, got ' + obj.version);
+          if (obj.version !== 1 && obj.version !== 2) throw new Error('bad version');
           if (!['pattern','bank','group','all'].includes(obj.type)) throw new Error('bad type');
           if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('empty data');
           var added = 0;
@@ -3928,12 +3955,6 @@
     Promise.all(files.map(libIngestFile)).then(function() {
       libSaveToLS();
       libRender();
-      var body = document.getElementById('libBody');
-      var bar = document.getElementById('libBar');
-      if (!body.classList.contains('is-open')) {
-        body.classList.add('is-open');
-        bar.classList.add('is-open');
-      }
     });
     ev.target.value = '';
   });
