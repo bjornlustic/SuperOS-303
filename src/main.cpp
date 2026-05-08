@@ -984,7 +984,12 @@ void loop() {
           s_chain_active = true;
           s_chain_len    = rx_al;
           for (uint8_t ci = 0; ci < rx_al; ++ci) s_chain_pats[ci] = rx_ap[ci];
-          s_chain_pos    = s_chain_len - 1; // chain advance will queue pats[0] next
+          if (!clk_run) {
+            s_chain_pos = 0;
+            engine.SetPattern(rx_ap[0], true);
+          } else {
+            s_chain_pos = s_chain_len - 1; // chain advance will queue pats[0] next
+          }
         } else if (rx_al == 1) {
           s_chain_active = false;
           s_chain_len    = 1;

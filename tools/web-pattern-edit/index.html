@@ -1374,12 +1374,11 @@
       chainHoldActive = false;
       sendChainState(patChain, queuedChain);
     } else if (wasDrag && drag.length > 1) {
-      if (patChain.length > 1) {
-        // Already in chain: queue the new chain — hardware plays current chain to end first
+      queuedPat = -1;
+      if (patChain.length > 1 && clkRunning) {
         queuedChain = drag;
         sendChainState(patChain, queuedChain);
       } else {
-        // Not in chain: activate immediately
         patChain    = drag;
         queuedChain = [];
         switchToPat(patChain[0]);
@@ -1390,12 +1389,10 @@
       if (patChain.length > 1) {
         patChain = [];
         queuedChain = [];
+        queuedPat = -1;
         switchToPat(chainAnchor);
         sendChainState([chainAnchor], []);
-        if (!clkRunning) {
-          sendProgramChange(chainAnchor);
-        }
-        queuedPat = chainAnchor;
+        sendProgramChange(chainAnchor);
       } else {
         queuedChain = [];
         pillClick(chainAnchor);
@@ -1412,15 +1409,13 @@
     var hadChain = patChain.length > 1;
     patChain    = [];
     queuedChain = [];
+    queuedPat   = -1;
     switchToPat(p);
     if (midiOut) {
       if (hadChain) {
         sendChainState([p], []);
       }
-      if (p !== playingPat) {
-        sendProgramChange(p);
-      }
-      queuedPat = p;
+      sendProgramChange(p);
     }
   }
 
