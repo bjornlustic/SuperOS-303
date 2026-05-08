@@ -1000,6 +1000,7 @@ void loop() {
         s_chain_hold_key        = 0xff;
         s_chain_hold_loop       = false;
         s_chain_hold_target_pat = 0xff;
+        emit_chain_state();
       }
     }
   }

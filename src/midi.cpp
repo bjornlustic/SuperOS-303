@@ -341,9 +341,9 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     s_rx_chain_pending = true;
     break;
   }
-  case 0x1D: { // host → 303: queue pattern (switches at next pattern wrap, not immediately)
+  case 0x1D: { // host → 303: queue pattern; immediate when stopped
     if (n < 3 || !g_eng) return;
-    g_eng->SetPattern(p[2] & 0x0F, false);
+    g_eng->SetPattern(p[2] & 0x0F, !g_clk_run);
     break;
   }
   case 0x20: { // request config

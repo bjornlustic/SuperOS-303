@@ -513,12 +513,6 @@
         <button class="btn" id="btnSaveAll">All Groups</button>
       </div>
     </div>
-    <div class="group">
-      <span class="lbl">Load JSON</span>
-      <div class="group-inner" style="gap:6px">
-        <button class="btn" id="btnLoadJson">&#8593; Upload JSON</button>
-      </div>
-    </div>
   </div>
 
   <div class="bank-group-bar">
@@ -1394,12 +1388,13 @@
     } else {
       // Tap (single pattern or single key release)
       if (patChain.length > 1) {
-        // In chain: tap queues a single pattern (deactivates chain when reached)
-        var prevChain = patChain.slice(); // save before clearing
-        patChain = []; // clear chain on web side so next tap acts as single-pattern click
+        patChain = [];
         queuedChain = [];
         switchToPat(chainAnchor);
-        sendChainState(prevChain, [chainAnchor]); // tell hardware: finish chain then play single
+        sendChainState([chainAnchor], []);
+        if (!clkRunning) {
+          sendProgramChange(chainAnchor);
+        }
         queuedPat = chainAnchor;
       } else {
         queuedChain = [];
@@ -1411,19 +1406,18 @@
 
   function pillClick(p) {
     if (editLiveMode) {
-      // Edit Live: only switch the display, never touch the playing pattern or chain
       switchToPat(p);
       return;
     }
     var hadChain = patChain.length > 1;
-    patChain    = []; // single click clears any chain
+    patChain    = [];
     queuedChain = [];
     switchToPat(p);
     if (midiOut) {
       if (hadChain) {
-        // Tell hardware to clear chain and queue this single pattern
         sendChainState([p], []);
-      } else if (p !== playingPat) {
+      }
+      if (p !== playingPat) {
         sendProgramChange(p);
       }
       queuedPat = p;
@@ -2823,9 +2817,6 @@
     for (var ti = 0; ti < pd.times.length; ti++)   validateTime(pd.times[ti],   ti + 1);
     for (var pi = 0; pi < pd.pitches.length; pi++) validatePitch(pd.pitches[pi], pi + 1);
   }
-  document.getElementById('btnLoadJson').onclick = function() {
-    document.getElementById('libFileInput').click();
-  };
 
   // ── Edit Live ──────────────────────────────────────────────────────
   document.getElementById('btnEditLive').onclick = function() {
