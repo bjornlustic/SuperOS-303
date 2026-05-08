@@ -629,7 +629,7 @@ void midi_send_pattern_steps(uint8_t pat, const Sequence &seq, uint8_t len) {
 
 // --- Step lock broadcast (SysEx 0x19) -------------------------------------------
 void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked) {
-  const uint8_t inner[5] = {0x7D, 0x19, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), locked ? 1u : 0u};
+  const uint8_t inner[5] = {0x7D, 0x19, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), uint8_t(locked)};
   tx_push_message(inner, 5);
 }
 
