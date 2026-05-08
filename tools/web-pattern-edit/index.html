@@ -533,7 +533,6 @@
         <button class="btn" id="btnUndo" disabled>&#8592; Undo</button>
         <button class="btn" id="btnRedo" disabled>Redo &#8594;</button>
         <button class="btn" id="btnResetBefore" disabled>Reset to Saved</button>
-        <button class="btn" id="btnResetAfter" disabled>Reset to Latest</button>
         <button class="btn" id="btnClearPat">Clear pattern</button>
       </div>
     </div>
@@ -593,6 +592,7 @@
       <span class="lbl">Scale<br>Lock</span>
       <div class="group-inner">
         <button type="button" class="btn" id="btnScaleLockToggle">Off</button>
+        <button type="button" class="btn" id="btnScaleLockCommit" disabled title="Bake scale-snapped pitches into the pattern permanently">Commit</button>
       </div>
     </div>
     <div class="group">
@@ -1356,9 +1356,15 @@
     dragChain   = [];
     chainDragMoved = false;
 
-    // Edit Live: only switch the display, never touch the chain or send MIDI
+    // Edit Live: switch display only, never touch hardware chain or send MIDI.
+    // If clicked pattern is in the active chain, re-enter chain view.
     if (editLiveMode) {
-      switchToPat(chainAnchor);
+      if (patChain.length > 1 && patChain.indexOf(chainAnchor) !== -1) {
+        switchToPat(chainAnchor);
+        renderGrid();
+      } else {
+        switchToPat(chainAnchor);
+      }
       refreshAllPills();
       return;
     }
@@ -1511,9 +1517,7 @@
     var dirty = isDirty(activeGroup, activePat);
     document.getElementById('btnUndo').disabled        = !canUndo(activeGroup, activePat);
     document.getElementById('btnRedo').disabled        = !canRedo(activeGroup, activePat);
-    document.getElementById('btnResetBefore').disabled = !canUndo(activeGroup, activePat);
-    document.getElementById('btnResetAfter').disabled  = !canRedo(activeGroup, activePat);
-    void dirty;
+    document.getElementById('btnResetBefore').disabled = !dirty;
     refreshAllPills();
   }
 
@@ -1564,7 +1568,8 @@
     var grid = document.getElementById('seqGrid');
     grid.innerHTML = '';
 
-    if (patChain.length > 1) {
+    var showChainView = patChain.length > 1 && patChain.indexOf(activePat) !== -1;
+    if (showChainView) {
       grid.className = 'chain-view';
       for (var ci = 0; ci < patChain.length; ci++) {
         var pi = patChain[ci];
@@ -2908,47 +2913,55 @@
   // ── Undo / redo / reset ────────────────────────────────────────────
   document.getElementById('btnUndo').onclick = function() {
     doUndo(activeGroup, activePat);
-    document.getElementById('patLen').value = String(activeBlob()[127]);
+    syncPatternToolbar();
+    saveGroupsToLS();
     renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
   };
   document.getElementById('btnRedo').onclick = function() {
     doRedo(activeGroup, activePat);
-    document.getElementById('patLen').value = String(activeBlob()[127]);
+    syncPatternToolbar();
+    saveGroupsToLS();
     renderGrid(); recomputeDirty();
-    if (midiOut) scheduleLiveSend();
+    pushFullPatternNow();
   };
   document.getElementById('btnResetBefore').onclick = function() {
-    // Jump to commit baseline
     var ci = commitIdx[activeGroup][activePat];
     var h  = history[activeGroup][activePat];
     if (h[ci]) {
-      histIdx[activeGroup][activePat] = ci;
       groups[activeGroup][activePat].set(h[ci]);
-      document.getElementById('patLen').value = String(activeBlob()[127]);
+      histIdx[activeGroup][activePat] = ci;
+      h.splice(ci + 1);
+      syncPatternToolbar();
+      saveGroupsToLS();
       renderGrid(); recomputeDirty();
+      pushFullPatternNow();
+      log('Reset to saved state', 'log-ack');
     }
-  };
-  document.getElementById('btnResetAfter').onclick = function() {
-    // Jump to latest (end of history)
-    var h  = history[activeGroup][activePat];
-    histIdx[activeGroup][activePat] = h.length - 1;
-    groups[activeGroup][activePat].set(h[h.length - 1]);
-    document.getElementById('patLen').value = String(activeBlob()[127]);
-    renderGrid(); recomputeDirty();
   };
   document.getElementById('btnClearPat').onclick = function() {
     var blob = activeBlob();
     var keepLen = Math.max(1, getLength(blob));
-    clearPatternMinimalRest(blob);
+    var keepDir = getDirection(blob);
+    var keepTriplet = isTriplet(blob);
+    var keepTranspose = getTranspose(blob);
+    for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
+    for (var p = 0; p < MAX_STEPS; p++) blob[p] = PITCH_DEFAULT;
+    blob[RAT_OFF] = blob[RAT_OFF+1] = blob[RAT_OFF+2] = blob[RAT_OFF+3] = 0;
     blob[LEN_OFF] = keepLen;
+    setDirection(blob, keepDir);
+    setTriplet(blob, keepTriplet);
+    setTranspose(blob, keepTranspose);
+    setTime(blob, 0, 1);
+    for (var s = 1; s < keepLen; s++) setTime(blob, s, 0);
+    ensurePitchStream(blob);
     syncPatternToolbar();
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
     renderGrid();
     recomputeDirty();
     pushFullPatternNow();
-    log('Cleared pattern (' + keepLen + ' steps, all rest)', 'log-ack');
+    log('Cleared pattern (' + keepLen + ' steps)', 'log-ack');
   };
 
   // ── Randomize ──────────────────────────────────────────────────────
@@ -3282,10 +3295,25 @@
     sendScaleLockPats(pats);
   }
 
+  function commitScaleLock() {
+    if (!scaleLockEnabled) return;
+    var pats = scaleLockAffectedPats();
+    for (var i = 0; i < pats.length; i++) {
+      var g = pats[i].g, p = pats[i].p;
+      scaleLockSnaps[g][p] = null;
+      takeFreshSnap(g, p);
+      pushHistory(g, p);
+    }
+    saveGroupsToLS(); recomputeDirty();
+    log('Scale lock committed — pitches baked into ' +
+        (pats.length > 1 ? pats.length + ' patterns' : 'pattern'), 'log-ack');
+  }
+
   function updateScaleLockUI() {
     var toggleBtn = document.getElementById('btnScaleLockToggle');
     toggleBtn.textContent = scaleLockEnabled ? 'On' : 'Off';
     toggleBtn.classList.toggle('is-on', scaleLockEnabled);
+    document.getElementById('btnScaleLockCommit').disabled = !scaleLockEnabled;
     var rootBtns = document.getElementById('scaleRootBtns').querySelectorAll('.scale-root-btn');
     rootBtns.forEach(function(b) {
       b.classList.toggle('active', parseInt(b.dataset.root, 10) === scaleLockRoot);
@@ -3386,6 +3414,9 @@
     // Toggle
     document.getElementById('btnScaleLockToggle').addEventListener('click', function() {
       if (scaleLockEnabled) disableScaleLock(); else enableScaleLock();
+    });
+    document.getElementById('btnScaleLockCommit').addEventListener('click', function() {
+      commitScaleLock();
     });
     updateScaleLockUI();
   }

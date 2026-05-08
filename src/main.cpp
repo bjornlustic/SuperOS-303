@@ -22,6 +22,7 @@ PersistentSettings GlobalSettings;
 static uint8_t ticks = 0;
 static uint8_t clk_count = 0;
 static uint8_t transpose = 12; // range is 0 to 47; 0 = no transpose
+static uint8_t total_transpose = 12;
 
 static PinState inputs[INPUT_COUNT];
 
@@ -347,7 +348,17 @@ extern "C" {
 // =============================================================================
 // setup — MIDI, GPIO, optional bootloader, EEPROM load
 // =============================================================================
+static void usb_shutdown_hw() {
+  UDIEN = 0;
+  UDCON = 1;
+  USBCON = (1 << FRZCLK);
+  PLLCSR = 0;
+}
+
 void setup() {
+#if !DEBUG
+  usb_shutdown_hw();
+#endif
   midi_init(&engine);
 
   for (uint8_t i = 0; i < ARRAY_SIZE(INPUTS); ++i)
@@ -466,11 +477,11 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       const uint8_t updated_note = input_pitch(true, clk_run);
       // When user presses a pitch key while TAP is held, re-audition with the new pitch.
       if (!clk_run && updated_note) {
-        uint16_t mn = uint16_t(updated_note) + transpose;
+        uint16_t mn = uint16_t(updated_note) + total_transpose;
         if (mn > 127) mn = 127;
         const bool acc = engine.get_sequence().get_accent();
         const uint8_t vel = acc ? 127 : 80;
-        s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + transpose);
+        s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
         s_tap_pitch_preview_accent = acc;
         midi_audition_note_on(uint8_t(mn), vel);
       }
@@ -508,11 +519,11 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
     engine.StepBack();
     if (!clk_run && engine.get_mode() == PITCH_MODE &&
         engine.get_sequence().get_time() != 0) {
-      uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
+      uint16_t mn = uint16_t(engine.get_midi_note()) + total_transpose;
       if (mn > 127) mn = 127;
       const bool acc = engine.get_sequence().get_accent();
       const uint8_t vel = acc ? 127 : 80;
-      s_back_pitch_preview_cv = uint8_t(engine.get_pitch() + transpose);
+      s_back_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
       s_tap_pitch_preview_accent = acc;
       s_back_pitch_preview_gate = true;
       midi_audition_note_on(uint8_t(mn), vel);
@@ -577,7 +588,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     Leds::Set(ACCENT_KEY_LED, !bank); // A
     Leds::Set(SLIDE_KEY_LED,   bank); // B
 
-    if (clk_run && write_mode) {
+    if (clk_run) {
       const uint8_t tp = engine.get_time_pos();
       Leds::Set(OutputIndex(tp & 0x7), true);
       Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
@@ -832,6 +843,8 @@ void loop() {
   const bool dial_track_write   = (dial == DialMode::TrackWrite);
   const bool dial_track_play    = (dial == DialMode::TrackPlay);
   const bool dial_track_mode    = dial_track_write || dial_track_play;
+
+  total_transpose = uint8_t(transpose + engine.get_pattern_transpose());
 
   // Read track index from the 3-bit dial (TRACK_BIT0..2). Tracks 0..7 select
   // 1-of-8 track slots. In track modes, the track index also forces the active
@@ -1202,7 +1215,7 @@ void loop() {
                 const uint8_t linear = unpack_pitch_linear(pb & 0x3f);
                 const bool acc = (pb & (1 << 6)) != 0;
                 if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
-                s_tap_pitch_preview_cv = uint8_t(linear + transpose);
+                s_tap_pitch_preview_cv = uint8_t(linear + total_transpose);
                 s_tap_pitch_preview_accent = acc;
                 s_tap_pitch_preview_gate = true;
               }
@@ -1265,7 +1278,7 @@ void loop() {
               const uint8_t lin = unpack_pitch_linear(ab & 0x3f);
               const bool acc = (ab & (1 << 6)) != 0;
               if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
-              s_tap_pitch_preview_cv = uint8_t(lin + transpose);
+              s_tap_pitch_preview_cv = uint8_t(lin + total_transpose);
               s_tap_pitch_preview_accent = acc;
               s_tap_pitch_preview_gate = true;
             }
@@ -1661,7 +1674,7 @@ void loop() {
 
     if (clk_run) {
       if (engine.Clock()) {
-        midi_after_clock(engine, transpose);
+        midi_after_clock(engine, total_transpose);
         // Wrap-only anchor: send the playhead position via 0x15 only when
         // time_pos transitions back to 0. The web editor counts MIDI clock
         // bytes to interpolate steps between anchors, so we avoid the
@@ -1717,7 +1730,7 @@ void loop() {
         }
       } else if (engine.is_ratchet_retrigger()) {
         s_ratchet_gate_reset = true;
-        midi_ratchet_retrigger(engine, transpose);
+        midi_ratchet_retrigger(engine, total_transpose);
       }
     }
   }
@@ -1796,11 +1809,11 @@ void loop() {
           const uint8_t pc = auds.get_pitch_count();
           if (pc > 0 && auds.pitch_pos >= 0 && auds.pitch_pos < int(pc) &&
               auds.pitch[auds.pitch_pos] != PITCH_EMPTY) {
-            uint16_t mn = uint16_t(engine.get_midi_note()) + transpose;
+            uint16_t mn = uint16_t(engine.get_midi_note()) + total_transpose;
             if (mn > 127) mn = 127;
             const bool acc = auds.get_accent();
             const uint8_t vel = acc ? 127 : 80;
-            s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + transpose);
+            s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
             s_tap_pitch_preview_accent = acc;
             s_tap_pitch_preview_gate = true;
             midi_audition_note_on(uint8_t(mn), vel);
@@ -1877,10 +1890,10 @@ void loop() {
         // After recording the pitch, open audition on the hardware VCO + MIDI out.
         // Set the preview CV/gate so the DAC plays the written note (not the next step).
         if (!clk_run && check && written_note) {
-          uint16_t mn = uint16_t(written_note) + transpose;
+          uint16_t mn = uint16_t(written_note) + total_transpose;
           if (mn > 127) mn = 127;
           const uint8_t vel = inputs[ACCENT_KEY].held() ? 127 : 80;
-          s_tap_pitch_preview_cv  = uint8_t(written_note - 36 + transpose);
+          s_tap_pitch_preview_cv  = uint8_t(written_note - 36 + total_transpose);
           s_tap_pitch_preview_gate = true;
           midi_audition_note_on(uint8_t(mn), vel);
         }
@@ -1938,7 +1951,7 @@ void loop() {
     // Metronome click: override pitch with fixed CV (no transpose); accent on downbeat
     const uint8_t pitch_cv = s_metro_gate_pulse
         ? s_metro_pitch_cv
-        : uint8_t(engine.get_pitch() + transpose);
+        : uint8_t(engine.get_pitch() + total_transpose);
     DAC::SetPitch(pitch_cv);
     DAC::SetSlide(engine.get_slide_dac() || force_slide_live);
     DAC::SetAccent(engine.get_accent() || force_accent_live || (s_metro_gate_pulse && s_metro_is_downbeat));
@@ -1953,7 +1966,7 @@ void loop() {
     DAC::SetGate(s_ratchet_gate_reset ? false : (gate_running || s_metro_gate_pulse));
     s_ratchet_gate_reset = false;
   } else {
-    uint8_t pitch_cv = uint8_t(engine.get_pitch() + transpose);
+    uint8_t pitch_cv = uint8_t(engine.get_pitch() + total_transpose);
     bool gate = midi_live_gate();
     if (s_tap_pitch_preview_gate) {
       pitch_cv = s_tap_pitch_preview_cv;

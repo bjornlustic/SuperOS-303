@@ -980,6 +980,9 @@ struct Engine {
   uint8_t get_midi_note() const {
     return uint8_t(36 + get_sequence().get_pitch_dir(last_step_dir_));
   }
+  uint8_t get_pattern_transpose() const {
+    return get_sequence().transpose;
+  }
   bool get_slide() const {
     return get_sequence().get_slide();
   }
