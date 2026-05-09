@@ -474,6 +474,7 @@
     .log-syx  { color: var(--black); }
     .log-err  { color: var(--red); font-weight: 700; }
     .log-ack  { color: var(--gray-4); }
+    .log-edit { color: var(--blue, #06f); }
 
     /* ── Scale Lock ── */
     .scale-select { height: 36px; padding: 0 8px; background: var(--white); border: var(--rule-sm); color: var(--black); font-family: var(--font); font-size: 11px; font-weight: 700; cursor: pointer; border-radius: 0; min-width: 0; width: 100%; }
@@ -604,7 +605,6 @@
         <button class="btn" id="btnUndo" disabled>&#8592; Undo</button>
         <button class="btn" id="btnRedo" disabled>Redo &#8594;</button>
         <button class="btn" id="btnResetBefore" disabled>Reset to Saved</button>
-        <button class="btn" id="btnResetAfter" disabled>Reset to Latest</button>
         <button class="btn" id="btnClearPat">Clear pattern</button>
       </div>
     </div>
@@ -878,6 +878,22 @@
     el.scrollTop = el.scrollHeight;
     logEntries++;
     document.getElementById('logCount').textContent = logEntries;
+  }
+  function logEditHistory(action, g, p) {
+    if (typeof history === 'undefined' || !history[0]) return;
+    if (g === undefined) g = activeGroup;
+    if (p === undefined) p = activePat;
+    var h = history[g][p], idx = histIdx[g][p];
+    var blob = h[idx];
+    if (!blob) return;
+    var len = Math.min(MAX_STEPS, Math.max(1, blob[LEN_OFF] | 0));
+    var nc = 0, tc = 0;
+    for (var i = 0; i < len; i++) {
+      var t = (blob[TIME_OFF + (i >> 2)] >> (2 * (i & 3))) & 0x03;
+      if (t === 1) nc++;
+      else if (t === 2) tc++;
+    }
+    log(action + ' G' + (g + 1) + '·P' + (p + 1) + ' [' + (idx + 1) + '/' + h.length + '] len=' + len + ' notes=' + nc + ' ties=' + tc, 'log-edit');
   }
   document.getElementById('logBar').addEventListener('click', function() {
     var bar = document.getElementById('logBar'), body = document.getElementById('logBody');
@@ -1248,6 +1264,7 @@
     h.splice(idx + 1);
     h.push(cloneU8(groups[g][p]));
     if (h.length > 50) { h.shift(); } else { histIdx[g][p] = h.length - 1; }
+    if (typeof logEditHistory === 'function') logEditHistory('Edit', g, p);
   }
   function canUndo(g, p) { return histIdx[g][p] > 0; }
   function canRedo(g, p) { return histIdx[g][p] < history[g][p].length - 1; }
@@ -1583,7 +1600,6 @@
     document.getElementById('btnUndo').disabled        = !canUndo(activeGroup, activePat);
     document.getElementById('btnRedo').disabled        = !canRedo(activeGroup, activePat);
     document.getElementById('btnResetBefore').disabled = !canUndo(activeGroup, activePat);
-    document.getElementById('btnResetAfter').disabled  = !canRedo(activeGroup, activePat);
     void dirty;
     refreshAllPills();
   }
@@ -1886,9 +1902,14 @@
     var blob = activeBlob();
     var len = Math.min(patternMaxSteps(blob), Math.max(1, Number(document.getElementById('patLen').value) | 0));
     blob[LEN_OFF] = len;
-    var syncRoot = (patChain.length > 1)
-      ? (document.querySelector('.chain-pat-section.is-active') || document)
-      : document;
+    // Detect chain view from DOM, not patChain — pillClick clears patChain
+    // before calling switchToPat (which calls syncBlob), so by the time we
+    // get here patChain is [] but the chain DOM still spans all sections.
+    // Falling back to `document` then iterates every chain section's cards
+    // and the last-section pitch knob values clobber the active pattern's
+    // pitch slots.
+    var activeSec = document.querySelector('.chain-pat-section.is-active');
+    var syncRoot = activeSec || document;
     var cards = syncRoot.querySelectorAll('.step-card');
     for (var i = 0; i < cards.length; i++) {
       var si = Number(cards[i].dataset.s);
@@ -1939,6 +1960,32 @@
     if (blob && nameEl) updateDisplayLabels(blob, s, len, nameEl);
     if (pitchEditorFullRange && blob && wrap && slot >= 0)
       syncOctRowFromBlob(wrap, blob, s);
+  }
+
+  /** Refresh inheriting TIE steps after a NOTE pitch edit. Walks forward
+   *  from `step` while time === TIE, updating each tie's pitch knob and
+   *  label to the new inherited pitch. Stops at the first NOTE or REST. */
+  function refreshFollowingTies(blob, step, len) {
+    var rootEl = document.querySelector('.chain-pat-section.is-active') || document;
+    for (var i = 1; i < len; i++) {
+      var s = (step + i) % len;
+      if (getTime(blob, s) !== 2) break;
+      var card = rootEl.querySelector('.step-card[data-s="' + s + '"]');
+      if (!card) continue;
+      var nameEl = card.querySelector('.step-name');
+      var wrap = card.querySelector('.pitch-knob-wrap');
+      var eff = effectivePacked6(blob, s, len);
+      var inherited = (eff != null) ? eff : PITCH_DEFAULT;
+      if (wrap) {
+        if (pitchEditorFullRange)
+          wrap.dataset.lin = String(clampFullLinear(unpackLinear(inherited)));
+        else
+          wrap.dataset.key = String(inherited & 0x0F);
+        layoutPitchKnob(wrap, nameEl, blob, s, len);
+      } else if (nameEl) {
+        updateDisplayLabels(blob, s, len, nameEl);
+      }
+    }
   }
 
   /** Live-update DOWN/CENTRE/UP/2×UP highlights while dragging full-range slider. */
@@ -2011,6 +2058,7 @@
       }
       blob2[k] = pk | flags;
       layoutPitchKnob(wrap, nameEl, blob2, step, L);
+      refreshFollowingTies(blob2, step, L);
     }
     track.addEventListener('pointerdown', onDown);
     track.addEventListener('pointermove', onMove);
@@ -2074,12 +2122,14 @@
   function updatePlayingStep(pat, step) {
     if (pat !== playingPat) {
       playingPat = pat;
-      // Clear web-queued-single indicator when hardware starts playing that pattern
-      if (pat === queuedPat) queuedPat = -1;
+      // Drop any pending queued-single indicator: either the queue was just
+      // fulfilled, or the hardware user overrode it by picking a different pat.
+      // Either way it's stale and must not keep suppressing auto-follow.
+      queuedPat = -1;
 
       // Auto-follow hardware: switch editor grid to the playing pattern.
       // Suppress in chain view (all patterns already visible) and Edit Live mode.
-      if (activeGroup === hwGroup && !editLiveMode && queuedPat === -1 && patChain.length <= 1) {
+      if (activeGroup === hwGroup && !editLiveMode && patChain.length <= 1) {
         switchToPat(pat);
       }
 
@@ -2554,7 +2604,7 @@
       if (patChain.length !== prevChainLen) {
         if (patChain.length > 1 && patChain.indexOf(activePat) === -1) {
           activePat = patChain[0];
-          document.getElementById('patLen').value = String(groups[activeGroup][activePat][127] || 16);
+          document.getElementById('patLen').value = String(getLength(groups[activeGroup][activePat]));
         }
         renderGrid();
       }
@@ -2967,7 +3017,7 @@
   document.getElementById('btnPaste').onclick = function() {
     if (!clipboard) return;
     activeBlob().set(clipboard);
-    document.getElementById('patLen').value = String(clipboard[127]);
+    document.getElementById('patLen').value = String(getLength(clipboard));
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
     renderGrid();
@@ -2979,13 +3029,15 @@
   // ── Undo / redo / reset ────────────────────────────────────────────
   document.getElementById('btnUndo').onclick = function() {
     doUndo(activeGroup, activePat);
-    document.getElementById('patLen').value = String(activeBlob()[127]);
+    document.getElementById('patLen').value = String(getLength(activeBlob()));
+    logEditHistory('Undo');
     renderGrid(); recomputeDirty();
     if (midiOut) scheduleLiveSend();
   };
   document.getElementById('btnRedo').onclick = function() {
     doRedo(activeGroup, activePat);
-    document.getElementById('patLen').value = String(activeBlob()[127]);
+    document.getElementById('patLen').value = String(getLength(activeBlob()));
+    logEditHistory('Redo');
     renderGrid(); recomputeDirty();
     if (midiOut) scheduleLiveSend();
   };
@@ -2996,17 +3048,10 @@
     if (h[ci]) {
       histIdx[activeGroup][activePat] = ci;
       groups[activeGroup][activePat].set(h[ci]);
-      document.getElementById('patLen').value = String(activeBlob()[127]);
+      document.getElementById('patLen').value = String(getLength(activeBlob()));
+      logEditHistory('Reset to baseline');
       renderGrid(); recomputeDirty();
     }
-  };
-  document.getElementById('btnResetAfter').onclick = function() {
-    // Jump to latest (end of history)
-    var h  = history[activeGroup][activePat];
-    histIdx[activeGroup][activePat] = h.length - 1;
-    groups[activeGroup][activePat].set(h[h.length - 1]);
-    document.getElementById('patLen').value = String(activeBlob()[127]);
-    renderGrid(); recomputeDirty();
   };
   document.getElementById('btnClearPat').onclick = function() {
     var blob = activeBlob();
@@ -3024,15 +3069,15 @@
 
   // ── Randomize ──────────────────────────────────────────────────────
   /**
-   * Random pitch on every NOTE step. Octave weighted DOWN 25 / CENTRE 40 /
-   * UP 25 / DOUBLE_UP 10. Accent/slide flags preserved.
+   * Random pitch on every NOTE step. Matches firmware
+   * fast_rand_octave_weighted: DOWN 25 / CENTRE 50 / UP 25, DOUBLE_UP excluded.
+   * Accent/slide flags preserved.
    */
   function pickWeightedOctave() {
     var r = Math.random();
     if (r < 0.25) return 0; // DOWN
-    if (r < 0.65) return 1; // CENTRE
-    if (r < 0.90) return 2; // UP
-    return 3;               // DOUBLE_UP
+    if (r < 0.75) return 1; // CENTRE
+    return 2;               // UP
   }
   function applyRandomPitches(blob, len) {
     var nc = noteCount(blob, len);
@@ -3042,16 +3087,17 @@
       blob[k] = ((semi & 0x0F) | (pickWeightedOctave() << 4)) | flags;
     }
   }
-  /** Random time: NOTE 60% / REST 25% / TIE 15% (TIE→REST guard preserved). */
+  /** Random time. Matches firmware fast_rand_time_weighted:
+   *  - First step or after REST: NOTE 60% / REST 40%, no TIE.
+   *  - Otherwise: NOTE 60% / REST 25% / TIE 15%. */
   function applyRandomTime(blob, len) {
     for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
     var prev = 1;
     for (var s = 0; s < len; s++) {
       var r = Math.random();
       var tv;
-      if (s === 0)         tv = (r < 0.85) ? 1 : 0;
-      else if (prev === 0) tv = (r < 0.70) ? 1 : 0;
-      else                 tv = (r < 0.60) ? 1 : (r < 0.85) ? 0 : 2;
+      if (s === 0 || prev === 0) tv = (r < 0.60) ? 1 : 0;
+      else                       tv = (r < 0.60) ? 1 : (r < 0.85) ? 0 : 2;
       setTime(blob, s, tv);
       if (tv !== 1) setRatchet(blob, s, 0);
       prev = tv;
@@ -3090,22 +3136,18 @@
     }
   }
 
-  /** Random slide flag (~20% on / 80% off) on every stream slot. */
+  /** Random slide flag (~20% on / 80% off) on every stream slot. Matches
+   *  firmware RandomizeSlideData: each NOTE step that rolls slide also
+   *  clears its ratchet (slide source can't ratchet). */
   function applyRandomSlide(blob, len) {
-    var nc = noteCount(blob, len);
-    for (var k = 0; k < nc; k++) {
+    var k = 0;
+    for (var s = 0; s < len; s++) {
+      if (getTime(blob, s) !== 1) continue;
       if (blob[k] === PITCH_EMPTY) blob[k] = PITCH_DEFAULT;
       var slide = Math.random() < 0.20;
       blob[k] = (blob[k] & 0x7F) | (slide ? 0x80 : 0);
-    }
-    if (Math.random() < 0.20) {
-      // Slide source steps disable ratchets at their corresponding step
-      for (var s = 0; s < len; s++) {
-        if (getTime(blob, s) === 1) {
-          var slk = noteIdx(blob, s);
-          if (blob[slk] !== PITCH_EMPTY && (blob[slk] & 0x80)) setRatchet(blob, s, 0);
-        }
-      }
+      if (slide) setRatchet(blob, s, 0);
+      k++;
     }
   }
 
@@ -3802,16 +3844,26 @@
 
   /** Re-apply pitch knob layout after viewport / grid size changes (resize, zoom). */
   function reflowPitchKnobsInGrid() {
-    var blob = activeBlob();
-    var len = currentPatLen();
-    var cards = document.querySelectorAll('#seqGrid .step-card');
-    for (var i = 0; i < cards.length; i++) {
-      var wrap = cards[i].querySelector('.pitch-knob-wrap');
-      if (!wrap) continue;
-      var nameEl = cards[i].querySelector('.step-name');
-      var si = parseInt(cards[i].dataset.s, 10);
-      if (isNaN(si)) continue;
-      layoutPitchKnob(wrap, nameEl, blob, si, len);
+    function reflowCards(cards, blob, len) {
+      for (var i = 0; i < cards.length; i++) {
+        var wrap = cards[i].querySelector('.pitch-knob-wrap');
+        if (!wrap) continue;
+        var nameEl = cards[i].querySelector('.step-name');
+        var si = parseInt(cards[i].dataset.s, 10);
+        if (isNaN(si)) continue;
+        layoutPitchKnob(wrap, nameEl, blob, si, len);
+      }
+    }
+    if (patChain.length > 1) {
+      var sections = document.querySelectorAll('#seqGrid .chain-pat-section');
+      for (var k = 0; k < sections.length; k++) {
+        var pi = parseInt(sections[k].dataset.chainPat, 10);
+        if (isNaN(pi)) continue;
+        var pb = groups[activeGroup][pi];
+        reflowCards(sections[k].querySelectorAll('.step-card'), pb, getLength(pb));
+      }
+    } else {
+      reflowCards(document.querySelectorAll('#seqGrid .step-card'), activeBlob(), currentPatLen());
     }
   }
   (function bindGridResizeReflow() {
@@ -3926,7 +3978,7 @@
         try {
           var obj = JSON.parse(e.target.result);
           if (typeof obj !== 'object' || obj === null) throw new Error('not an object');
-          if (obj.version !== 1 && obj.version !== 2) throw new Error('bad version');
+          if (obj.version !== JSON_VERSION) throw new Error('bad version: expected ' + JSON_VERSION + ', got ' + obj.version);
           if (!['pattern','bank','group','all'].includes(obj.type)) throw new Error('bad type');
           if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('empty data');
           var added = 0;
