@@ -969,7 +969,7 @@ struct Engine {
     return false;
   }
   bool get_accent() const {
-    return !resting && !get_slide_dac() && get_sequence().get_accent();
+    return !resting && get_sequence().get_accent();
   }
   uint8_t get_semitone() const {
     return get_sequence().get_semitone();
