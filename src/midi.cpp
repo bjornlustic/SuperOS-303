@@ -571,6 +571,31 @@ void midi_send_direction_update(uint8_t direction) {
   tx_push_message(inner, 3);
 }
 
+// --- Track state broadcast (SysEx 0x23) -----------------------------------------
+// Telemetry for the web editor's Track view. All payload bytes are 7-bit safe.
+// Layout: [10 header bytes] [MAX_CHAIN pattern nibbles] [MAX_CHAIN transpose bytes]
+//         [MAX_CHAIN last-flag bools]. With MAX_CHAIN=64 inner = 10 + 64*3 = 202 B.
+void midi_send_track_state(uint8_t dial_mode, uint8_t track_idx, bool track_active,
+                            bool clk_run, Engine &engine) {
+  uint8_t inner[10 + MAX_CHAIN * 3];
+  inner[0] = 0x7D;
+  inner[1] = 0x23;
+  inner[2] = dial_mode & 0x03;
+  inner[3] = track_idx & 0x07;
+  inner[4] = track_active ? 1 : 0;
+  inner[5] = clk_run ? 1 : 0;
+  inner[6] = engine.get_chain_len() & 0x7F;
+  inner[7] = engine.get_chain_pos() & 0x7F;
+  inner[8] = engine.get_patsel() & 0x0F;
+  inner[9] = engine.get_group() & 0x03;
+  for (uint8_t i = 0; i < MAX_CHAIN; ++i) {
+    inner[10 + i]                 = engine.p_chain_get(i) & 0x0F;
+    inner[10 + MAX_CHAIN + i]     = engine.TrackGetTranspose(i) & 0x7F;
+    inner[10 + MAX_CHAIN * 2 + i] = engine.t_chain_last_get(i) ? 1 : 0;
+  }
+  tx_push_message(inner, sizeof(inner));
+}
+
 // --- Group update broadcast (SysEx 0x1C) -----------------------------------------
 void midi_send_group_update(uint8_t group) {
   const uint8_t inner[3] = {0x7D, 0x1C, (uint8_t)(group & 0x03)};

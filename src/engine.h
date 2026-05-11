@@ -23,17 +23,24 @@
 // Engine -- patterns + clock + gate
 // =============================================================================
 // =============================================================================
-// Tracks (OS-303 v0.6 wire format).
-// 8 tracks total, mapped to banks via track >> 1 (tracks 0-1 -> bank 0, ..., 6-7 -> bank 3).
-// Per-track storage: 32 bytes = p_chain[16] (low 4 bits pattern# | high 4 bits repeats)
-// + t_chain[16] (low 7 bits transpose | bit 7 last-step flag).
-// EEPROM offset for track t: TRACK_DATA_OFFSET + t*32, with p_chain at +0 and
-// t_chain at +16.
+// Tracks (chain of patterns + per-step transpose).
+// 8 track slots; each can chain up to MAX_CHAIN patterns from its own group
+// (group = track >> 1). Per-track storage = 104 bytes:
+//   p_chain_packed[32]   : 4 bits/step, low nibble = even step, high = odd step.
+//                          Each nibble is pattern index 0..15 in this track's group.
+//   t_chain_last[8]      : 64-bit bitmap. Bit i set => chain step i is the last bar.
+//   t_chain_transpose[64]: 1 byte/step. Range 0..47, with 12 = "no transpose"
+//                          (matches the global performance transpose encoding).
+// EEPROM offset for track t: TRACK_DATA_OFFSET + t * TRACK_BYTES.
 // =============================================================================
-static constexpr uint8_t MAX_CHAIN  = 16;
+static constexpr uint8_t MAX_CHAIN  = 64;
 static constexpr uint8_t NUM_TRACKS = 8;
-static constexpr uint8_t T_CHAIN_LAST_STEP_FLAG = 0x80;
-static constexpr uint8_t T_CHAIN_TRANSPOSE_MASK = 0x7F;
+static constexpr uint8_t P_CHAIN_PACKED_BYTES = (MAX_CHAIN + 1) / 2;     // 32
+static constexpr uint8_t T_CHAIN_BITS_BYTES   = (MAX_CHAIN + 7) / 8;     // 8
+static constexpr uint8_t TRACK_BYTES = P_CHAIN_PACKED_BYTES
+                                     + T_CHAIN_BITS_BYTES
+                                     + MAX_CHAIN;                          // 104
+static constexpr uint8_t TRACK_TRANSPOSE_ZERO = 12;                        // 0 semitones
 
 struct Engine {
   Sequence pattern[NUM_PATTERNS];
@@ -43,14 +50,48 @@ struct Engine {
   uint8_t pending_group_ = 0xff;
 
   // Track-mode state
-  uint8_t p_chain[MAX_CHAIN]    = {0};
-  uint8_t t_chain[MAX_CHAIN]    = {0};
+  uint8_t p_chain_packed[P_CHAIN_PACKED_BYTES] = {0};            // 32 bytes (4 bits/step)
+  uint8_t t_chain_last[T_CHAIN_BITS_BYTES]     = {0};            // 8 bytes (1 bit/step)
+  uint8_t t_chain_transpose[MAX_CHAIN]         = {0};            // 64 bytes (0..47, 12 = no-op)
   uint8_t p_chain_len = 0;        // number of valid chain steps (0 = no track loaded)
   uint8_t p_chain_pos = 0;        // current chain step index
   int8_t  p_repeats = -1;         // -1 = uninitialized; else current repeat count of current step
   uint8_t track_select = 0;       // which track (0..7) is currently loaded
   bool    track_stale = false;    // track-data dirty flag (separate from `stale`)
   bool    track_active = false;   // true while in TrackPlay/TrackWrite playback
+
+  // ---------------------------------------------------------------------------
+  // Packed p_chain accessors (4 bits per step, 16 patterns/group fits exactly).
+  // ---------------------------------------------------------------------------
+  uint8_t p_chain_get(uint8_t step) const {
+    if (step >= MAX_CHAIN) return 0;
+    const uint8_t b = p_chain_packed[step >> 1];
+    return (step & 1) ? uint8_t(b >> 4) : uint8_t(b & 0x0F);
+  }
+  void p_chain_set(uint8_t step, uint8_t pat) {
+    if (step >= MAX_CHAIN) return;
+    uint8_t &b = p_chain_packed[step >> 1];
+    const uint8_t v = uint8_t(pat & 0x0F);
+    b = (step & 1) ? uint8_t((b & 0x0F) | (v << 4))
+                   : uint8_t((b & 0xF0) | v);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Last-step flag bitmap helpers.
+  // ---------------------------------------------------------------------------
+  bool t_chain_last_get(uint8_t step) const {
+    if (step >= MAX_CHAIN) return false;
+    return (t_chain_last[step >> 3] >> (step & 7)) & 1;
+  }
+  void t_chain_last_set(uint8_t step, bool v) {
+    if (step >= MAX_CHAIN) return;
+    const uint8_t mask = uint8_t(1u << (step & 7));
+    if (v) t_chain_last[step >> 3] |= mask;
+    else   t_chain_last[step >> 3] &= uint8_t(~mask);
+  }
+  void t_chain_last_clear_all() {
+    for (uint8_t i = 0; i < T_CHAIN_BITS_BYTES; ++i) t_chain_last[i] = 0;
+  }
 
   SequencerMode      mode_      = NORMAL_MODE;
   SequenceDirection  direction_ = DIR_FORWARD;
@@ -129,6 +170,18 @@ struct Engine {
           WritePattern(pattern[i], i, b);
       stale = false;
     }
+    // Track storage format check: bump kTrackFormatVersion when the layout
+    // changes. On mismatch, fill the TRACK_DATA region with 0xFF (the AVR
+    // "fresh EEPROM" sentinel) so LoadTrack's uninit detection fires and
+    // initialises p_chain to 0 + transpose to TRACK_TRANSPOSE_ZERO. Patterns
+    // are unaffected.
+    const uint8_t saved_tf = storage.read(PersistentSettings::kEepromTrackFormat);
+    if (saved_tf != PersistentSettings::kTrackFormatVersion) {
+      for (int i = 0; i < TRACK_DATA_SIZE; ++i)
+        storage.update(TRACK_DATA_OFFSET + i, 0xFF);
+      storage.update(PersistentSettings::kEepromTrackFormat,
+                     PersistentSettings::kTrackFormatVersion);
+    }
   }
 
   void Save(int pidx = -1) {
@@ -147,20 +200,30 @@ struct Engine {
   void LoadTrack(uint8_t track) {
     track &= (NUM_TRACKS - 1);
     track_select = track;
-    const int base = TRACK_DATA_OFFSET + (int(track) * 32);
-    storage.get(base,                p_chain);
-    storage.get(base + int(MAX_CHAIN), t_chain);
-    // OS-303's invalid-data sentinel: t_chain[0] == 0xFF -> treat as uninit.
-    if (t_chain[0] == 0xFF) {
-      memset(p_chain, 0, sizeof(p_chain));
-      memset(t_chain, 0, sizeof(t_chain));
+    const int base = TRACK_DATA_OFFSET + (int(track) * int(TRACK_BYTES));
+    storage.get(base, p_chain_packed);
+    storage.get(base + int(P_CHAIN_PACKED_BYTES), t_chain_last);
+    storage.get(base + int(P_CHAIN_PACKED_BYTES) + int(T_CHAIN_BITS_BYTES), t_chain_transpose);
+    // Uninitialized EEPROM is 0xFF on AVR. If everything is 0xFF, treat as fresh.
+    bool uninit = (p_chain_packed[0] == 0xFF);
+    if (uninit) {
+      for (uint8_t i = 0; i < T_CHAIN_BITS_BYTES; ++i)
+        if (t_chain_last[i] != 0xFF) { uninit = false; break; }
+    }
+    if (uninit) {
+      memset(p_chain_packed, 0, sizeof(p_chain_packed));
+      t_chain_last_clear_all();
+      for (uint8_t i = 0; i < MAX_CHAIN; ++i) t_chain_transpose[i] = TRACK_TRANSPOSE_ZERO;
       p_chain_len = 0;
     } else {
-      // Length: first index whose top bit is set, plus 1.
+      // Length: first chain step whose last-flag bit is set, plus 1.
       p_chain_len = 0;
       for (uint8_t i = 0; i < MAX_CHAIN; ++i) {
-        if (t_chain[i] & T_CHAIN_LAST_STEP_FLAG) { p_chain_len = uint8_t(i + 1); break; }
+        if (t_chain_last_get(i)) { p_chain_len = uint8_t(i + 1); break; }
       }
+      // Clamp transpose values in case of stale data.
+      for (uint8_t i = 0; i < MAX_CHAIN; ++i)
+        if (t_chain_transpose[i] > 47) t_chain_transpose[i] = TRACK_TRANSPOSE_ZERO;
     }
     p_chain_pos = 0;
     p_repeats   = -1;
@@ -168,16 +231,13 @@ struct Engine {
   }
   void SaveTrack() {
     if (!track_stale) return;
-    // Write the last-step marker into t_chain based on p_chain_len.
-    for (uint8_t i = 0; i < MAX_CHAIN; ++i) {
-      if (p_chain_len > 0 && i == p_chain_len - 1)
-        t_chain[i] |= T_CHAIN_LAST_STEP_FLAG;
-      else
-        t_chain[i] &= T_CHAIN_TRANSPOSE_MASK;
-    }
-    const int base = TRACK_DATA_OFFSET + (int(track_select) * 32);
-    storage.put(base,                p_chain);
-    storage.put(base + int(MAX_CHAIN), t_chain);
+    // Reset the last-step bitmap based on p_chain_len (single bit at len-1).
+    t_chain_last_clear_all();
+    if (p_chain_len > 0) t_chain_last_set(uint8_t(p_chain_len - 1), true);
+    const int base = TRACK_DATA_OFFSET + (int(track_select) * int(TRACK_BYTES));
+    storage.put(base, p_chain_packed);
+    storage.put(base + int(P_CHAIN_PACKED_BYTES), t_chain_last);
+    storage.put(base + int(P_CHAIN_PACKED_BYTES) + int(T_CHAIN_BITS_BYTES), t_chain_transpose);
     track_stale = false;
   }
   uint8_t get_track_select() const { return track_select; }
@@ -188,72 +248,63 @@ struct Engine {
   bool track_has_chain() const { return p_chain_len > 0; }
 
   // Track Write helpers --------------------------------------------------------
-  // Write the active pattern + repeats into the current chain step. Repeats
-  // are 0..15; 0 = play once, 15 = play 16 times.
-  void TrackWriteCurrentStep(uint8_t pattern_in_bank, uint8_t repeats) {
+  // Write the active pattern into the current chain step. `repeats` parameter
+  // kept for source compatibility but no longer stored (packed nibble layout).
+  void TrackWriteCurrentStep(uint8_t pattern_in_bank, uint8_t /*repeats*/) {
     if (p_chain_pos >= MAX_CHAIN) return;
-    p_chain[p_chain_pos] = uint8_t((pattern_in_bank & 0x0F) | ((repeats & 0x0F) << 4));
+    p_chain_set(p_chain_pos, pattern_in_bank);
     if (p_chain_pos + 1 > p_chain_len) p_chain_len = uint8_t(p_chain_pos + 1);
     track_stale = true;
   }
-  // Mark current chain step as the last (D.C. equivalent). Sets bit 7 of
-  // t_chain[p_chain_pos], clears it elsewhere; truncates p_chain_len.
+  // Mark current chain step as the last bar. Truncates p_chain_len.
   void TrackMarkLastStep() {
     if (p_chain_pos >= MAX_CHAIN) return;
-    for (uint8_t i = 0; i < MAX_CHAIN; ++i) {
-      if (i == p_chain_pos) t_chain[i] |= T_CHAIN_LAST_STEP_FLAG;
-      else                  t_chain[i] &= T_CHAIN_TRANSPOSE_MASK;
-    }
+    t_chain_last_clear_all();
+    t_chain_last_set(p_chain_pos, true);
     p_chain_len = uint8_t(p_chain_pos + 1);
     track_stale = true;
   }
-  // Set per-chain-step transpose (low 7 bits, preserves last-step flag).
-  void TrackSetTranspose(uint8_t chain_step, uint8_t transpose_semi) {
-    if (chain_step >= MAX_CHAIN) return;
-    const uint8_t flag = t_chain[chain_step] & T_CHAIN_LAST_STEP_FLAG;
-    t_chain[chain_step] = flag | (transpose_semi & T_CHAIN_TRANSPOSE_MASK);
-    track_stale = true;
-  }
-  uint8_t TrackGetRepeats(uint8_t chain_step) const {
-    if (chain_step >= MAX_CHAIN) return 0;
-    return uint8_t((p_chain[chain_step] >> 4) & 0x0F);
-  }
   uint8_t TrackGetPattern(uint8_t chain_step) const {
-    if (chain_step >= MAX_CHAIN) return 0;
-    return uint8_t(p_chain[chain_step] & 0x0F);
+    return p_chain_get(chain_step);
   }
+  bool TrackGetIsLast(uint8_t chain_step) const {
+    return t_chain_last_get(chain_step);
+  }
+  // Per-chain-step transpose. Encoding matches the global performance transpose
+  // (0..47, with TRACK_TRANSPOSE_ZERO = 12 meaning "no transpose"). Adding the
+  // chain-step transpose to a note linear-semitone gives the effective output.
   uint8_t TrackGetTranspose(uint8_t chain_step) const {
-    if (chain_step >= MAX_CHAIN) return 0;
-    return uint8_t(t_chain[chain_step] & T_CHAIN_TRANSPOSE_MASK);
+    if (chain_step >= MAX_CHAIN) return TRACK_TRANSPOSE_ZERO;
+    return t_chain_transpose[chain_step];
+  }
+  void TrackSetTranspose(uint8_t chain_step, uint8_t value) {
+    if (chain_step >= MAX_CHAIN) return;
+    if (value > 47) value = TRACK_TRANSPOSE_ZERO;
+    t_chain_transpose[chain_step] = value;
+    track_stale = true;
   }
   void TrackResetCursor() { p_chain_pos = 0; p_repeats = -1; }
 
   // Called at pattern wrap (time_pos returns to 0). Advances the chain cursor
-  // when the current chain step's repeat count is exhausted, and updates
-  // next_p so the engine's existing pattern-switch logic picks up the change.
-  // Repeat semantics match OS-303: high nibble of p_chain[i] = repeat count
-  // (0..15). repeats=0 means "play once before advancing", 1 = "play twice", etc.
+  // and updates next_p so the engine's existing pattern-switch logic picks
+  // up the change. Each chain step plays exactly once before advancing.
+  // Previously the first wrap re-played chain[cursor] (init branch). With
+  // repeats removed, we just advance every wrap; the initial chain[0]
+  // playback comes from p_select being set when the track is loaded /
+  // CLEAR-reset, not from the chain advance.
   void track_advance_chain() {
     if (!track_active || p_chain_len == 0) return;
-    const uint8_t step_repeats = uint8_t((p_chain[p_chain_pos] >> 4) & 0x0F);
-    if (p_repeats < 0) {
-      // First wrap after starting the track: stay on chain step 0, just init.
-      p_repeats = 0;
-    } else if (uint8_t(p_repeats) >= step_repeats) {
-      // Done with this chain step: advance to next, wrap to 0 at end of chain.
-      p_chain_pos = uint8_t((p_chain_pos + 1) % p_chain_len);
-      p_repeats = 0;
-    } else {
-      ++p_repeats;
-    }
-    next_p = uint8_t(p_chain[p_chain_pos] & 0x0F);
+    p_chain_pos = uint8_t((p_chain_pos + 1) % p_chain_len);
+    p_repeats = 0;
+    next_p = p_chain_get(p_chain_pos);
   }
   void TrackAdvanceCursor() {
     if (p_chain_pos + 1 < MAX_CHAIN) ++p_chain_pos;
   }
   void TrackClear() {
-    memset(p_chain, 0, sizeof(p_chain));
-    memset(t_chain, 0, sizeof(t_chain));
+    memset(p_chain_packed, 0, sizeof(p_chain_packed));
+    t_chain_last_clear_all();
+    for (uint8_t i = 0; i < MAX_CHAIN; ++i) t_chain_transpose[i] = TRACK_TRANSPOSE_ZERO;
     p_chain_len = 0;
     p_chain_pos = 0;
     p_repeats   = -1;

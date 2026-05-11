@@ -46,6 +46,9 @@ static uint8_t s_back_pitch_preview_cv = 0;
 
 static elapsedMillis pattern_cleared_flash_timer;
 static constexpr uint16_t PATTERN_CLEARED_FLASH_MS = 400;
+// Holds the flash LEDs lit until CLEAR is released after a pattern-clear action,
+// so the user sees confirmation for as long as they keep CLEAR held.
+static bool s_pat_cleared_hold = false;
 
 // Metronome tap-write state (CLEAR+write+clk_run in NORMAL_MODE)
 static bool s_metronome_active                  = false;
@@ -63,6 +66,12 @@ static bool s_ratchet_gate_reset = false;
 
 // Direction mode (FN + TIME_KEY)
 static bool s_dir_mode = false;
+
+// Track Write: CLEAR ("bar reset") arms "next TAP_NEXT writes the last step".
+// The TAP_NEXT after CLEAR writes at the current cursor, marks it as the last
+// chain step, and resets the cursor so the next session starts at step 0.
+static bool s_track_arm_last = false;
+
 
 // Step-select mode (FN + PITCH_KEY held): pick one step via black-key bank + white key.
 // Chase LED lights only when playhead is within the active bank. -1 = no selection.
@@ -107,6 +116,13 @@ static void emit_chain_state() {
   midi_send_chain_state(
     s_chain_active ? s_chain_len : 0, s_chain_pats,
     s_chain_queue_len, s_chain_queued);
+}
+
+// Broadcast track-mode state (SysEx 0x23) for the web editor's Track view.
+// Call at every event that changes track state: dial transition, chain edit,
+// cursor change, RUN edges, chain wrap.
+static void emit_track_state(DialMode dial, bool clk_run, uint8_t track_idx) {
+  midi_send_track_state(uint8_t(dial), track_idx, engine.track_active, clk_run, engine);
 }
 
 // =============================================================================
@@ -769,10 +785,16 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
   }
   }
 
-  const bool pat_clr_flash = pattern_cleared_flash_timer < PATTERN_CLEARED_FLASH_MS;
-  Leds::Set(TIME_MODE_LED,     engine.get_mode() == TIME_MODE   || pat_clr_flash);
-  Leds::Set(PITCH_MODE_LED,    engine.get_mode() == PITCH_MODE  || pat_clr_flash);
-  Leds::Set(FUNCTION_MODE_LED, engine.get_mode() == NORMAL_MODE && !pat_clr_flash);
+  const bool pat_clr_flash = (pattern_cleared_flash_timer < PATTERN_CLEARED_FLASH_MS)
+                          || s_pat_cleared_hold;
+  const bool in_time  = engine.get_mode() == TIME_MODE;
+  const bool in_pitch = engine.get_mode() == PITCH_MODE;
+  Leds::Set(TIME_MODE_LED,     in_time  || pat_clr_flash);
+  Leds::Set(PITCH_MODE_LED,    in_pitch || pat_clr_flash);
+  // FUNCTION_MODE_LED = "normal mode" indicator. Lit whenever the engine is not
+  // in TIME/PITCH submode. Driven off NOT-in-submode so that mode-LED edge
+  // cases (e.g. brief mode flicker) never leave the indicator dark.
+  Leds::Set(FUNCTION_MODE_LED, !in_time && !in_pitch && !pat_clr_flash);
   if (pat_clr_flash) Leds::Set(ASHARP_KEY_LED, true);
 }
 
@@ -831,6 +853,9 @@ void loop() {
   const bool clear_mod  = ins.clear;
   const bool edit_mode  = ins.edit;
 
+  // Release the "pattern-cleared LEDs lit while held" flag once CLEAR is up.
+  if (!clear_mod) s_pat_cleared_hold = false;
+
   const bool fn_mod    = ins.fn;
   const bool pitch_mod = ins.pitch;
   const bool time_mod  = ins.time;
@@ -845,6 +870,14 @@ void loop() {
   const bool dial_track_mode    = dial_track_write || dial_track_play;
 
   total_transpose = uint8_t(transpose + engine.get_pattern_transpose());
+  // In Track mode, also add the per-chain-step transpose for the slot the
+  // chain cursor is currently on. Encoding: TRACK_TRANSPOSE_ZERO (=12) means
+  // "no transpose", so we subtract that offset before adding.
+  if (engine.track_active && engine.track_has_chain()) {
+    const int8_t step_off = int8_t(engine.TrackGetTranspose(engine.get_chain_pos()))
+                          - int8_t(TRACK_TRANSPOSE_ZERO);
+    total_transpose = uint8_t(int(total_transpose) + int(step_off));
+  }
 
   // Read track index from the 3-bit dial (TRACK_BIT0..2). Tracks 0..7 select
   // 1-of-8 track slots. In track modes, the track index also forces the active
@@ -898,7 +931,9 @@ void loop() {
   {
     static DialMode s_last_dial = dial;
     static bool     s_last_dial_init = false;
-    if (s_last_dial_init && dial != s_last_dial) dial_changed = true;
+    // First iteration also counts: if we boot with the dial in a Track mode,
+    // we need to LoadTrack and set track_active just like a real transition.
+    if (!s_last_dial_init || dial != s_last_dial) dial_changed = true;
     s_last_dial = dial;
     s_last_dial_init = true;
   }
@@ -912,6 +947,7 @@ void loop() {
     engine.Save();
     if (engine.track_stale) engine.SaveTrack();
     midi_flush_pending_saves();
+    if (dial_track_mode) emit_track_state(dial, /*clk_run=*/false, cur_tracknum & 0x07);
     // On clock stop: if browsing a different group, switch to it
     if (s_display_group != engine.get_group()) {
       engine.SetGroup(s_display_group);
@@ -933,40 +969,50 @@ void loop() {
     // Exit any in-progress edit mode so PITCH_MODE / TIME_MODE state cannot
     // bleed across dial positions.
     engine.SetMode(NORMAL_MODE);
-    // Track save deferred until clock stop (RUN.falling) -- writing 32 bytes
-    // here lagged the sequencer when switching tracks during play.
-    // Entering Track mode: force bank = track >> 1, load that track, mark
-    // track_active so chain advance fires inside Engine::Advance.
+    // Persist any in-RAM chain edits before switching away from track mode,
+    // otherwise edits made while running are lost when the dial moves to a
+    // pattern position (or back later to a different track index).
+    if (engine.track_stale) engine.SaveTrack();
+    s_track_arm_last = false;
+    // Entering Track mode: force bank = track >> 1, load that track. Discard
+    // any active Pattern-mode chain so it can't override track playback.
     if (dial_track_mode) {
       const uint8_t track_idx = cur_tracknum & 0x07;
       const uint8_t bank      = uint8_t(track_idx >> 1);
       if (bank != engine.get_group()) engine.SetGroup(bank);
       engine.LoadTrack(track_idx);
-      engine.track_active = true;
-      // Start playback at chain step 0 of this track.
-      engine.TrackResetCursor();
-      if (engine.track_has_chain()) {
-        engine.SetPattern(engine.TrackGetPattern(0), !inputs[RUN].held());
-      }
+      // Pattern-mode chain state must not leak into Track mode; clear it.
+      s_chain_active     = false;
+      s_chain_len        = 0;
+      s_chain_queue_len  = 0;
+      s_chain_anchor_key = 0xff;
+      s_chain_hold_key   = 0xff;
+      s_chain_hold_target_pat = 0xff;
+      // TrackPlay: chain advance fires on every wrap. TrackWrite: chain
+      // advance stays off so each pat-key just changes the playing pattern.
+      // p_select is intentionally NOT reset here -- on entering TrackPlay the
+      // user should still see the last pattern that was playing (typically
+      // the last one written in TrackWrite) until they press CLEAR.
+      engine.track_active = dial_track_play;
     } else {
       engine.track_active = false;
     }
+    emit_track_state(dial, clk_run, cur_tracknum & 0x07);
   }
 
-  // Track-index switch while staying in Track mode: load the new track and
-  // bank. Outgoing-track save deferred until clock stop (per save policy);
-  // edits to the outgoing track are discarded when switching during play.
+  // Track-index switch while staying in Track mode: persist the outgoing
+  // track, then load the new one. Each dial position is its own track slot.
   if (dial_track_mode) {
     static uint8_t s_last_track_idx = 0xFF;
     const uint8_t cur_track_idx = cur_tracknum & 0x07;
     if (s_last_track_idx != 0xFF && cur_track_idx != s_last_track_idx) {
+      if (engine.track_stale) engine.SaveTrack();
+      s_track_arm_last = false;
       const uint8_t bank = uint8_t(cur_track_idx >> 1);
       if (bank != engine.get_group()) engine.SetGroup(bank);
       engine.LoadTrack(cur_track_idx);
-      engine.TrackResetCursor();
-      if (engine.track_has_chain()) {
-        engine.SetPattern(engine.TrackGetPattern(0), !inputs[RUN].held());
-      }
+      engine.track_active = dial_track_play;
+      emit_track_state(dial, clk_run, cur_track_idx);
     }
     s_last_track_idx = cur_track_idx;
   }
@@ -1023,6 +1069,7 @@ void loop() {
       engine.SetPattern(s_chain_pats[0], true);
     }
     emit_chain_state();
+    if (dial_track_mode) emit_track_state(dial, /*clk_run=*/true, cur_tracknum & 0x07);
   }
 
   // -=-=- Process inputs and set LEDs -=-=-
@@ -1035,55 +1082,148 @@ void loop() {
     ProcessDirectionMode(dial_pattern_write);
   } else if (dial_track_mode) {
     // ----- Track Write / Track Play UI -------------------------------------
-    // LEDs: pat-LED for the currently-playing pattern blinks (chase). Bank
-    // A/B LED reflects the active bank. In Track Write, the chain-cursor
-    // pat-LED is solid so the user can see which step they will write into.
-    const uint8_t bank = engine.get_group();
-    Leds::Set(ACCENT_KEY_LED, bank == 0 || bank == 1); // bank A vs B for the loaded bank
-    Leds::Set(SLIDE_KEY_LED,  bank == 1 || bank == 3);
-    if (clk_run) {
-      Leds::Set(OutputIndex(engine.get_patsel() & 0x07), clk_count < 12);
+    const uint8_t patsel    = engine.get_patsel();
+    const uint8_t pat_bank  = (patsel >> 3) & 1;                     // 0=A, 1=B (within active group)
+    // When PITCH is held in TrackWrite the user is reading/writing the
+    // per-step transpose; suppress the pattern + bank LEDs so only the
+    // transpose key and octave LEDs are visible.
+    const bool tw_transpose_view = dial_track_write && pitch_mod;
+    if (!tw_transpose_view) {
+      Leds::Set(ACCENT_KEY_LED, pat_bank == 0);
+      Leds::Set(SLIDE_KEY_LED,  pat_bank == 1);
+      // Show the active pattern's LED both stopped and running (blink chase while running).
+      Leds::Set(OutputIndex(patsel & 0x07), clk_run ? bool(clk_count < 12) : true);
     }
+    // FN-mode LED stays solid in track mode so it's clearly the "normal" state.
+    Leds::Set(FUNCTION_MODE_LED, true);
+
+    // Bank toggle via ACCENT / SLIDE: switch which 8-pattern half pat-keys
+    // address. Works in both TrackWrite and TrackPlay so the user can audition
+    // patterns across A/B before writing. !edit_mode is intentionally NOT in
+    // the gate -- edit_mode == TAP_NEXT.held, and the user may hold TAP_NEXT
+    // while reaching for ACCENT/SLIDE in TrackWrite.
+    if (!fn_mod && !clear_mod) {
+      if (inputs[ACCENT_KEY].rising()) {
+        engine.SetPattern((patsel & 0x07), true);
+      } else if (inputs[SLIDE_KEY].rising()) {
+        engine.SetPattern((patsel & 0x07) | 0x08, true);
+      }
+    }
+
     if (dial_track_write) {
-      // Track Write input handling. Per the original 303 workflow (and the
-      // user's spec): CLEAR while stopped = BAR_RESET; while running, pat-key
-      // writes a pattern into the current chain step, TAP_NEXT advances the
-      // chain cursor, CLEAR alone marks the current chain step as the last bar.
-      if (!fn_mod && !edit_mode && !clear_mod) {
-        if (!clk_run && inputs[CLEAR_KEY].rising()) {
+      // Track Write workflow ("bar reset" = CLEAR):
+      //   - Pat-key 0..7 rising  : switch the currently-playing pattern (same as
+      //                            Pattern Play). Does NOT write to the chain.
+      //   - TAP_NEXT rising      : write the currently-active pattern into
+      //                            chain[cursor], advance cursor.
+      //   - CLEAR rising         : "bar reset" -- arms the next TAP_NEXT to
+      //                            write the LAST chain step. CLEAR does NOT
+      //                            wipe the chain; writes always overwrite.
+      //   - TAP_NEXT rising while armed : write at cursor, mark last, reset
+      //                            cursor to 0, disarm.
+      //   - RUN.falling (stop)   : saves the track to EEPROM.
+      // NOTE: edit_mode == inputs[TAP_NEXT].held() globally; do NOT gate handlers
+      // on !edit_mode here -- it would block the rising-edge frame for TAP_NEXT.
+      if (!fn_mod && inputs[CLEAR_KEY].rising()) {
+        if (clk_run) {
+          // Running: CLEAR arms the next TAP_NEXT as the last chain step.
+          s_track_arm_last = true;
+        } else {
+          // Stopped: CLEAR jumps the cursor back to step 0 and auditions
+          // chain[0]'s pattern so the user can review / edit the track from
+          // the beginning. Mirrors TrackPlay CLEAR semantics.
           engine.TrackResetCursor();
           if (engine.track_has_chain()) {
             engine.SetPattern(engine.TrackGetPattern(0), true);
           }
         }
+        emit_track_state(dial, clk_run, cur_tracknum & 0x07);
       }
-      if (clk_run && !fn_mod && !edit_mode) {
-        // Pat-keys 0..7 rising: write pattern into current chain step.
-        // Bank within the active group is selected by SLIDE held = bank-B
-        // half (8..15). Default = bank-A half (0..7).
-        for (uint8_t i = 0; i < 8; ++i) {
-          if (inputs[i].rising()) {
-            const uint8_t pat_in_bank = uint8_t((inputs[SLIDE_KEY].held() ? 8 : 0) + i);
-            engine.TrackWriteCurrentStep(pat_in_bank, /*repeats=*/0);
-            // Reflect immediately by switching the playing pattern.
-            engine.SetPattern(pat_in_bank);
+      if (!fn_mod && !clear_mod && pitch_mod) {
+        // PITCH held in Track Write: pitch-keys / UP / DOWN edit the per-step
+        // transpose at the current cursor. Encoding mirrors the global
+        // performance transpose (semi + 12*oct, 0..47, 12 = no transpose).
+        const uint8_t pos = engine.get_chain_pos();
+        uint8_t cur = engine.TrackGetTranspose(pos);
+        bool changed = false;
+        for (uint8_t i = 0; i < ARRAY_SIZE(pitched_keys); ++i) {
+          if (inputs[pitched_keys[i]].rising()) {
+            cur = uint8_t((cur / 12) * 12 + i);
+            changed = true;
             break;
           }
         }
-        // TAP_NEXT (WRITE/NEXT) rising: advance chain cursor.
-        if (inputs[TAP_NEXT].rising()) {
-          engine.TrackAdvanceCursor();
+        if (inputs[DOWN_KEY].rising()) {
+          uint8_t oct = constrain(int(cur) / 12 - 1, 0, 3);
+          cur = uint8_t((cur % 12) + oct * 12);
+          changed = true;
         }
-        // CLEAR rising standalone (no other key held) -> mark current chain
-        // step as the last bar of the track.
-        if (inputs[CLEAR_KEY].rising()) {
-          bool any_other = inputs[ACCENT_KEY].held() || inputs[SLIDE_KEY].held() ||
-                           inputs[TAP_NEXT].held() || inputs[BACK_KEY].held() ||
-                           inputs[FUNCTION_KEY].held();
-          for (uint8_t i = 0; i < 8 && !any_other; ++i)
-            if (inputs[i].held()) any_other = true;
-          if (!any_other) engine.TrackMarkLastStep();
+        if (inputs[UP_KEY].rising()) {
+          uint8_t oct = constrain(int(cur) / 12 + 1, 0, 3);
+          cur = uint8_t((cur % 12) + oct * 12);
+          changed = true;
         }
+        if (changed) {
+          engine.TrackSetTranspose(pos, cur);
+          emit_track_state(dial, clk_run, cur_tracknum & 0x07);
+        }
+        // LED feedback: show the step's transpose on the pitch-key + octave LEDs.
+        Leds::Set(pitch_leds[cur % 12], true);
+        const uint8_t toct = cur / 12;
+        Leds::Set(DOWN_KEY_LED, toct == 0 || toct == 3);
+        Leds::Set(UP_KEY_LED,   toct == 2 || toct == 3);
+      } else if (!fn_mod && !clear_mod) {
+        for (uint8_t i = 0; i < 8; ++i) {
+          if (inputs[i].rising()) {
+            const uint8_t pat_in_bank = uint8_t((pat_bank << 3) | i);
+            engine.SetPattern(pat_in_bank, !clk_run);
+            emit_track_state(dial, clk_run, cur_tracknum & 0x07);
+            break;
+          }
+        }
+        if (clk_run && inputs[TAP_NEXT].rising()) {
+          engine.TrackWriteCurrentStep(engine.get_patsel() & 0x0F, /*repeats=*/0);
+          if (s_track_arm_last) {
+            engine.TrackMarkLastStep();
+            engine.TrackResetCursor();
+            s_track_arm_last = false;
+          } else {
+            engine.TrackAdvanceCursor();
+          }
+          emit_track_state(dial, clk_run, cur_tracknum & 0x07);
+        }
+        // Stopped + chain has steps: TAP_NEXT cycles the cursor through the
+        // chain so the user can review what was written (pattern + transpose).
+        // BACK_KEY steps backward. Non-destructive -- writes only happen while
+        // the clock is running.
+        if (!clk_run && engine.track_has_chain()) {
+          const uint8_t clen = engine.get_chain_len();
+          uint8_t pos = engine.get_chain_pos();
+          bool moved = false;
+          if (inputs[TAP_NEXT].rising()) {
+            pos = uint8_t((pos + 1) % clen);
+            moved = true;
+          } else if (inputs[BACK_KEY].rising()) {
+            pos = uint8_t((pos + clen - 1) % clen);
+            moved = true;
+          }
+          if (moved) {
+            engine.p_chain_pos = pos;
+            engine.p_repeats   = -1;
+            engine.SetPattern(engine.TrackGetPattern(pos), true);
+            emit_track_state(dial, clk_run, cur_tracknum & 0x07);
+          }
+        }
+      }
+    } else {
+      // Track Play: CLEAR rising while stopped resets playhead to chain[0].
+      // While running, CLEAR is ignored -- track plays until user stops it.
+      if (!fn_mod && !clk_run && inputs[CLEAR_KEY].rising()) {
+        engine.TrackResetCursor();
+        if (engine.track_has_chain()) {
+          engine.SetPattern(engine.TrackGetPattern(0), true);
+        }
+        emit_track_state(dial, clk_run, cur_tracknum & 0x07);
       }
     }
   } else {
@@ -1396,7 +1536,9 @@ void loop() {
   }
 
   // ── Pattern chain advance ──
-  if (s_chain_active && s_chain_len > 1 && clk_run) {
+  // Pattern-mode chains never run in Track mode; engine-side track_advance_chain
+  // is the chain driver there.
+  if (s_chain_active && s_chain_len > 1 && clk_run && !dial_track_mode) {
     const uint8_t cur = engine.get_patsel();
     bool chain_state_changed = false;
 
@@ -1550,6 +1692,7 @@ void loop() {
           const uint8_t pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
           engine.ClearPattern(pat);
           pattern_cleared_flash_timer = 0;
+          s_pat_cleared_hold = true;
           midi_send_pattern_update(pat);
           break;
         }
@@ -1688,8 +1831,12 @@ void loop() {
         {
           static uint8_t s_anchor_prev_tp = 0xFF;
           const uint8_t tp = engine.get_time_pos();
-          if (tp == 0 && s_anchor_prev_tp != 0)
+          if (tp == 0 && s_anchor_prev_tp != 0) {
             midi_send_step_position(engine.get_patsel(), 0);
+            // Track view: cursor / next_p may have advanced on this wrap.
+            if (dial_track_mode)
+              emit_track_state(dial, /*clk_run=*/true, cur_tracknum & 0x07);
+          }
           s_anchor_prev_tp = tp;
         }
         // Metronome tap-write: record time data for the step that just played

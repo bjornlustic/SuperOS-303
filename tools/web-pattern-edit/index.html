@@ -792,6 +792,36 @@
     </div>
   </div>
 
+  <!-- Track View -->
+  <div class="config-panel">
+    <div class="config-bar" id="trackBar">
+      <span class="config-bar-arrow">&#9658;</span>
+      <span class="config-bar-label">Track View</span>
+      <span style="margin-left:auto;font-size:10px;font-weight:600;color:var(--gray-3);" id="trackStatus">Waiting...</span>
+    </div>
+    <div class="config-body" id="trackBody">
+      <div class="config-inner">
+        <div style="display:flex;flex-wrap:wrap;gap:14px;font-size:11px;font-weight:600;color:var(--gray-4)">
+          <div>Dial: <span id="tvDial" style="color:var(--gray-6)">-</span></div>
+          <div>Track: <span id="tvTrack" style="color:var(--gray-6)">-</span></div>
+          <div>Group: <span id="tvGroup" style="color:var(--gray-6)">-</span></div>
+          <div>Active Pat: <span id="tvPat" style="color:var(--gray-6)">-</span></div>
+          <div>track_active: <span id="tvActive" style="color:var(--gray-6)">-</span></div>
+          <div>clk_run: <span id="tvRun" style="color:var(--gray-6)">-</span></div>
+          <div>chain_len: <span id="tvLen" style="color:var(--gray-6)">-</span></div>
+          <div>cursor: <span id="tvCur" style="color:var(--gray-6)">-</span></div>
+        </div>
+        <div style="margin-top:10px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:var(--gray-4);margin-bottom:4px">Chain</div>
+          <div id="tvChain" style="display:flex;flex-wrap:wrap;gap:4px;font-family:ui-monospace,monospace;font-size:11px"></div>
+          <div style="margin-top:6px;font-size:10px;color:var(--gray-3)">
+            Step shows <code>P</code>=pattern (1-16 within group), <code>r</code>=repeats. Cursor box is highlighted. Last step has a thick border.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Log -->
   <div class="log-panel">
     <div class="log-bar" id="logBar">
@@ -907,6 +937,62 @@
     var open = body.classList.toggle('is-open');
     bar.classList.toggle('is-open', open);
   });
+  document.getElementById('trackBar').addEventListener('click', function() {
+    var bar = document.getElementById('trackBar'), body = document.getElementById('trackBody');
+    var open = body.classList.toggle('is-open');
+    bar.classList.toggle('is-open', open);
+  });
+
+  // ── Track view renderer (driven by SysEx 0x23) ────────────────────
+  var DIAL_NAMES = ['Pattern Write', 'Pattern Play', 'Track Write', 'Track Play'];
+  function renderTrackState(s) {
+    document.getElementById('trackStatus').textContent = DIAL_NAMES[s.dial] || ('?' + s.dial);
+    document.getElementById('tvDial').textContent   = DIAL_NAMES[s.dial] || ('?' + s.dial);
+    document.getElementById('tvTrack').textContent  = String(s.track + 1);
+    document.getElementById('tvGroup').textContent  = String(s.group + 1);
+    document.getElementById('tvPat').textContent    = String((s.pat & 7) + 1) + (s.pat & 8 ? ' (B)' : ' (A)');
+    document.getElementById('tvActive').textContent = s.active ? 'true' : 'false';
+    document.getElementById('tvRun').textContent    = s.run ? 'true' : 'false';
+    document.getElementById('tvLen').textContent    = String(s.len);
+    document.getElementById('tvCur').textContent    = String(s.cur);
+    var box = document.getElementById('tvChain');
+    while (box.firstChild) box.removeChild(box.firstChild);
+    box.style.display = 'grid';
+    box.style.gridTemplateColumns = 'repeat(16, minmax(0, 1fr))';
+    box.style.gap = '3px';
+    var SLOTS = s.chainPat.length;  // 64
+    for (var i = 0; i < SLOTS; i++) {
+      var inUse = i < s.len;
+      var d = document.createElement('div');
+      d.style.padding = '3px 4px';
+      d.style.border = (s.lastFlags[i] ? '2px solid #d92'
+                    : inUse ? '1px solid var(--gray-3)'
+                            : '1px dashed var(--gray-2)');
+      d.style.background = (i === s.cur) ? 'rgba(217,170,30,0.18)' : 'transparent';
+      d.style.color = inUse ? 'var(--gray-6)' : 'var(--gray-3)';
+      d.style.borderRadius = '3px';
+      d.style.minWidth = '0';
+      var idxLbl = document.createElement('div');
+      idxLbl.style.fontSize = '8px';
+      idxLbl.style.color = 'var(--gray-3)';
+      idxLbl.textContent = '#' + (i + 1);
+      var patLbl = document.createElement('div');
+      var pNum = (s.chainPat[i] & 7) + 1;
+      var bank = (s.chainPat[i] & 8) ? 'B' : 'A';
+      patLbl.style.fontSize = '10px';
+      patLbl.textContent = inUse ? ('P' + pNum + bank) : '·';
+      var trLbl = document.createElement('div');
+      trLbl.style.fontSize = '8px';
+      trLbl.style.color = 'var(--gray-3)';
+      // Transpose is 0..47 with 12 = "no transpose". Render relative semis.
+      var tr = (s.chainTr[i] | 0) - 12;
+      trLbl.textContent = inUse ? (tr === 0 ? '0' : (tr > 0 ? '+' : '') + tr) : '';
+      d.appendChild(idxLbl);
+      d.appendChild(patLbl);
+      d.appendChild(trLbl);
+      box.appendChild(d);
+    }
+  }
 
   // ── OS-303 pitch encoding ──────────────────────────────────────────
   // Packed pitch byte: bits[3:0]=semi (0..12), bits[5:4]=oct button (0..3),
@@ -2609,6 +2695,49 @@
         renderGrid();
       }
       refreshAllPills();
+      return;
+    }
+
+    if (cmd === 0x23 && bytes.length >= 10 + 64 * 3) {
+      var MAX_CHAIN_WIRE = 64;
+      var state = {
+        dial:   bytes[2] & 3,
+        track:  bytes[3] & 7,
+        active: !!bytes[4],
+        run:    !!bytes[5],
+        len:    bytes[6] & 0x7f,
+        cur:    bytes[7] & 0x7f,
+        pat:    bytes[8] & 0x0f,
+        group:  bytes[9] & 3,
+        chainPat: [], chainTr: [], lastFlags: []
+      };
+      for (var ti = 0; ti < MAX_CHAIN_WIRE; ti++) {
+        state.chainPat.push(bytes[10 + ti] & 0x0f);
+        state.chainTr.push(bytes[10 + MAX_CHAIN_WIRE + ti] & 0x7f);
+        state.lastFlags.push(bytes[10 + MAX_CHAIN_WIRE * 2 + ti] ? 1 : 0);
+      }
+      renderTrackState(state);
+      // Human-readable line in MIDI log so the user can copy/paste it for debugging.
+      var chainParts = [];
+      for (var li = 0; li < state.len; li++) {
+        var pNum = (state.chainPat[li] & 7) + 1;
+        var bnk  = (state.chainPat[li] & 8) ? 'B' : 'A';
+        var trV  = (state.chainTr[li] | 0) - 12;
+        var trS  = trV === 0 ? '' : (trV > 0 ? '+' : '') + trV;
+        var last = state.lastFlags[li] ? '*' : '';
+        var cur  = li === state.cur ? '[' : '';
+        var curE = li === state.cur ? ']' : '';
+        chainParts.push(cur + 'P' + pNum + bnk + trS + last + curE);
+      }
+      if (state.len === 0 && state.cur === 0) chainParts.push('[empty]');
+      log('TRACK 0x23 dial=' + (DIAL_NAMES[state.dial] || state.dial)
+          + ' track=' + (state.track + 1)
+          + ' grp=' + (state.group + 1)
+          + ' pat=P' + ((state.pat & 7) + 1) + ((state.pat & 8) ? 'B' : 'A')
+          + ' active=' + (state.active ? '1' : '0')
+          + ' run=' + (state.run ? '1' : '0')
+          + ' len=' + state.len + ' cur=' + state.cur
+          + ' chain=' + chainParts.join(','), 'log-syx');
       return;
     }
 

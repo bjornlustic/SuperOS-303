@@ -91,6 +91,15 @@ void midi_metronome_tick(bool first_beat);
 /// Stop the open metronome note (on mode exit / clock stop).
 void midi_metronome_stop();
 
+/// Broadcast Track Write / Track Play state to host (SysEx 0x23).
+/// Format: F0 7D 23 <dial_mode:0-3> <track_idx:0-7> <track_active:0|1> <clk_run:0|1>
+///                 <chain_len:0-16> <chain_pos:0-15> <patsel:0-15> <group:0-3>
+///                 <p_chain[16]> <t_chain_last_flag_bits_lo7> <t_chain_last_flag_bits_hi7>
+/// p_chain: low nibble = pattern in group, high nibble = repeats (0-15).
+/// last-flag bits: bit i of (lo|hi<<7) is 1 if t_chain[i] has the last-step flag.
+void midi_send_track_state(uint8_t dial_mode, uint8_t track_idx, bool track_active,
+                            bool clk_run, struct Engine &engine);
+
 /// Broadcast current chain state to host (SysEx 0x1A).
 /// active_len=0 means no chain active. Patterns at indices >= their respective lengths are ignored.
 /// Format: F0 7D 1A <active_len:0-4> <a0> <a1> <a2> <a3> <queued_len:0-4> <q0> <q1> <q2> <q3> F7
