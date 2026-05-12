@@ -81,6 +81,9 @@ static uint8_t s_step_sel_base = 0; // 0, 8, 16, or 24
 static bool    s_step_sel_edit = false;
 static bool    s_step_sel_time = false; // true = time sub-mode, false = pitch sub-mode
 static bool    s_step_sel_mode = false; // toggled: FN+PITCH enters, FN exits
+// Chain slot being viewed in step-select. 0..3 = DOWN/UP/ACCENT/SLIDE. Only
+// meaningful when s_chain_active && s_chain_len >= 2. Reset to 0 on each entry.
+static uint8_t s_step_sel_chain_view = 0;
 
 // Incremental pattern sync state (drains 2 steps/loop while running)
 static uint8_t s_pat_sync_pat = 0;
@@ -556,7 +559,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
 
 // Default overlay: pattern select, bank A/B, mode LEDs, running step chase
 void ProcessDefault(const bool &write_mode, const bool &clear_mod,
-               const bool &clk_run) {
+               const bool &clk_run, const bool &dial_pattern_write) {
   switch (engine.get_mode()) {
   case PITCH_MODE:
     if (clk_run) {
@@ -604,7 +607,9 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     Leds::Set(ACCENT_KEY_LED, !bank); // A
     Leds::Set(SLIDE_KEY_LED,   bank); // B
 
-    if (clk_run) {
+    // Step chase: Pattern Write only. Pattern Play hides the chase to keep the
+    // performance display calm.
+    if (clk_run && dial_pattern_write) {
       const uint8_t tp = engine.get_time_pos();
       Leds::Set(OutputIndex(tp & 0x7), true);
       Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
@@ -1235,6 +1240,8 @@ void loop() {
       s_dir_mode = true;
     } else if (fn_mod && inputs[PITCH_KEY].rising() && !s_step_sel_mode && dial_pattern_write) {
       s_step_sel_mode = true;
+      s_step_sel_chain_view = 0; // always default to first chain slot on entry
+      s_step_sel_base = 0;
     } else if (s_step_sel_mode) {
       // Step-select mode: two sub-modes — pitch (default) and time.
       // PITCH_KEY switches to pitch sub-mode, TIME_KEY switches to time sub-mode.
@@ -1243,8 +1250,19 @@ void loop() {
       Leds::Set(FUNCTION_MODE_LED, true);
       Leds::Set(PITCH_MODE_LED, !s_step_sel_time);
       Leds::Set(TIME_MODE_LED,   s_step_sel_time);
-      const uint8_t blen = engine.get_length();
-      Sequence &seq = engine.get_sequence();
+      // Resolve the pattern being viewed. With an active chain of >= 2 patterns
+      // we view chain[s_step_sel_chain_view]; otherwise we view the engine's
+      // active pattern. View is independent of playback: the engine keeps
+      // playing its own pattern regardless of what we view here.
+      const bool chain_view_active = s_chain_active && s_chain_len >= 2;
+      if (chain_view_active && s_step_sel_chain_view >= s_chain_len)
+        s_step_sel_chain_view = 0;
+      const uint8_t view_pat_idx = chain_view_active
+          ? s_chain_pats[s_step_sel_chain_view]
+          : engine.get_patsel();
+      Sequence &seq = engine.pattern[view_pat_idx];
+      const uint8_t blen = seq.length;
+      const bool playing_matches_view = (engine.get_patsel() == view_pat_idx);
 
       // Sub-mode switching (outside detail editor to avoid accidental mode changes).
       if (!s_step_sel_edit) {
@@ -1284,8 +1302,9 @@ void loop() {
           if (tn == 1) Leds::Set(OutputIndex(wi), true);
           else if (tn == 2) Leds::SetDim(OutputIndex(wi), true);
         }
-        // Chase LED
-        if (clk_run) {
+        // Chase LED: only when the currently-playing pattern is the one
+        // being viewed (so chain slots not currently playing stay quiet).
+        if (clk_run && playing_matches_view) {
           const uint8_t tp = engine.get_time_pos();
           if ((tp & ~uint8_t(7)) == s_step_sel_base)
             Leds::Set(OutputIndex(tp & 0x7), bool(clk_count & 4));
@@ -1303,6 +1322,21 @@ void loop() {
         // Selection flash
         if (s_step_sel >= 0 && (uint8_t(s_step_sel) & ~uint8_t(7)) == s_step_sel_base)
           Leds::Set(OutputIndex(s_step_sel & 0x7), bool((millis() >> 7) & 1));
+
+        // Chain slot select + LEDs. Visible only when no step is selected so
+        // step-edit feedback on DOWN/UP/ACCENT/SLIDE can take over the moment
+        // a step is picked. Hidden entirely when chain has < 2 patterns.
+        if (chain_view_active && s_step_sel < 0) {
+          if (inputs[DOWN_KEY].rising()   && s_chain_len > 0) { s_step_sel_chain_view = 0; s_step_sel_base = 0; }
+          if (inputs[UP_KEY].rising()     && s_chain_len > 1) { s_step_sel_chain_view = 1; s_step_sel_base = 0; }
+          if (inputs[ACCENT_KEY].rising() && s_chain_len > 2) { s_step_sel_chain_view = 2; s_step_sel_base = 0; }
+          if (inputs[SLIDE_KEY].rising()  && s_chain_len > 3) { s_step_sel_chain_view = 3; s_step_sel_base = 0; }
+          const bool blinkc = bool((millis() >> 7) & 1);
+          Leds::Set(DOWN_KEY_LED,   s_chain_len > 0 && (s_step_sel_chain_view == 0 ? blinkc : true));
+          Leds::Set(UP_KEY_LED,     s_chain_len > 1 && (s_step_sel_chain_view == 1 ? blinkc : true));
+          Leds::Set(ACCENT_KEY_LED, s_chain_len > 2 && (s_step_sel_chain_view == 2 ? blinkc : true));
+          Leds::Set(SLIDE_KEY_LED,  s_chain_len > 3 && (s_step_sel_chain_view == 3 ? blinkc : true));
+        }
 
         if (s_step_sel_time) {
           // ── Time sub-mode: edit directly from picker, no enter needed ──
@@ -1333,8 +1367,8 @@ void loop() {
               if (tchanged) {
                 uint8_t after_pt[MAX_STEPS];
                 sequence_pack_per_time(seq, after_pt);
-                const uint8_t plen = engine.get_length();
-                const uint8_t pat = engine.get_patsel();
+                const uint8_t plen = seq.length;
+                const uint8_t pat = view_pat_idx;
                 for (uint8_t i = 0; i < plen; ++i) {
                   if (i == si || before_pt[i] != after_pt[i])
                     midi_send_step_update(pat, i, after_pt[i], seq.time(i));
@@ -1401,12 +1435,12 @@ void loop() {
                 engine.stale = true; changed = true;
               }
             }
-            if (inputs[UP_KEY].rising())     { engine.NudgeOctave(+1);  changed = true; audition = true; }
-            if (inputs[DOWN_KEY].rising())   { engine.NudgeOctave(-1);  changed = true; audition = true; }
+            if (inputs[UP_KEY].rising())     { seq.nudge_octave_buttons(+1); engine.stale = true; changed = true; audition = true; }
+            if (inputs[DOWN_KEY].rising())   { seq.nudge_octave_buttons(-1); engine.stale = true; changed = true; audition = true; }
             for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
               if (inputs[pitched_keys[pi]].rising()) {
-                engine.SetPitchSemitone(pi);
-                changed = true; audition = true;
+                seq.SetPitchSemitone(pi);
+                engine.stale = true; changed = true; audition = true;
                 break;
               }
             }
@@ -1414,7 +1448,7 @@ void loop() {
           seq.pitch_pos = saved_pp;
           if (changed) {
             const uint8_t pb = (slot < seq.get_pitch_count()) ? seq.pitch[slot] : PITCH_EMPTY;
-            midi_send_step_update(engine.get_patsel(), uint8_t(s_step_sel),
+            midi_send_step_update(view_pat_idx, uint8_t(s_step_sel),
                 pb, seq.time(uint8_t(s_step_sel)));
           }
           if (inputs[BACK_KEY].rising()) s_step_sel_edit = false;
@@ -1531,7 +1565,7 @@ void loop() {
         }
       }
     } else {
-      ProcessDefault(write_mode, clear_mod, clk_run);
+      ProcessDefault(write_mode, clear_mod, clk_run, dial_pattern_write);
     }
   }
 
