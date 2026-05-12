@@ -40,6 +40,11 @@ static uint8_t s_time_edit_steps = 0; // counts writes in the current TIME_MODE 
 static bool s_tap_pitch_preview_gate = false;
 static uint8_t s_tap_pitch_preview_cv = 0;
 static bool s_tap_pitch_preview_accent = false;
+// Slide intent captured at audition-arm time. Stored-note audition (TAP /
+// BACK / step-select) captures the stored bit; new-note write captures
+// SLIDE_KEY.held(). DAC reads this rather than seq.get_slide() so the bit
+// at the post-advance pitch_pos cannot bleed into a fresh write's audition.
+static bool s_tap_pitch_preview_slide = false;
 static uint8_t s_tap_pitch_preview_retrig = 0; // ticks to force gate low for envelope retrigger
 static bool s_back_pitch_preview_gate = false;
 static uint8_t s_back_pitch_preview_cv = 0;
@@ -502,6 +507,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
         const uint8_t vel = acc ? 127 : 80;
         s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
         s_tap_pitch_preview_accent = acc;
+        s_tap_pitch_preview_slide = engine.get_sequence().get_slide();
         midi_audition_note_on(uint8_t(mn), vel);
       }
     }
@@ -544,6 +550,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       const uint8_t vel = acc ? 127 : 80;
       s_back_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
       s_tap_pitch_preview_accent = acc;
+      s_tap_pitch_preview_slide = engine.get_sequence().get_slide();
       s_back_pitch_preview_gate = true;
       midi_audition_note_on(uint8_t(mn), vel);
     }
@@ -1397,6 +1404,7 @@ void loop() {
                 if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
                 s_tap_pitch_preview_cv = uint8_t(linear + total_transpose);
                 s_tap_pitch_preview_accent = acc;
+                s_tap_pitch_preview_slide = (pb & (1 << 7)) != 0;
                 s_tap_pitch_preview_gate = true;
               }
             }
@@ -1460,6 +1468,7 @@ void loop() {
               if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
               s_tap_pitch_preview_cv = uint8_t(lin + total_transpose);
               s_tap_pitch_preview_accent = acc;
+              s_tap_pitch_preview_slide = (ab & (1 << 7)) != 0;
               s_tap_pitch_preview_gate = true;
             }
           }
@@ -2002,6 +2011,7 @@ void loop() {
             const uint8_t vel = acc ? 127 : 80;
             s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
             s_tap_pitch_preview_accent = acc;
+            s_tap_pitch_preview_slide = auds.get_slide();
             s_tap_pitch_preview_gate = true;
             midi_audition_note_on(uint8_t(mn), vel);
           }
@@ -2081,6 +2091,13 @@ void loop() {
           if (mn > 127) mn = 127;
           const uint8_t vel = inputs[ACCENT_KEY].held() ? 127 : 80;
           s_tap_pitch_preview_cv  = uint8_t(written_note - 36 + total_transpose);
+          // New-note write: audition reflects the user's modifier state at
+          // write time, never stored flags. Without this, the OR with
+          // seq.get_slide() below would read the post-advance pitch_pos's
+          // stale slide bit and slide from the overwritten note to the new
+          // one.
+          s_tap_pitch_preview_accent = inputs[ACCENT_KEY].held();
+          s_tap_pitch_preview_slide  = inputs[SLIDE_KEY].held();
           s_tap_pitch_preview_gate = true;
           midi_audition_note_on(uint8_t(mn), vel);
         }
@@ -2168,9 +2185,11 @@ void loop() {
     }
 
     bool slide_cv = inputs[SLIDE_KEY].held() || midi_live_slide();
-    if (gate && (s_tap_pitch_preview_gate || s_back_pitch_preview_gate ||
-                 (write_mode && engine.get_mode() == PITCH_MODE && check_pitch_inputs())))
-      slide_cv = slide_cv || engine.get_sequence().get_slide();
+    // Audition slide is the captured intent, not a live seq.get_slide() read.
+    // Live read would pick up the stale slide bit at the post-advance pitch_pos
+    // and slide from the overwritten note to the just-written one.
+    if (gate && (s_tap_pitch_preview_gate || s_back_pitch_preview_gate))
+      slide_cv = slide_cv || s_tap_pitch_preview_slide;
 
     DAC::SetPitch(pitch_cv);
     DAC::SetSlide(slide_cv);
