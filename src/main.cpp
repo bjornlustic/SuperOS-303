@@ -72,6 +72,40 @@ static bool s_ratchet_gate_reset = false;
 // Direction mode (FN + TIME_KEY)
 static bool s_dir_mode = false;
 
+// Keyboard play mode (FN + PITCH_KEY toggle while dial is in Pattern Play).
+// Pitched keys play the 303 voice live (DAC override) without modifying the
+// pattern. Mirrors stopped-clock PITCH_MODE audition behavior but persists
+// indefinitely and works whether the sequencer is running or stopped.
+static bool s_keyboard_mode = false;
+// Press-order stack of pitched-key slots held during keyboard mode. Used to
+// drive legato slide-on-overlap (no gate retrigger) and slide-back when the
+// top note is released while older notes are still held.
+static uint8_t s_kb_stack_key[8];
+static uint8_t s_kb_stack_cv[8];
+static uint8_t s_kb_stack_depth = 0;
+
+static void kb_stack_clear() { s_kb_stack_depth = 0; }
+static void kb_stack_remove(uint8_t key) {
+  for (uint8_t i = 0; i < s_kb_stack_depth; ++i) {
+    if (s_kb_stack_key[i] == key) {
+      for (uint8_t j = i; j < s_kb_stack_depth - 1; ++j) {
+        s_kb_stack_key[j] = s_kb_stack_key[j + 1];
+        s_kb_stack_cv[j]  = s_kb_stack_cv[j + 1];
+      }
+      --s_kb_stack_depth;
+      return;
+    }
+  }
+}
+static void kb_stack_push(uint8_t key, uint8_t cv) {
+  kb_stack_remove(key);
+  if (s_kb_stack_depth < 8) {
+    s_kb_stack_key[s_kb_stack_depth] = key;
+    s_kb_stack_cv[s_kb_stack_depth]  = cv;
+    ++s_kb_stack_depth;
+  }
+}
+
 // Track Write: CLEAR ("bar reset") arms "next TAP_NEXT writes the last step".
 // The TAP_NEXT after CLEAR writes at the current cursor, marks it as the last
 // chain step, and resets the cursor so the next session starts at step 0.
@@ -978,6 +1012,12 @@ void loop() {
     s_step_sel_time = false;
     s_step_sel      = -1;
     s_dir_mode      = false;
+    if (s_keyboard_mode) {
+      s_keyboard_mode = false;
+      s_tap_pitch_preview_gate = false;
+      midi_audition_note_off();
+      kb_stack_clear();
+    }
     // Exit any in-progress edit mode so PITCH_MODE / TIME_MODE state cannot
     // bleed across dial positions.
     engine.SetMode(NORMAL_MODE);
@@ -1493,7 +1533,68 @@ void loop() {
           !inputs[ACCENT_KEY].held() && !inputs[TAP_NEXT].held()) {
         s_tap_pitch_preview_gate = false;
       }
-    } else if (pitch_mod && !fn_mod && !clear_mod && !write_mode) {
+    } else if (s_keyboard_mode && (dial == DialMode::PatternPlay)) {
+      // Keyboard play: pitched keys play notes via the audition CV path; no
+      // pattern writes. Octave selected by DOWN / UP (same encoding as
+      // PITCH_MODE write). Press-order stack drives legato slide: holding one
+      // key and pressing another keeps the gate high and forces slide CV high
+      // so the 303 portamentos between notes. Releasing the top note slides
+      // back to the next-most-recent held note. Releasing all notes drops the
+      // gate.
+      Leds::Set(PITCH_MODE_LED, true);
+      Leds::Set(FUNCTION_MODE_LED, true);
+
+      // Falling edges: remove released keys from stack; slide back if the top
+      // changed and other keys remain.
+      bool top_changed = false;
+      for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
+        if (!inputs[pitched_keys[pi]].falling()) continue;
+        const bool was_top = (s_kb_stack_depth > 0 &&
+                              s_kb_stack_key[s_kb_stack_depth - 1] == pi);
+        kb_stack_remove(pi);
+        if (was_top) top_changed = true;
+      }
+      if (top_changed && s_kb_stack_depth > 0) {
+        const uint8_t cv = s_kb_stack_cv[s_kb_stack_depth - 1];
+        s_tap_pitch_preview_cv    = cv;
+        s_tap_pitch_preview_slide = true;
+        uint16_t mn = uint16_t(36) + cv;
+        if (mn > 127) mn = 127;
+        midi_audition_note_on(uint8_t(mn), 80);
+      }
+
+      // Rising edges: legato if stack already non-empty, else fresh trigger.
+      for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
+        if (!inputs[pitched_keys[pi]].rising()) continue;
+        const uint8_t oct    = resolve_octave();
+        const uint8_t packed = pack_pitch(pi, oct);
+        const uint8_t linear = unpack_pitch_linear(packed);
+        const uint8_t cv     = uint8_t(linear + total_transpose);
+        const bool    legato = (s_kb_stack_depth > 0);
+        const bool    acc    = inputs[ACCENT_KEY].held();
+        const bool    sld    = inputs[SLIDE_KEY].held() || legato;
+        uint16_t mn = uint16_t(36 + linear) + total_transpose;
+        if (mn > 127) mn = 127;
+        const uint8_t vel = acc ? 127 : 80;
+        // Fresh trigger: retrig gate so envelope opens cleanly. Legato: leave
+        // gate continuously high so the 303 envelope does not retrigger.
+        if (!legato && s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
+        s_tap_pitch_preview_cv     = cv;
+        s_tap_pitch_preview_accent = acc;
+        s_tap_pitch_preview_slide  = sld;
+        s_tap_pitch_preview_gate   = true;
+        kb_stack_push(pi, cv);
+        midi_audition_note_on(uint8_t(mn), vel);
+        break; // only one new note per loop iteration
+      }
+
+      // Close gate + MIDI note when stack drains.
+      if (s_kb_stack_depth == 0 && s_tap_pitch_preview_gate) {
+        s_tap_pitch_preview_gate  = false;
+        s_tap_pitch_preview_slide = false;
+        midi_audition_note_off();
+      }
+    } else if (pitch_mod && !fn_mod && !clear_mod && !write_mode && !s_keyboard_mode) {
       ProcessPitchMod();
     } else if (time_mod) {
       Leds::Set(FUNCTION_MODE_LED, true);
@@ -1707,6 +1808,17 @@ void loop() {
     // PITCH_MODE / TIME_MODE entry: Pattern Write only.
     if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
     if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod) engine.SetMode(PITCH_MODE, !clk_run);
+
+    // Keyboard play mode toggle: FN + PITCH_KEY rising while dial is in Pattern Play.
+    if (fn_mod && inputs[PITCH_KEY].rising() && (dial == DialMode::PatternPlay) &&
+        !edit_mode && !clear_mod) {
+      s_keyboard_mode = !s_keyboard_mode;
+      kb_stack_clear();
+      if (!s_keyboard_mode) {
+        s_tap_pitch_preview_gate = false;
+        midi_audition_note_off();
+      }
+    }
 
     // CLEAR + TIME_KEY: toggle metronome tap-write (running + Pattern Write + NORMAL_MODE).
     if (clear_mod && inputs[TIME_KEY].rising() && !fn_mod &&
@@ -2149,7 +2261,17 @@ void loop() {
   const bool force_slide_live  =
       pitch_mod && !fn_mod && dial_play_mode && clk_run && inputs[SLIDE_KEY].held();
 
-  if (clk_run) {
+  if (clk_run && s_keyboard_mode) {
+    // Keyboard play overrides sequenced CV with the audition preview values
+    // so the 303 voice tracks the player's keys while the sequencer keeps
+    // running its own pattern (sequencer MIDI out is unaffected).
+    DAC::SetPitch(s_tap_pitch_preview_cv);
+    DAC::SetSlide(s_tap_pitch_preview_slide);
+    DAC::SetAccent(s_tap_pitch_preview_accent);
+    DAC::SetGate(s_tap_pitch_preview_gate &&
+                 (s_tap_pitch_preview_retrig == 0));
+    if (s_tap_pitch_preview_retrig) --s_tap_pitch_preview_retrig;
+  } else if (clk_run) {
     // Expire short metronome gate pulse after 25 ms
     if (s_metro_gate_pulse && s_metro_gate_timer > 25) s_metro_gate_pulse = false;
     // Metronome click: override pitch with fixed CV (no transpose); accent on downbeat
