@@ -1790,7 +1790,12 @@ void loop() {
   }
 
   if (inputs[FUNCTION_KEY].rising() && !edit_mode) {
-    if (s_step_sel_mode) {
+    if (s_keyboard_mode) {
+      s_keyboard_mode = false;
+      kb_stack_clear();
+      s_tap_pitch_preview_gate = false;
+      midi_audition_note_off();
+    } else if (s_step_sel_mode) {
       s_step_sel_mode = false;
       s_step_sel_edit = false;
       s_step_sel_time = false;
@@ -2313,7 +2318,11 @@ void loop() {
     if (gate && (s_tap_pitch_preview_gate || s_back_pitch_preview_gate))
       slide_cv = slide_cv || s_tap_pitch_preview_slide;
 
-    DAC::SetPitch(pitch_cv);
+    // Only drive the pitch CV while the gate is open. With the gate closed the
+    // note is released; snapping the CV back to the sequencer's resting pitch
+    // slot makes an external (still-tracking) VCO jump to a different note on
+    // release. Holding the last latched pitch keeps the released note steady.
+    if (gate) DAC::SetPitch(pitch_cv);
     DAC::SetSlide(slide_cv);
     // Accent during audition (TAP-held edit, BACK preview, or live key-write)
     // is locked to the preview state captured at audition entry. Letting the
