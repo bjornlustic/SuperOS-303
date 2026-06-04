@@ -1325,6 +1325,11 @@
 
   // Keep groups[g][p] pointing at the slot's active variation.
   function repointSlot(g, p) { groups[g][p] = varStore[g][p][slotVar[g][p]]; }
+  // The variation that mirrors to the 303 (the device has one pattern per slot,
+  // so only the CV-out variation syncs with it). Editing other variations is
+  // editor-local and never touches the device.
+  function cvBlob(g, p) { return varStore[g][p][slotCvVar[g][p]]; }
+  function activeIsCvVar() { return slotVar[activeGroup][activePat] === slotCvVar[activeGroup][activePat]; }
 
   function initGroups() {
     groups = []; varStore = []; slotVar = []; slotCvVar = []; varMidiCh = []; varMode = [];
@@ -1345,7 +1350,16 @@
       }
     }
   }
+  // Debounced: serializing all 192 patterns + config is heavy, and this is
+  // called on every edit and every incoming SysEx message. Coalesce bursts
+  // (e.g. a bulk pattern download or a stream of 0x16 step echoes) into one
+  // write so the tab doesn't hang.
+  var _saveLSTimer = null;
   function saveGroupsToLS() {
+    if (_saveLSTimer) return;
+    _saveLSTimer = setTimeout(function() { _saveLSTimer = null; saveGroupsToLSNow(); }, 400);
+  }
+  function saveGroupsToLSNow() {
     try {
       var ser = { v: 8, groups: [] };
       for (var g = 0; g < NUM_GROUPS; g++) {
@@ -2498,6 +2512,9 @@
   function scheduleLiveSend() {
     if (!liveEnabled) return;
     if (!midiOut) { log('Live send skipped: no MIDI output selected', 'log-err'); return; }
+    // Only the CV-out variation mirrors to the device; edits to other variations
+    // stay editor-local (so editing variation 2 never overwrites what's playing).
+    if (!activeIsCvVar()) return;
     syncBlob();
     if (liveTimer) clearTimeout(liveTimer);
     liveTimer = setTimeout(function() {
@@ -2596,18 +2613,21 @@
       var dst = new Uint8Array(PATTERN_SIZE);
       applyWireToBlob(dst, raw);
       normalizePatternTimes(dst, getLength(dst));
-      groups[g][pat].set(dst);
+      cvBlob(g, pat).set(dst);   // device data mirrors the CV-out variation
       if (g === hwGroup) {
         lastSentBlob = new Uint8Array(dst);
         lastSentPat  = pat;
       }
-      pushHistory(g, pat);
-      commitIdx[g][pat] = histIdx[g][pat];
       saveGroupsToLS();
 
-      if (activeGroup === g && pat === activePat) {
-        syncPatternToolbar();
-        renderGrid();
+      // History/UI only when the CV-out variation is the one on screen.
+      if (slotCvVar[g][pat] === slotVar[g][pat]) {
+        pushHistory(g, pat);
+        commitIdx[g][pat] = histIdx[g][pat];
+        if (activeGroup === g && pat === activePat) {
+          syncPatternToolbar();
+          renderGrid();
+        }
       }
       recomputeDirty();
 
@@ -2701,7 +2721,7 @@
       var rStep = bytes[3] & 0x3f;
       var pitchByte = (bytes[4] & 0x7f) | ((bytes[5] & 0x01) << 7);
       var timeNibble = bytes[6] & 0x0f;
-      var rBlob = groups[hwGroup][rPat];
+      var rBlob = cvBlob(hwGroup, rPat);   // device mirrors the CV-out variation
       // Apply time first, then auto-extend the stream so noteIdx maps correctly.
       setTime(rBlob, rStep, timeNibble);
       ensurePitchStream(rBlob);
@@ -2716,7 +2736,7 @@
         }
       }
       saveGroupsToLS();
-      if (activeGroup === hwGroup && rPat === activePat) renderGrid();
+      if (activeGroup === hwGroup && rPat === activePat && slotCvVar[hwGroup][rPat] === slotVar[hwGroup][rPat]) renderGrid();
       recomputeDirty();
       if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
       reflect303HistTimer = setTimeout(function() {
@@ -2737,7 +2757,7 @@
       var rPat  = bytes[2] & 0x0f;
       var rStep = bytes[3] & 0x3f;
       var rVal  = bytes[4] & 0x01;
-      var rBlob = groups[hwGroup][rPat];
+      var rBlob = cvBlob(hwGroup, rPat);
       setRatchet(rBlob, rStep, rVal);
       if (lastSentBlob && lastSentPat === rPat) setRatchet(lastSentBlob, rStep, rVal);
       saveGroupsToLS();
@@ -2749,7 +2769,7 @@
     if (cmd === 0x17 && bytes.length >= 3) {
       var newDir = bytes[2] & DIR_MASK;
       if (hwGroup >= 0 && playingPat >= 0) {
-        setDirection(groups[hwGroup][playingPat], newDir);
+        setDirection(cvBlob(hwGroup, playingPat), newDir);
         if (lastSentBlob && lastSentPat === playingPat) setDirection(lastSentBlob, newDir);
         saveGroupsToLS();
       }
@@ -2760,7 +2780,7 @@
 
     if (cmd === 0x18 && bytes.length >= 4) {
       var lPat = bytes[2] & 0x0f;
-      var lBlob = (hwGroup >= 0 && lPat < 16) ? groups[hwGroup][lPat] : null;
+      var lBlob = (hwGroup >= 0 && lPat < 16) ? cvBlob(hwGroup, lPat) : null;
       var cap = lBlob ? patternMaxSteps(lBlob) : MAX_STEPS;
       var newLen = bytes[3] & 0x7f;
       if (newLen < 1) newLen = 1;
@@ -4016,9 +4036,17 @@
     btn.addEventListener('click', function() { switchVariation(parseInt(btn.dataset.var, 10)); });
   });
   document.getElementById('cvVarSel').addEventListener('change', function() {
-    slotCvVar[activeGroup][activePat] = parseInt(this.value, 10) & 3;
+    var g = activeGroup, p = activePat;
+    slotCvVar[g][p] = parseInt(this.value, 10) & 3;
     saveGroupsToLS();
-    log('CV out: variation ' + (slotCvVar[activeGroup][activePat] + 1) + ' (pattern ' + (activePat+1) + ')', 'log-syx');
+    syncVariationUI();
+    // Push the chosen variation to the 303 so it actually plays/outputs it.
+    if (midiOut && g === hwGroup) {
+      sendPattern(p, cvBlob(g, p));
+      lastSentBlob = new Uint8Array(cvBlob(g, p));
+      lastSentPat = p;
+    }
+    log('CV out -> variation ' + (slotCvVar[g][p] + 1) + ' (pattern ' + (p+1) + ')', 'log-syx');
   });
   document.getElementById('varChSel').addEventListener('change', function() {
     var v = slotVar[activeGroup][activePat];
