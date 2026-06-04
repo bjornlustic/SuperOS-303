@@ -1766,7 +1766,7 @@
         section.appendChild(header);
 
         var innerGrid = document.createElement('div');
-        innerGrid.className = 'seq-grid' + (clen > 16 ? ' cols-16' : '');
+        innerGrid.className = 'seq-grid'; // always 8 per row
         renderPatternCards(cblob, pi, clen, innerGrid, isActive);
         section.appendChild(innerGrid);
         grid.appendChild(section);
@@ -1776,7 +1776,7 @@
       var len = currentPatLen();
       blob[LEN_OFF] = len;
       normalizePatternTimes(blob, len);
-      grid.className = 'seq-grid' + (len > 16 ? ' cols-16' : '');
+      grid.className = 'seq-grid'; // always 8 per row
       renderPatternCards(blob, activePat, len, grid, true);
     }
   }
