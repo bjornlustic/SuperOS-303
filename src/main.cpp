@@ -649,7 +649,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
   case PITCH_MODE:
     if (clk_run) {
       PrintPitch();
-      const uint8_t tp = engine.get_time_pos();
+      const uint8_t tp = engine.get_edit_time_pos();
       Leds::Set(OutputIndex(tp & 0x7), true);
       Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
       if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4);
@@ -660,7 +660,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
   case TIME_MODE:
     if (clk_run) {
       PrintTime();
-      { const uint8_t tp = engine.get_time_pos();
+      { const uint8_t tp = engine.get_edit_time_pos();
         Leds::Set(OutputIndex(tp & 0x7), true);
         Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
         if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4); }
@@ -695,7 +695,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     // Step chase: Pattern Write only. Pattern Play hides the chase to keep the
     // performance display calm.
     if (clk_run && dial_pattern_write) {
-      const uint8_t tp = engine.get_time_pos();
+      const uint8_t tp = engine.get_edit_time_pos();
       Leds::Set(OutputIndex(tp & 0x7), true);
       Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
       if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4);

@@ -1153,6 +1153,9 @@ struct Engine {
     return (edit_var_ == 0) ? pattern[p_select] : shadow_[(edit_var_ - 1) & 0x1];
   }
   uint8_t get_edit_var() const { return edit_var_; }
+  // Playhead of the variation being edited (its shadow for var2/3), for the chase
+  // LEDs so each variation's chase follows its own length, not variation 1's.
+  uint8_t get_edit_time_pos() const { return uint8_t(edit_seq_view().time_pos & (MAX_STEPS - 1)); }
   bool SetEditVar(uint8_t v) { if (v >= NUM_VARIATIONS || v == edit_var_) return false; edit_var_ = v; return true; }
   // Advance the edit cursor: variation 1 uses the full engine advance (and the
   // playback sync when requested); a shadow just steps its own cursor forward.
