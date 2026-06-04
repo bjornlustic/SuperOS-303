@@ -197,6 +197,7 @@ static uint8_t cfg_display_channel() {
 static void cfg_save_midi() {
   GlobalSettings.save_midi_to_storage();
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
+  midi_set_var_channels(GlobalSettings.var2_channel, GlobalSettings.var3_channel);
 }
 
 // Combined MIDI config screen:
@@ -218,7 +219,19 @@ static void process_config_menu() {
   if (inputs[DSHARP_KEY].rising()) s_high_bank = !s_high_bank;
   Leds::Set(DSHARP_KEY_LED, s_high_bank);
 
-  const uint8_t dc = cfg_display_channel();
+  // Channel-edit target: hold PITCH_KEY -> variation 2 channel, SLIDE_KEY ->
+  // variation 3 channel, neither -> the main (variation 1 / device) channel.
+  uint8_t *chan_target = &GlobalSettings.midi_channel;
+  uint8_t  dc = cfg_display_channel();
+  if (inputs[PITCH_KEY].held()) {
+    chan_target = &GlobalSettings.var2_channel;
+    dc = GlobalSettings.var2_channel;
+    Leds::Set(PITCH_MODE_LED, true);
+  } else if (inputs[SLIDE_KEY].held()) {
+    chan_target = &GlobalSettings.var3_channel;
+    dc = GlobalSettings.var3_channel;
+    Leds::Set(SLIDE_KEY_LED, true);
+  }
   if (s_high_bank) {
     if (dc >= 9 && dc <= 16) Leds::Set(OutputIndex((dc - 9) & 0x7), true);
   } else {
@@ -226,7 +239,7 @@ static void process_config_menu() {
   }
   for (uint8_t i = 0; i < 8; ++i) {
     if (inputs[i].rising()) {
-      GlobalSettings.midi_channel = uint8_t(i + 1 + (s_high_bank ? 8 : 0));
+      *chan_target = uint8_t(i + 1 + (s_high_bank ? 8 : 0));
       cfg_save_midi();
       break;
     }
@@ -304,6 +317,7 @@ static uint8_t resolve_octave() {
 // Returns the MIDI note number (36-108) written this call, or 0 if nothing was written.
 // Helper: SysEx broadcast of the pitch byte for the current edit cursor (time_pos).
 static void send_step_update_for_cursor(Sequence &s) {
+  if (engine.get_edit_var() != 0) return; // var2/3 edits don't broadcast to editor var1
   const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
   uint8_t slot;
   uint8_t pb = PITCH_EMPTY;
@@ -312,7 +326,7 @@ static void send_step_update_for_cursor(Sequence &s) {
 }
 
 uint8_t input_pitch(bool mod = false, bool clk_run = false) {
-  Sequence &s = engine.get_sequence();
+  Sequence &s = engine.get_edit_sequence();
   if (clk_run && engine.is_step_locked()) return 0;
   if (mod) {
     if (!clk_run) s.ensure_pitch_edit_entry();
@@ -355,9 +369,9 @@ void input_time(bool mod = false, bool clk_run = false) {
   else if (inputs[ACCENT_KEY].rising()) { new_t = 0; written_time = 0; }
   if (written_time == 0xFF) return;
 
-  if (!mod) { engine.Advance(); ++s_time_edit_steps; }
-  Sequence &s = engine.get_sequence();
-  const uint8_t len = engine.get_length();
+  if (!mod) { engine.AdvanceEditCursor(false); ++s_time_edit_steps; }
+  Sequence &s = engine.get_edit_sequence();
+  const uint8_t len = s.length;
   uint8_t before_pt[MAX_STEPS];
   sequence_pack_per_time(s, before_pt);
   engine.SetTime(new_t);
@@ -371,6 +385,7 @@ void input_time(bool mod = false, bool clk_run = false) {
   // tp as a NOTE and writes the pitch into the wrong stream slot, corrupting
   // pitch[]. Sending tp first lets the editor update time_data at tp so every
   // subsequent step computes the same K-th-NOTE index the firmware did.
+  if (engine.get_edit_var() != 0) return; // var2/3 edits don't broadcast to editor var1
   const uint8_t pat = engine.get_patsel();
   midi_send_step_update(pat, tp, after_pt[tp], written_time);
   for (uint8_t i = 0; i < len; ++i) {
@@ -438,6 +453,7 @@ void setup() {
   flash_persist_begin(); // mount flash-as-EEPROM (formats on first boot)
   engine.Load();
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
+  midi_set_var_channels(GlobalSettings.var2_channel, GlobalSettings.var3_channel);
   Leds::brightness = GlobalSettings.led_brightness;
   Leds::BeginRefresh();
 }
@@ -446,7 +462,7 @@ void setup() {
 // Edit-mode LED feedback — current step pitch / time / flags
 // =============================================================================
 void PrintPitch() {
-  const Sequence &s = engine.get_sequence();
+  const Sequence &s = engine.edit_seq_view();
   const uint8_t pc = s.get_pitch_count();
   if (pc == 0) return;
   // Prefer the edit cursor's slot when on a NOTE; fall back to pitch_pos
@@ -480,9 +496,10 @@ void PrintPitch() {
   }
 }
 void PrintTime() {
-  Leds::Set(DOWN_KEY_LED,   engine.get_time() == 1);
-  Leds::Set(UP_KEY_LED,     engine.get_time() == 2);
-  Leds::Set(ACCENT_KEY_LED, engine.get_time() == 0);
+  const uint8_t t = engine.edit_seq_view().get_time();
+  Leds::Set(DOWN_KEY_LED,   t == 1);
+  Leds::Set(UP_KEY_LED,     t == 2);
+  Leds::Set(ACCENT_KEY_LED, t == 0);
   // Step-lock UI removed: it's RAM-only since the OS-303 layout migration
   // (no EEPROM byte for it), and the SLIDE_KEY toggle here confused users.
   Leds::Set(SLIDE_KEY_LED, false);
@@ -521,23 +538,6 @@ void ProcessDirectionMode(bool persist) {
 }
 
 // ---------------------------------------------------------------------------
-// ProcessVariationSelect -- hold TAP_NEXT while playing in normal mode to pick
-// which of the 3 slot variations drives the output. C/D/E = variation 1/2/3;
-// the active variation's LED flashes, the others are solid. Pressing a key
-// switches the active slot's CV variation and reloads that pattern.
-// ---------------------------------------------------------------------------
-void ProcessVariationSelect() {
-  const uint8_t pat = engine.get_patsel() & uint8_t(NUM_PATTERNS - 1);
-  const uint8_t cur = engine.GetSlotVariation(pat);
-  static const OutputIndex kVarLeds[NUM_VARIATIONS] = { C_KEY_LED, D_KEY_LED, E_KEY_LED };
-  static const InputIndex  kVarKeys[NUM_VARIATIONS] = { C_KEY, D_KEY, E_KEY };
-  for (uint8_t v = 0; v < NUM_VARIATIONS; ++v) {
-    Leds::Set(kVarLeds[v], v == cur ? bool(clk_count & 4) : true);
-    if (inputs[kVarKeys[v]].rising()) engine.SetSlotVariation(pat, v);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // ProcessEdit — TAP_NEXT held: pitch/time edit UI
 //
 // BACK_KEY behaviour:
@@ -557,11 +557,12 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       if (!clk_run && updated_note) {
         uint16_t mn = uint16_t(updated_note) + total_transpose;
         if (mn > 127) mn = 127;
-        const bool acc = engine.get_sequence().get_accent();
+        const Sequence &es = engine.edit_seq_view();
+        const bool acc = es.get_accent();
         const uint8_t vel = acc ? 127 : 80;
-        s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
+        s_tap_pitch_preview_cv = uint8_t(es.get_pitch() + total_transpose);
         s_tap_pitch_preview_accent = acc;
-        s_tap_pitch_preview_slide = engine.get_sequence().get_slide();
+        s_tap_pitch_preview_slide = es.get_slide();
         midi_audition_note_on(uint8_t(mn), vel);
       }
     }
@@ -573,10 +574,10 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       if (ratchet_mod) {
         // Ratchet view: DOWN = 1x (off), UP = 2x (ratchet on). 1-bit storage
         // since Phase 3, so 3x is no longer available. LED shows current state.
-        const uint8_t tp = uint8_t(engine.get_sequence().time_pos & (MAX_STEPS - 1));
+        const uint8_t tp = uint8_t(engine.edit_seq_view().time_pos & (MAX_STEPS - 1));
         if (inputs[DOWN_KEY].rising()) { engine.SetRatchetAtCurrent(0); midi_send_ratchet_update(engine.get_patsel(), tp, 0); }
         if (inputs[UP_KEY].rising())   { engine.SetRatchetAtCurrent(1); midi_send_ratchet_update(engine.get_patsel(), tp, 1); }
-        const uint8_t r = engine.get_sequence().get_ratchet_val(tp);
+        const uint8_t r = engine.edit_seq_view().get_ratchet_val(tp);
         Leds::Set(DOWN_KEY_LED, r == 0);
         Leds::Set(UP_KEY_LED,   r == 1);
         Leds::Set(ACCENT_KEY_LED, false);
@@ -596,15 +597,15 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
   // BACK_KEY: step back one position
   if (inputs[BACK_KEY].rising()) {
     engine.StepBack();
-    if (!clk_run && engine.get_mode() == PITCH_MODE &&
-        engine.get_sequence().get_time() != 0) {
-      uint16_t mn = uint16_t(engine.get_midi_note()) + total_transpose;
+    const Sequence &es = engine.edit_seq_view();
+    if (!clk_run && engine.get_mode() == PITCH_MODE && es.get_time() != 0) {
+      uint16_t mn = uint16_t(36 + es.get_pitch()) + total_transpose;
       if (mn > 127) mn = 127;
-      const bool acc = engine.get_sequence().get_accent();
+      const bool acc = es.get_accent();
       const uint8_t vel = acc ? 127 : 80;
-      s_back_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
+      s_back_pitch_preview_cv = uint8_t(es.get_pitch() + total_transpose);
       s_tap_pitch_preview_accent = acc;
-      s_tap_pitch_preview_slide = engine.get_sequence().get_slide();
+      s_tap_pitch_preview_slide = es.get_slide();
       s_back_pitch_preview_gate = true;
       midi_audition_note_on(uint8_t(mn), vel);
     }
@@ -616,6 +617,24 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
     s_back_pitch_preview_gate = false;
     midi_audition_note_off();
   }
+}
+
+// Edit-variation picker: hold TAP_NEXT in Pattern Write + normal mode and the
+// three variation LEDs (C/D/E) show immediately -- current variation lit, the
+// other two half-dim. Press C/D/E to choose which variation (1/2/3) all pattern
+// edits apply to; the choice is broadcast to the web editor (SysEx 0x1F). The
+// edit variation is latched until a new pattern is selected (SetPattern resets
+// it to variation 1). Edit a different pattern's variations by selecting that
+// pattern first (TAP released), then holding TAP again.
+void ProcessEditVarPicker() {
+  const uint8_t pat = engine.get_patsel();
+  if (inputs[C_KEY].rising() && engine.SetEditVar(0)) midi_send_edit_variation(pat, 0);
+  if (inputs[D_KEY].rising() && engine.SetEditVar(1)) midi_send_edit_variation(pat, 1);
+  if (inputs[E_KEY].rising() && engine.SetEditVar(2)) midi_send_edit_variation(pat, 2);
+  const uint8_t ev = engine.get_edit_var();
+  Leds::Set(C_KEY_LED, ev == 0); Leds::SetDim(C_KEY_LED, ev != 0);
+  Leds::Set(D_KEY_LED, ev == 1); Leds::SetDim(D_KEY_LED, ev != 1);
+  Leds::Set(E_KEY_LED, ev == 2); Leds::SetDim(E_KEY_LED, ev != 2);
 }
 
 // Default overlay: pattern select, bank A/B, mode LEDs, running step chase
@@ -1151,6 +1170,15 @@ void loop() {
     if (dial_track_mode) emit_track_state(dial, /*clk_run=*/true, cur_tracknum & 0x07);
   }
 
+  // While stopped, keep the shadow voices loaded for the active slot so editing
+  // variation 2/3 targets (and displays) the selected pattern's data. While
+  // running, the clock-tick loop handles reload (with note-off) at the switch.
+  if (!clk_run && engine.ShadowsNeedReload()) {
+    engine.persist_shadows();
+    engine.ReloadShadows();
+    engine.edit_var_ = 0;
+  }
+
   // -=-=- Process inputs and set LEDs -=-=-
 
   if (s_cfg_menu != CfgMenu::Off) {
@@ -1676,7 +1704,7 @@ void loop() {
         // LED: show current length position
         // White key: remainder within current 8-step block
         // Black keys: cumulative block coverage (solid = covered, blink = extended block covered)
-        const uint8_t cur_len = engine.get_length();
+        const uint8_t cur_len = engine.edit_seq_view().length;
         const bool blink_w = bool((millis() >> 8) & 1); // ~2 Hz, clock-independent
         Leds::Set(OutputIndex((cur_len - 1) & 0x7), true);
         if (s_len_extended || cur_len > 32) {
@@ -1708,13 +1736,14 @@ void loop() {
           if (inputs[kCfgWhiteKeys[wi]].rising()) {
             const uint8_t base = s_len_black_pressed ? s_len_black_base : 0;
             engine.SetLength(base + wi + 1);
-            midi_send_length_update(engine.get_patsel(), engine.get_length());
+            if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), engine.get_length());
           }
         }
       }
-    } else if (clk_run && edit_mode && !clear_mod && !s_metronome_active &&
-               engine.get_mode() == NORMAL_MODE) {
-      ProcessVariationSelect();
+    } else if (edit_mode && dial_pattern_write && !fn_mod && !clear_mod &&
+               !s_metronome_active && engine.get_mode() == NORMAL_MODE) {
+      // Hold TAP_NEXT in Pattern Write/normal mode: edit-variation picker.
+      ProcessEditVarPicker();
     } else {
       ProcessDefault(write_mode, clear_mod, clk_run, dial_pattern_write);
     }
@@ -2023,8 +2052,15 @@ void loop() {
     ++clk_count %= 24;
 
     if (clk_run) {
-      if (engine.Clock()) {
-        midi_after_clock(engine, total_transpose);
+      const bool step_boundary = engine.Clock();
+      if (step_boundary) {
+        if (engine.ShadowsNeedReload()) { // slot/group changed
+          engine.persist_shadows();           // flush any RAM shadow edits first
+          midi_shadows_all_notes_off(engine); // close old notes on their old channels
+          engine.ReloadShadows();
+          engine.edit_var_ = 0;               // new pattern/group -> edit variation 1
+        }
+        engine.AdvanceShadows();              // advance shadows + compute their gate state
         // Wrap-only anchor: send the playhead position via 0x15 only when
         // time_pos transitions back to 0. The web editor counts MIDI clock
         // bytes to interpolate steps between anchors, so we avoid the
@@ -2083,9 +2119,12 @@ void loop() {
           }
         }
       } else if (engine.is_ratchet_retrigger()) {
-        s_ratchet_gate_reset = true;
-        midi_ratchet_retrigger(engine, total_transpose);
+        s_ratchet_gate_reset = true; // DAC: force a gate low edge to retrigger the envelope
       }
+      // Every clock tick: MIDI note on/off follows the analog gate (all 3 voices),
+      // so MIDI sustain matches the 303 hardware gate exactly.
+      midi_seq_gate_tick(engine, total_transpose);
+      midi_shadows_gate_tick(engine, total_transpose);
     }
   }
 
@@ -2107,19 +2146,19 @@ void loop() {
     // toggle turns triplets ON, length is clamped to <=24 (max in triplet
     // mode = ~2 bars of 4/4: 4 quarters * 3 trips * 2 bars = 24 steps).
     if (inputs[UP_KEY].rising() && fn_mod && !pitch_mod && dial_pattern_write) {
-      Sequence &seq = engine.get_sequence();
+      Sequence &seq = engine.get_edit_sequence();
       const bool now_triplet = !seq.is_triplet_mode();
       seq.set_triplet_mode(now_triplet);
       if (now_triplet && seq.length > 24) {
         seq.length = 24;
-        midi_send_length_update(engine.get_patsel(), seq.length);
+        if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), seq.length);
       }
       engine.stale = true;
     }
     // While FN is held in Pattern Write, light UP_KEY_LED to indicate the
     // current triplet state of the active pattern (lit = triplets, off = 16ths).
     if (fn_mod && dial_pattern_write) {
-      Leds::Set(UP_KEY_LED, engine.get_sequence().is_triplet_mode());
+      Leds::Set(UP_KEY_LED, engine.edit_seq_view().is_triplet_mode());
     }
     // FN + DOWN_KEY: tap-to-count pattern length. Pattern Write only.
     // First tap resets length to 1; each subsequent tap adds one step.
@@ -2127,55 +2166,54 @@ void loop() {
       if (!step_counter) {
         step_counter = true;
         s_len_extended = false; // clear extended state on fresh count
-        engine.get_sequence().pitch_pos = 0;
+        engine.get_edit_sequence().pitch_pos = 0;
         engine.SetLength(1);
       } else {
-        uint8_t new_len = engine.get_length() < 64 ? engine.get_length() + 1 : 64;
-        engine.SetLength(new_len);
+        uint8_t cl = engine.edit_seq_view().length;
+        engine.SetLength(cl < 64 ? cl + 1 : 64);
       }
       engine.stale = true;
-      midi_send_length_update(engine.get_patsel(), engine.get_length());
+      if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), engine.get_length());
     }
 
     // FN + BACK_KEY: length -1, FN + TAP_NEXT: length +1. Pattern Write only.
     // Skipped while PITCH_KEY is held -- BACK is consumed by step-select mode.
     if (fn_mod && !pitch_mod && dial_pattern_write && inputs[BACK_KEY].rising()) {
-      uint8_t new_len = engine.get_length() > 1 ? engine.get_length() - 1 : 1;
-      engine.SetLength(new_len);
+      uint8_t cl = engine.edit_seq_view().length;
+      engine.SetLength(cl > 1 ? cl - 1 : 1);
       engine.stale = true;
-      midi_send_length_update(engine.get_patsel(), engine.get_length());
+      if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), engine.get_length());
     }
     if (fn_mod && !pitch_mod && dial_pattern_write && inputs[TAP_NEXT].rising()) {
-      uint8_t new_len = engine.get_length() < 64 ? engine.get_length() + 1 : 64;
-      engine.SetLength(new_len);
+      uint8_t cl = engine.edit_seq_view().length;
+      engine.SetLength(cl < 64 ? cl + 1 : 64);
       engine.stale = true;
-      midi_send_length_update(engine.get_patsel(), engine.get_length());
+      if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), engine.get_length());
     }
 
     if (inputs[TAP_NEXT].rising() && !fn_mod) {
       if (write_mode && !clk_run) {
         if (engine.get_mode() == PITCH_MODE) {
-          engine.get_sequence().ensure_pitch_write_entry();
+          engine.get_edit_sequence().ensure_pitch_write_entry();
           // Audition the current pitch slot. PITCH_MODE walks the pitch stream
           // independently of time data, so don't gate on time(time_pos)==1
           // (that gate broke audition for patterns with no NOTE events yet).
-          Sequence &auds = engine.get_sequence();
+          Sequence &auds = engine.get_edit_sequence();
           const uint8_t pc = auds.get_pitch_count();
           if (pc > 0 && auds.pitch_pos >= 0 && auds.pitch_pos < int(pc) &&
               auds.pitch[auds.pitch_pos] != PITCH_EMPTY) {
-            uint16_t mn = uint16_t(engine.get_midi_note()) + total_transpose;
+            uint16_t mn = uint16_t(36 + auds.get_pitch()) + total_transpose;
             if (mn > 127) mn = 127;
             const bool acc = auds.get_accent();
             const uint8_t vel = acc ? 127 : 80;
-            s_tap_pitch_preview_cv = uint8_t(engine.get_pitch() + total_transpose);
+            s_tap_pitch_preview_cv = uint8_t(auds.get_pitch() + total_transpose);
             s_tap_pitch_preview_accent = acc;
             s_tap_pitch_preview_slide = auds.get_slide();
             s_tap_pitch_preview_gate = true;
             midi_audition_note_on(uint8_t(mn), vel);
           }
         } else if (engine.get_mode() == TIME_MODE) {
-          const bool send = engine.Advance();
-          engine.SyncAfterManualAdvance(send);
+          engine.AdvanceEditCursor(true);
         }
       }
     }
@@ -2187,7 +2225,7 @@ void loop() {
     // doesn't fire while the user is parked on step 0.
     if (inputs[BACK_KEY].rising() && !fn_mod && write_mode && !clk_run && !edit_mode &&
         !s_step_sel_mode && engine.get_mode() == PITCH_MODE) {
-      Sequence &s = engine.get_sequence();
+      Sequence &s = engine.get_edit_sequence();
       const uint8_t pc = s.get_pitch_count();
       if (pc > 0 && s.pitch_pos > 0) {
         s.pitch_pos = s.pitch_pos - 1;
@@ -2208,13 +2246,13 @@ void loop() {
       // exit after a full loop. Linear advance was leaving the cursor on REST/TIE slots
       // whose pitch byte is empty (PITCH_EMPTY), so the next audition played nothing.
       if (!clk_run && write_mode && engine.get_mode() == PITCH_MODE) {
-        engine.get_sequence().advance_pitch_to_next_note();
-        if (engine.get_sequence().pitch_pos == 0
-            && !engine.get_sequence().first_step)
+        Sequence &es = engine.get_edit_sequence();
+        es.advance_pitch_to_next_note();
+        if (es.pitch_pos == 0 && !es.first_step)
           engine.SetMode(NORMAL_MODE, true);
       }
       if (!clk_run && engine.get_mode() == TIME_MODE &&
-          engine.get_time_pos() >= engine.get_length() - 1)
+          int(engine.edit_seq_view().time_pos) >= int(engine.edit_seq_view().length) - 1)
         engine.SetMode(NORMAL_MODE, true);
     }
   }
@@ -2230,11 +2268,11 @@ void loop() {
       if (clk_run) {
         input_time(true, true);
       } else if (!fn_mod && check_time_inputs() &&
-                 s_time_edit_steps < engine.get_length()) {
+                 s_time_edit_steps < engine.edit_seq_view().length) {
         input_time(false, false);
-        if (s_time_edit_steps >= engine.get_length())
+        if (s_time_edit_steps >= engine.edit_seq_view().length)
           engine.SetMode(NORMAL_MODE, true);
-      } else if (!clk_run && s_time_edit_steps >= engine.get_length())
+      } else if (!clk_run && s_time_edit_steps >= engine.edit_seq_view().length)
         engine.SetMode(NORMAL_MODE, true);
     }
 

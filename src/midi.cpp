@@ -66,6 +66,19 @@ static uint8_t out_ch() {
   return s_in_channel == 0 ? 1 : s_in_channel;
 }
 
+// Per-variation MIDI output channel. Variation 0 (index sentinel 0) routes
+// through out_ch() so omni/in-channel behaviour is preserved; variations 1/2
+// use the stored var2/var3 channels.
+static uint8_t s_var_channel[NUM_VARIATIONS] = {0, 2, 3};
+static uint8_t out_ch_for_var(uint8_t var) {
+  return (var >= NUM_VARIATIONS || var == 0 || s_var_channel[var] == 0)
+         ? out_ch() : s_var_channel[var];
+}
+void midi_set_var_channels(uint8_t v2, uint8_t v3) {
+  s_var_channel[1] = (v2 >= 1 && v2 <= 16) ? v2 : 2;
+  s_var_channel[2] = (v3 >= 1 && v3 <= 16) ? v3 : 3;
+}
+
 void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive, bool midi_thru) {
   s_in_channel = midi_in_channel_0_omni_16 <= 16 ? midi_in_channel_0_omni_16 : 1;
   s_midi_clock_rx = midi_clock_receive;
@@ -241,28 +254,43 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     enqueue_pattern_reply(pat);
     break;
   }
-  case 0x12: { // set pattern
+  case 0x12: { // set pattern. Optional trailing byte = variation (0=var1/default,
+               // 1=var2, 2=var3). var1 -> live RAM; var2/3 -> that slot's flash half.
     if (n < 5 + kPackedPatternLen) { send_ack(1); return; }
     const uint8_t pat = p[2] & 0x0F;
     const uint8_t cx = static_cast<uint8_t>(p[3] | (p[4] << 7));
+    const uint8_t var = (n > 5 + kPackedPatternLen) ? (p[5 + kPackedPatternLen] & 0x03) : 0;
     uint8_t raw[PATTERN_SIZE];
-    if (!unpack_7bit(p + 5, static_cast<uint16_t>(n - 5), raw, PATTERN_SIZE)) { send_ack(1); return; }
+    if (!unpack_7bit(p + 5, kPackedPatternLen, raw, PATTERN_SIZE)) { send_ack(1); return; }
     if (xor_blob_pattern(raw) != cx) { send_ack(1); return; }
-    // Never persist inline: a 32-byte EEPROM write blocks ~100ms and overflows
-    // the UART RX buffer, dropping whatever the web sends next. RAM update
-    // only; engine.stale causes the natural save points (RUN stop, WRITE
-    // exit) to persist.
-    if (!g_eng->import_pattern_blob(pat, raw, /*persist_eeprom=*/false)) { send_ack(2); return; }
-    // Pattern blob carries the per-pattern direction in reserved[0] bits[2:0],
-    // but import_pattern_blob only updates pattern[].pitch — the engine's
-    // live direction_ member is untouched. Apply it explicitly when the active
-    // pattern was just rewritten so a web-editor direction change takes effect.
-    if (pat == g_eng->get_patsel()) {
-      const uint8_t d = g_eng->pattern[pat].get_direction_stored();
-      g_eng->SetDirection(static_cast<SequenceDirection>(d));
+    if (var == 0) {
+      // Variation 1 (the 303 / CV voice). Never persist inline: a flash write
+      // blocks the UART long enough to drop the next SysEx. RAM update only;
+      // engine.stale persists at the natural save points (RUN stop, WRITE exit).
+      if (!g_eng->import_pattern_blob(pat, raw, /*persist_eeprom=*/false)) { send_ack(2); return; }
+      // Apply the blob's per-pattern direction to the live engine if active.
+      if (pat == g_eng->get_patsel()) {
+        const uint8_t d = g_eng->pattern[pat].get_direction_stored();
+        g_eng->SetDirection(static_cast<SequenceDirection>(d));
+      }
+      g_eng->stale = true;
+      mark_pat_dirty(pat);
+    } else if (var < NUM_VARIATIONS) {
+      // Variations 2/3 are MIDI-only shadow voices. For the active slot, edit the
+      // resident shadow in RAM (no flash write -> no sequencer stall); it persists
+      // on stop/switch. For a non-active slot (not resident), write flash directly.
+      if (!g_eng->apply_shadow_blob(pat, var, raw)) {
+        const uint8_t L = raw[PATTERN_SIZE - 1];
+        if (L < 1 || L > MAX_STEPS) { send_ack(2); return; }
+        Sequence tmp;
+        deserialize_pattern(tmp, raw);
+        tmp.length = L;
+        sequence_rebuild_pitch_count(tmp);
+        normalize_pattern_times(tmp);
+        WritePatternAt(tmp, g_eng->abs_slot(pat), var);
+      }
+      s_last_web_edit_ms = millis(); // arm the idle-flush quiet timer for shadows
     }
-    g_eng->stale = true;
-    mark_pat_dirty(pat);
     send_ack(0);
     break;
   }
@@ -346,12 +374,19 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     g_eng->SetPattern(p[2] & 0x0F, !g_clk_run);
     break;
   }
+  case 0x1F: { // host → 303: set the hardware edit-target variation (0..2)
+    if (n < 4 || !g_eng) return;
+    g_eng->SetEditVar(p[3] & 0x03);
+    break;
+  }
   case 0x20: { // request config
     const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                               (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
-    const uint8_t inner[6] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir, GlobalSettings.led_brightness};
-    tx_push_message(inner, 6);
+    const uint8_t inner[8] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir,
+                              GlobalSettings.led_brightness,
+                              GlobalSettings.var2_channel, GlobalSettings.var3_channel};
+    tx_push_message(inner, 8);
     // Also broadcast current group so web editor syncs on connect
     if (g_eng) {
       const uint8_t grp[3] = {0x7D, 0x1C, g_eng->get_group()};
@@ -378,6 +413,12 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
       if (br >= 1 && br <= 8) GlobalSettings.led_brightness = br;
       // main.cpp loop syncs Leds::brightness from GlobalSettings each tick.
     }
+    if (n >= 8) { // per-variation 2/3 MIDI output channels (1..16)
+      const uint8_t v2 = p[6], v3 = p[7];
+      if (v2 >= 1 && v2 <= 16) GlobalSettings.var2_channel = v2;
+      if (v3 >= 1 && v3 <= 16) GlobalSettings.var3_channel = v3;
+      midi_set_var_channels(GlobalSettings.var2_channel, GlobalSettings.var3_channel);
+    }
     // Defer EEPROM write to idle; inline save blocks UART RX long enough
     // to drop the next SysEx the web sends.
     s_settings_dirty = true;
@@ -387,8 +428,10 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t nfl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                                (GlobalSettings.midi_thru          ? 2 : 0));
     const uint8_t ndir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
-    const uint8_t reply[6] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl, ndir, GlobalSettings.led_brightness};
-    tx_push_message(reply, 6);
+    const uint8_t reply[8] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl, ndir,
+                              GlobalSettings.led_brightness,
+                              GlobalSettings.var2_channel, GlobalSettings.var3_channel};
+    tx_push_message(reply, 8);
     break;
   }
   default:
@@ -602,6 +645,12 @@ void midi_send_group_update(uint8_t group) {
   tx_push_message(inner, 3);
 }
 
+// Which variation the hardware is currently editing (303<->editor sync, SysEx 0x1F).
+void midi_send_edit_variation(uint8_t pat, uint8_t var) {
+  const uint8_t inner[4] = {0x7D, 0x1F, (uint8_t)(pat & 0x0F), (uint8_t)(var & 0x03)};
+  tx_push_message(inner, 4);
+}
+
 // --- Active pattern broadcast (SysEx 0x1E) ---------------------------------------
 // Used while stopped so the web editor follows hardware pat-key presses
 // without flagging the pill as "playing" (which 0x15 would do). Includes the
@@ -702,6 +751,7 @@ void midi_init(Engine *engine) {
 
 static uint8_t s_seq_note = 0;
 static bool s_seq_note_on = false;
+static uint8_t s_seq_note_ch = 0;   // channel the open main note was sent on
 
 void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses) {
   g_eng = &engine;
@@ -718,9 +768,10 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
   if (!s_midi_clock_rx) midi_clk = false;
 
   if (!clk_run && s_seq_note_on) {
-    MIDI.sendNoteOff(s_seq_note, 0, out_ch());
+    MIDI.sendNoteOff(s_seq_note, 0, s_seq_note_ch);
     s_seq_note_on = false;
   }
+  if (!clk_run) midi_shadows_all_notes_off(engine);
 
   while (MIDI.read()) {
     const midi::MidiType t = MIDI.getType();
@@ -774,67 +825,97 @@ void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave
 static int s_silence_step = -1;
 void midi_set_silence_step(int step) { s_silence_step = step; }
 
-void midi_after_clock(Engine &engine, uint8_t transpose) {
+// Main voice (variation 1) MIDI, driven from the analog gate every clock tick so
+// the MIDI note length tracks the 303 hardware gate exactly: a note sounds only
+// while get_gate() is high (half-step for plain notes, extended by ties/slides,
+// pulsed by ratchets). Pitch changing while the gate stays high = a slide, so the
+// new note is sent before the old note-off (legato overlap).
+void midi_seq_gate_tick(Engine &engine, uint8_t transpose) {
   const byte och = static_cast<byte>(out_ch());
 
-  if (engine.resting) {
-    if (s_seq_note_on) {
-      MIDI.sendNoteOff(s_seq_note, 0, och);
-      s_seq_note_on = false;
-    }
-    return;
+  // Output channel moved: close the open note on its old channel first.
+  if (s_seq_note_on && och != s_seq_note_ch) {
+    MIDI.sendNoteOff(s_seq_note, 0, s_seq_note_ch);
+    s_seq_note_on = false;
   }
 
-  // Step-select detail editor mute: don't trigger this step's MIDI Note On.
-  if (s_silence_step >= 0 &&
-      static_cast<int>(engine.get_time_pos()) == s_silence_step) {
-    if (s_seq_note_on) {
-      MIDI.sendNoteOff(s_seq_note, 0, och);
-      s_seq_note_on = false;
-    }
+  bool gate = engine.get_gate();
+  // Step-select detail editor mute: don't sound the edited step.
+  if (s_silence_step >= 0 && static_cast<int>(engine.get_time_pos()) == s_silence_step)
+    gate = false;
+
+  if (!gate) {
+    if (s_seq_note_on) { MIDI.sendNoteOff(s_seq_note, 0, och); s_seq_note_on = false; }
     return;
   }
 
   uint16_t n = static_cast<uint16_t>(engine.get_midi_note()) + transpose;
   if (n > 127) n = 127;
   const uint8_t vel = engine.get_accent() ? 127 : 80;
-
-  if (s_seq_note_on) {
-    if (s_seq_note != static_cast<uint8_t>(n)) {
-      const bool slide_midi = engine.get_slide_dac();
-      if (slide_midi) {
-        MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
-        MIDI.sendNoteOff(s_seq_note, 0, och);
-      } else {
-        MIDI.sendNoteOff(s_seq_note, 0, och);
-        MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
-      }
-      s_seq_note = static_cast<uint8_t>(n);
-    } else if (!engine.slide_gate && !engine.get_slide_dac()) {
-      // Same note, not a tie or slide destination — retrigger for distinct attack.
-      MIDI.sendNoteOff(s_seq_note, 0, och);
-      MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
-    }
-    // else: tie or slide continuation — hold the note on as-is
-    return;
-  }
 
   if (!s_seq_note_on) {
     MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
     s_seq_note = static_cast<uint8_t>(n);
     s_seq_note_on = true;
+    s_seq_note_ch = och;
+  } else if (s_seq_note != static_cast<uint8_t>(n)) {
+    MIDI.sendNoteOn(static_cast<byte>(n), vel, och);   // slide: new on before old off
+    MIDI.sendNoteOff(s_seq_note, 0, och);
+    s_seq_note = static_cast<uint8_t>(n);
+    s_seq_note_ch = och;
+  }
+  // else: same note, gate still high -> hold
+}
+
+// --- Multitimbral shadow voices (the 2 variations not on CV/gate) -------------
+// MIDI-only. Forward-advance each non-empty shadow one 16th, then emit
+// notes/ties/rests with per-note slide and accent. No ratchets in v1.
+static uint8_t s_shadow_note[NUM_VARIATIONS - 1]    = {0, 0};
+static bool    s_shadow_note_on[NUM_VARIATIONS - 1] = {false, false};
+
+// Shadow voices (variations 2/3) MIDI, driven from each shadow's gate state every
+// clock tick -- same model as the main voice so var2/3 note length tracks the
+// analog gate. Engine::AdvanceShadows() (called at the 16th boundary) computes the
+// per-shadow resting/slide_gate; here we sample the gate window with clk_count.
+void midi_shadows_gate_tick(Engine &engine, uint8_t transpose) {
+  const int8_t half = int8_t(engine.step_period() >> 1);
+  const int8_t clk  = engine.clk_count;
+  for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
+    const byte och = static_cast<byte>(out_ch_for_var(engine.shadow_var_[i]));
+    const bool gate = engine.shadow_notecount_[i] && !engine.shadow_resting_[i] &&
+                      (engine.shadow_slide_gate_[i] || clk < half);
+    if (!gate) {
+      if (s_shadow_note_on[i]) {
+        MIDI.sendNoteOff(s_shadow_note[i], 0, och);
+        s_shadow_note_on[i] = false;
+      }
+      continue;
+    }
+    Sequence &sq = engine.shadow_[i];
+    uint16_t n = static_cast<uint16_t>(36 + sq.get_pitch()) + transpose;
+    if (n > 127) n = 127;
+    const uint8_t vel = sq.get_accent() ? 127 : 80;
+    if (!s_shadow_note_on[i]) {
+      MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
+      s_shadow_note[i] = static_cast<uint8_t>(n);
+      s_shadow_note_on[i] = true;
+    } else if (s_shadow_note[i] != static_cast<uint8_t>(n)) {
+      MIDI.sendNoteOn(static_cast<byte>(n), vel, och);   // slide: new on before old off
+      MIDI.sendNoteOff(s_shadow_note[i], 0, och);
+      s_shadow_note[i] = static_cast<uint8_t>(n);
+    }
+    // else: same note, gate still high -> hold
   }
 }
 
-void midi_ratchet_retrigger(Engine &engine, uint8_t transpose) {
-  if (!s_seq_note_on || engine.resting) return;
-  const byte och = static_cast<byte>(out_ch());
-  uint16_t n = static_cast<uint16_t>(engine.get_midi_note()) + transpose;
-  if (n > 127) n = 127;
-  const uint8_t vel = engine.get_accent() ? 127 : 80;
-  MIDI.sendNoteOff(s_seq_note, 0, och);
-  MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
-  s_seq_note = static_cast<uint8_t>(n);
+void midi_shadows_all_notes_off(Engine &engine) {
+  for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
+    if (s_shadow_note_on[i]) {
+      const byte och = static_cast<byte>(out_ch_for_var(engine.shadow_var_[i]));
+      MIDI.sendNoteOff(s_shadow_note[i], 0, och);
+      s_shadow_note_on[i] = false;
+    }
+  }
 }
 
 // Flush pending EEPROM writes accumulated by SysEx handlers.
@@ -852,9 +933,17 @@ void midi_flush_pending_saves() {
 // would glitch playback audio) AND at least 2s have passed since the last
 // SysEx edit (so a burst of edits coalesces into one write per pattern).
 void midi_flush_pending_pattern_saves(Engine &engine) {
-  if (s_pat_dirty_mask == 0) return;
+  if (s_pat_dirty_mask == 0 && !engine.shadow_stale_) return;
   if (g_clk_run) return;
   const uint32_t now = millis();
+  // Variation 2/3 (shadow) edits -- hardware or web -- persist after a 2s quiet
+  // period (own timer, refreshed on each edit) so bursts coalesce into one flash
+  // write instead of stalling the LED ISR on every keypress.
+  if (engine.shadow_stale_ && (now - engine.shadow_dirty_ms_) >= 2000) {
+    engine.persist_shadows();
+    return;
+  }
+  if (s_pat_dirty_mask == 0) return;
   if (now - s_last_web_edit_ms < 2000) return;
   for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
     const uint16_t bit = uint16_t(1u << i);

@@ -34,12 +34,17 @@ struct PersistentSettings {
   uint8_t led_brightness = 8;
   /// Track-storage layout version; bump invalidates stored track blocks.
   uint8_t track_format = 0;
+  /// MIDI output channels for multitimbral variations 2 and 3 (1..16).
+  /// Variation 1 uses midi_channel; these drive the shadow voices.
+  uint8_t var2_channel = 2;
+  uint8_t var3_channel = 3;
 
   static constexpr uint8_t kTrackFormatVersion = 4;
 
-  // Settings block byte layout (FB_SETTINGS_LEN = 22):
+  // Settings block byte layout (FB_SETTINGS_LEN = 24):
   //   [0..15] signature  [16] midi_channel  [17] flags(bit0=clock_rx)
   //   [18] direction  [19] thru  [20] led_brightness  [21] track_format
+  //   [22] var2_channel  [23] var3_channel
   void serialize(uint8_t *b) const {
     memcpy(b, signature, 16);
     b[16] = midi_channel;
@@ -48,6 +53,8 @@ struct PersistentSettings {
     b[19] = midi_thru ? 1 : 0;
     b[20] = led_brightness;
     b[21] = track_format;
+    b[22] = var2_channel;
+    b[23] = var3_channel;
   }
   void deserialize(const uint8_t *b) {
     memcpy(signature, b, 16);
@@ -57,13 +64,19 @@ struct PersistentSettings {
     midi_thru          = (b[19] == 1);
     led_brightness     = (b[20] >= 1 && b[20] <= 8) ? b[20] : 8;
     track_format       = b[21];
+    var2_channel       = (b[22] >= 1 && b[22] <= 16) ? b[22] : 2;
+    var3_channel       = (b[23] >= 1 && b[23] <= 16) ? b[23] : 3;
   }
 
   // Load the settings block. If absent (fresh flash), zero the signature so
-  // Validate() fails and the engine runs its clean-init path.
+  // Validate() fails and the engine runs its clean-init path. Tolerates an old
+  // 22-byte record (pre var2/var3 channels): the buffer is preset with the
+  // channel defaults so a short read keeps them and does NOT trigger a wipe.
   void Load() {
     uint8_t b[FB_SETTINGS_LEN];
-    if (g_flash.read(FB_SETTINGS, b, FB_SETTINGS_LEN) == FB_SETTINGS_LEN)
+    b[22] = 2; b[23] = 3;
+    const int got = g_flash.read(FB_SETTINGS, b, FB_SETTINGS_LEN);
+    if (got >= 22)
       deserialize(b);
     else
       memset(signature, 0, sizeof(signature));
@@ -151,17 +164,4 @@ inline void WritePatternAt(const Sequence &seq, uint8_t abs_slot, uint8_t var) {
     memset(buf, 0, FB_PATTERN_LEN);        // unwritten neighbour half -> empty (length 0)
   serialize_pattern(seq, buf + half * FB_PATTERN_LEN_ONE);
   g_flash.write(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN);
-}
-
-// Per-slot CV variation (which of the 3 variations the CV/gate plays), 64 bytes.
-inline void ReadCvVarConfig(uint8_t *dst /*[NUM_SLOTS]*/) {
-  if (g_flash.read(FB_CVVAR, dst, FB_CVVAR_LEN) != FB_CVVAR_LEN) {
-    memset(dst, 0, FB_CVVAR_LEN);          // default: variation 1 for all slots
-  } else {
-    for (uint8_t i = 0; i < FB_CVVAR_LEN; ++i)
-      if (dst[i] >= NUM_VARIATIONS) dst[i] = 0;
-  }
-}
-inline void WriteCvVarConfig(const uint8_t *src /*[NUM_SLOTS]*/) {
-  g_flash.write(FB_CVVAR, src, FB_CVVAR_LEN);
 }

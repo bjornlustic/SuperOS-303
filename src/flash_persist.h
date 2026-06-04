@@ -20,17 +20,14 @@ static constexpr uint8_t FB_PATTERN_SUPERBLOCKS = FB_TOTAL_PATTERNS / FB_PATTERN
 //   0 .. FB_PATTERN_SUPERBLOCKS-1 : pattern pairs (super-block s = flat 2s, 2s+1)
 //   FB_TRACK_BASE .. +7           : tracks 0..7
 //   FB_SETTINGS                   : settings
-//   FB_CVVAR                      : per-slot CV variation (64 bytes, one per slot)
 static constexpr uint8_t FB_PATTERN_BASE = 0;
 static constexpr uint8_t FB_TRACK_BASE   = FB_PATTERN_SUPERBLOCKS;        // 96
 static constexpr uint8_t FB_SETTINGS     = FB_TRACK_BASE + 8;             // 104 (8 tracks)
-static constexpr uint8_t FB_CVVAR        = FB_SETTINGS + 1;               // 105
 
 // Serialized sizes.
 static constexpr uint8_t FB_PATTERN_LEN  = FB_PATTERNS_PER_BLOCK * FB_PATTERN_LEN_ONE; // 184 (one super-block)
 static constexpr uint8_t FB_TRACK_LEN    = 104;  // p_chain[32] + last[8] + transpose[64]; == TRACK_BYTES (asserted in engine.h)
-static constexpr uint8_t FB_SETTINGS_LEN = 22;
-static constexpr uint8_t FB_CVVAR_LEN    = NUM_SLOTS; // 64 (one variation byte per slot)
+static constexpr uint8_t FB_SETTINGS_LEN = 24;  // +2 for variation 2/3 MIDI channels
 
 // Page hooks: the block store addresses absolute flash pages; program via the
 // boot SPM service, read via far program-memory reads.

@@ -105,9 +105,22 @@ struct Engine {
   bool slide_gate = false;
   bool stale = false;
   uint32_t saved_hash_[NUM_PATTERNS] = {}; // per-pattern content hash at last save/load (dirty detection)
-  uint8_t cv_var_[NUM_SLOTS] = {};         // per-slot CV variation (which of 3 the CV/gate plays)
-  bool cv_var_dirty_ = false;              // cv_var_ changed; persist on next save
   bool resting = false;
+
+  // Multitimbral shadow voices: variations 2 and 3 of the active slot. The CV/
+  // gate always plays variation 1; the shadows are MIDI-only, advanced forward
+  // each 16th in lockstep. See ReloadShadows/AdvanceShadows and midi_shadows_gate_tick.
+  Sequence shadow_[NUM_VARIATIONS - 1];
+  uint8_t  shadow_var_[NUM_VARIATIONS - 1] = {1, 2};
+  uint8_t  shadow_notecount_[NUM_VARIATIONS - 1] = {0, 0};
+  uint8_t  shadow_last_p_ = 0xff, shadow_last_group_ = 0xff;
+  bool     shadow_stale_ = false;          // resident shadow edited; persist on save/reload
+  uint32_t shadow_dirty_ms_ = 0;           // millis() of the last shadow edit (idle-flush coalescing)
+  uint8_t  edit_var_ = 0;                   // hardware edit target: 0=var1, 1=var2, 2=var3
+  // Per-shadow gate state (computed at AdvanceShadows, sampled per tick by the
+  // shadow MIDI gate-follow so var2/3 note length tracks the analog gate).
+  bool     shadow_resting_[NUM_VARIATIONS - 1]    = {true, true};
+  bool     shadow_slide_gate_[NUM_VARIATIONS - 1] = {false, false};
 
   uint32_t step_start_us_ = 0;
 
@@ -141,7 +154,6 @@ struct Engine {
   void Load() {
     GlobalSettings.Load();
     bool valid = GlobalSettings.Validate();
-    ReadCvVarConfig(cv_var_);   // per-slot CV variation (defaults to 0 if absent)
 
     if (valid) {
       load_group_patterns();
@@ -156,15 +168,11 @@ struct Engine {
       memcpy(GlobalSettings.signature, sig_pew, kSigEepromLen);
       GlobalSettings.Save();
       GlobalSettings.save_midi_to_storage();
-      // Clean init: write all 192 patterns (96 super-blocks) cleared, and reset
-      // every slot's CV variation to 1 (index 0).
+      // Clean init: write all 192 patterns (96 super-blocks) cleared.
       Sequence blank;
       blank.Clear();
       for (uint8_t s = 0; s < FB_PATTERN_SUPERBLOCKS; ++s)
         WritePatternPair(blank, blank, s);
-      memset(cv_var_, 0, NUM_SLOTS);
-      WriteCvVarConfig(cv_var_);
-      cv_var_dirty_ = false;
       stale = false;
     }
     snapshot_pattern_hashes(); // baseline dirty detection for the active group
@@ -180,6 +188,7 @@ struct Engine {
         g_flash.write(uint8_t(FB_TRACK_BASE + t), blank, FB_TRACK_LEN);
       GlobalSettings.set_track_format(PersistentSettings::kTrackFormatVersion);
     }
+    ReloadShadows(); // prime shadow voices for the first running tick
   }
 
   // 32-bit FNV-1a over a pattern's persisted bytes (the PATTERN_SIZE-byte prefix
@@ -198,50 +207,95 @@ struct Engine {
   uint8_t abs_slot(uint8_t pat_in_group) const {
     return uint8_t(group_ * NUM_PATTERNS + (pat_in_group & uint8_t(NUM_PATTERNS - 1)));
   }
-  // CV variation each active-group slot routes to the CV/gate (0..2).
-  uint8_t GetSlotVariation(uint8_t pat) const { return cv_var_[abs_slot(pat)]; }
-
-  // Read the active group's NUM_PATTERNS patterns from flash, each at its own
-  // CV variation, then normalize each.
+  // Read the active group's NUM_PATTERNS patterns (variation 1) from flash.
   void load_group_patterns() {
     for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
-      const uint8_t s = abs_slot(i);
-      ReadPatternAt(pattern[i], s, cv_var_[s]);
+      ReadPatternAt(pattern[i], abs_slot(i), 0);
       if (!pattern[i].length) pattern[i].SetLength(8);
       sequence_rebuild_pitch_count(pattern[i]);
       normalize_pattern_times(pattern[i]);
     }
   }
-  // Persist one pattern at its slot's CV variation and re-baseline its hash.
+
+  // --- Multitimbral shadow voices (variations 2 and 3 of the active slot) ---
+  // Variation 1 (index 0) drives CV/gate + its MIDI; the shadows are MIDI-only.
+  void ReloadShadows() {
+    const uint8_t s = abs_slot(p_select);
+    for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
+      const uint8_t var = uint8_t(i + 1); // variation index 1 and 2 (variations 2 and 3)
+      ReadPatternAt(shadow_[i], s, var);
+      if (!shadow_[i].length) shadow_[i].SetLength(8);
+      sequence_rebuild_pitch_count(shadow_[i]);
+      normalize_pattern_times(shadow_[i]);
+      shadow_[i].Reset();
+      shadow_var_[i]       = var;
+      shadow_notecount_[i] = shadow_[i].note_count();
+      shadow_resting_[i]   = true;
+      shadow_slide_gate_[i] = false;
+    }
+    shadow_last_p_     = p_select;
+    shadow_last_group_ = group_;
+  }
+  // True when the active slot or group changed since the last ReloadShadows.
+  // Caller must flush open shadow notes before calling ReloadShadows.
+  bool ShadowsNeedReload() const {
+    return !(p_select == shadow_last_p_ && group_ == shadow_last_group_);
+  }
+  // Advance each non-empty shadow one 16th (forward only in v1) and compute its
+  // gate state (resting + slide_gate) the same way Advance() does for the main
+  // voice, so the shadow MIDI can track the analog gate window.
+  void AdvanceShadows() {
+    for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
+      if (!shadow_notecount_[i]) { shadow_resting_[i] = true; shadow_slide_gate_[i] = false; continue; }
+      Sequence &s = shadow_[i];
+      s.Advance();
+      const uint8_t cur = s.time(uint8_t(s.time_pos));
+      shadow_resting_[i] = (cur == 0);
+      const uint8_t len  = s.length ? s.length : 1;
+      const uint8_t npos = uint8_t((unsigned(s.time_pos) + 1u) % len);
+      const uint8_t nt   = s.time(npos);
+      shadow_slide_gate_[i] = (nt != 0 && s.get_slide())          // slides into a sounding step
+                            || (nt == 2)                          // next step is a tie
+                            || (cur == 2 && s.slide_from_prev());  // a tie that was slid into
+    }
+  }
+  // Apply a web-editor variation 2/3 blob (raw PATTERN_SIZE bytes, import layout)
+  // to the resident shadow voice in RAM -- no flash write, no playback reset, so
+  // editing a live variation does not stall the sequencer. Persisted on the next
+  // save/reload. Returns false if `pat` is not the active (resident) slot.
+  bool apply_shadow_blob(uint8_t pat, uint8_t var, const uint8_t *raw) {
+    if (var < 1 || var >= NUM_VARIATIONS) return false;
+    if ((pat & uint8_t(NUM_PATTERNS - 1)) != p_select) return false;
+    Sequence &sh = shadow_[var - 1];
+    memcpy(sh.pitch, raw, PATTERN_SIZE);     // pitch[]+time_data[]+meta, length at end
+    uint8_t L = raw[PATTERN_SIZE - 1];
+    sh.length = (L >= 1 && L <= MAX_STEPS) ? L : 8;
+    sequence_rebuild_pitch_count(sh);
+    normalize_pattern_times(sh);
+    if (sh.time_pos >= sh.length) sh.time_pos = 0;
+    shadow_notecount_[var - 1] = sh.note_count();
+    shadow_stale_ = true;
+    shadow_dirty_ms_ = millis();
+    return true;
+  }
+  // Persist edited shadow voices to flash (called on save and before reload).
+  void persist_shadows() {
+    if (!shadow_stale_) return;
+    const uint8_t s = uint8_t(shadow_last_group_ * NUM_PATTERNS
+                              + (shadow_last_p_ & uint8_t(NUM_PATTERNS - 1)));
+    for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i)
+      WritePatternAt(shadow_[i], s, uint8_t(i + 1));
+    shadow_stale_ = false;
+  }
+  // Persist one pattern (variation 1) and re-baseline its hash.
   void persist_pattern(uint8_t idx) {
     idx &= uint8_t(NUM_PATTERNS - 1);
-    const uint8_t s = abs_slot(idx);
-    WritePatternAt(pattern[idx], s, cv_var_[s]);
+    WritePatternAt(pattern[idx], abs_slot(idx), 0);
     saved_hash_[idx] = pattern_hash(pattern[idx]);
   }
 
-  // Switch which variation slot `pat` routes to CV/gate, and load it from flash.
-  // Persists the outgoing variation's edits first (so they are not lost). The
-  // cv_var change itself is persisted on the next save (clock stop).
-  bool SetSlotVariation(uint8_t pat, uint8_t var) {
-    pat &= uint8_t(NUM_PATTERNS - 1);
-    if (var >= NUM_VARIATIONS) return false;
-    const uint8_t s = abs_slot(pat);
-    if (cv_var_[s] == var) return false;
-    if (pattern_hash(pattern[pat]) != saved_hash_[pat])
-      WritePatternAt(pattern[pat], s, cv_var_[s]);   // keep the outgoing edits
-    cv_var_[s] = var;
-    cv_var_dirty_ = true;
-    ReadPatternAt(pattern[pat], s, var);
-    if (!pattern[pat].length) pattern[pat].SetLength(8);
-    sequence_rebuild_pitch_count(pattern[pat]);
-    normalize_pattern_times(pattern[pat]);
-    saved_hash_[pat] = pattern_hash(pattern[pat]);
-    return true;
-  }
-
   void Save(int pidx = -1) {
-    if (cv_var_dirty_) { WriteCvVarConfig(cv_var_); cv_var_dirty_ = false; }
+    persist_shadows();
     if (!stale) return;
     if (pidx >= 0) {
       persist_pattern(uint8_t(pidx));
@@ -252,8 +306,7 @@ struct Engine {
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
         const uint32_t h = pattern_hash(pattern[i]);
         if (h != saved_hash_[i]) {
-          const uint8_t s = abs_slot(i);
-          WritePatternAt(pattern[i], s, cv_var_[s]);
+          WritePatternAt(pattern[i], abs_slot(i), 0);
           saved_hash_[i] = h;
         }
       }
@@ -508,6 +561,7 @@ struct Engine {
       direction_change_pending_ = false;
     }
     get_sequence().Reset();
+    for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) shadow_[i].Reset();
     clk_count = -1;
     slide_gate = false;
     resting = true;
@@ -529,7 +583,7 @@ struct Engine {
   /// Randomize entire pattern: random time + random pitches in stream order.
   /// Ratchets cleared.
   void RandomizeFullPattern() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     fast_rand_seed();
     uint8_t prev = 1;
@@ -552,7 +606,7 @@ struct Engine {
   }
 
   void RandomizeFullPatternKeepRatchets() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     uint8_t saved[MAX_STEPS / 8];
     for (uint8_t i = 0; i < (MAX_STEPS / 8); ++i) saved[i] = s.reserved[1 + i];
     RandomizeFullPattern();
@@ -563,7 +617,7 @@ struct Engine {
   /// Rotate time data only. Pitch stream stays in place; new NOTE positions
   /// consume pitches in stream order (TB-303 independent-stream semantic).
   void RotateTimeLeft() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     if (len < 2) return;
     const uint8_t ft = s.time(0);
@@ -576,7 +630,7 @@ struct Engine {
   }
 
   void RotateTimeRight() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     if (len < 2) return;
     const uint8_t lt = s.time(uint8_t(len - 1));
@@ -590,7 +644,7 @@ struct Engine {
 
   /// Randomize pitches only - keeps time data; per-NOTE-slot random pitch.
   void RandomizePitchData() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     fast_rand_seed();
     for (uint8_t k = 0; k < pc; ++k) {
@@ -613,7 +667,7 @@ struct Engine {
   /// Randomize time data only. Existing pitches are preserved in stream order;
   /// pitch_count auto-extends if the new note_count exceeds it.
   void RandomizeTimeData() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     fast_rand_seed();
     uint8_t prev = 1;
@@ -629,14 +683,14 @@ struct Engine {
   }
 
   void ClearRatchetsOnly() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     for (uint8_t i = 0; i < len; i++) s.set_ratchet_val(i, 0);
     stale = true;
   }
 
   void RandomizeRatchetData() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     fast_rand_seed();
     uint8_t k = 0;
@@ -657,7 +711,7 @@ struct Engine {
   }
 
   void RandomizeAccentData() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     fast_rand_seed();
     for (uint8_t k = 0; k < pc; ++k) {
@@ -669,7 +723,7 @@ struct Engine {
   }
 
   void RandomizeSlideData() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     fast_rand_seed();
     uint8_t k = 0;
@@ -687,7 +741,7 @@ struct Engine {
   }
 
   void Mutate() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     if (len < 1) return;
     fast_rand_seed();
@@ -758,7 +812,7 @@ struct Engine {
   /// Insert a REST time-step at the current time_pos, shifting later time nibbles
   /// and ratchets right. Pitch stream is left untouched.
   void InsertTimeStep() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t gmax = MAX_STEPS;
     if (s.length >= gmax) return;
     const uint8_t at = uint8_t(s.time_pos & (MAX_STEPS - 1));
@@ -777,7 +831,7 @@ struct Engine {
   /// untouched; the deleted NOTE's pitch is preserved as a queued slot, so
   /// re-adding a NOTE elsewhere replays the same pitch in stream order.
   void DeleteTimeStep() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     if (s.length <= 1) return;
     const uint8_t at = uint8_t(s.time_pos & (MAX_STEPS - 1));
     if (at >= s.length) return;
@@ -796,7 +850,7 @@ struct Engine {
 
   /// Shift entire pattern (pitch + time + ratchets) one step LEFT within length.
   void ShiftPatternLeft() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     if (len < 2) return;
     uint8_t per_time[MAX_STEPS];
@@ -818,7 +872,7 @@ struct Engine {
   }
 
   void ShiftPatternRight() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     if (len < 2) return;
     uint8_t per_time[MAX_STEPS];
@@ -841,7 +895,7 @@ struct Engine {
 
   /// Rotate pitch stream only (NOTE-event order) one slot left.
   void RotatePitchLeft() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     if (pc < 2) return;
     const uint8_t first = s.pitch[0];
@@ -850,7 +904,7 @@ struct Engine {
     stale = true;
   }
   void RotatePitchRight() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     if (pc < 2) return;
     const uint8_t last = s.pitch[pc - 1];
@@ -861,7 +915,7 @@ struct Engine {
 
   /// Reverse the entire pattern (pitch + time + ratchets) within length.
   void ReversePattern() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     if (len < 2) return;
     uint8_t per_time[MAX_STEPS];
@@ -885,14 +939,14 @@ struct Engine {
   }
 
   void ClearPitchesOnly() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     for (uint8_t k = 0; k < pc; ++k) s.pitch[k] = PITCH_DEFAULT;
     stale = true;
   }
 
   void ClearTimesOnly() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
     for (uint8_t i = 0; i < len; ++i) sequence_set_time_at(s, i, 0);
     // Pitch stream preserved (queued for when NOTEs come back).
@@ -900,7 +954,7 @@ struct Engine {
   }
 
   void StampAllAccent() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     if (pc == 0) return;
     bool all_set = true;
@@ -920,7 +974,7 @@ struct Engine {
   }
 
   void StampAllSlide() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     if (pc == 0) return;
     bool all_set = true;
@@ -954,7 +1008,7 @@ struct Engine {
   }
 
   void RandomizeSemitones() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     fast_rand_seed();
     for (uint8_t k = 0; k < pc; ++k) {
@@ -969,7 +1023,7 @@ struct Engine {
   }
 
   void RandomizeOctaves() {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
     fast_rand_seed();
     for (uint8_t k = 0; k < pc; ++k) {
@@ -983,7 +1037,7 @@ struct Engine {
   }
 
   void NudgeSemitone(int dir) {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     uint8_t slot;
     if (!s.edit_slot_index(slot)) return;
     if (s.pitch[slot] == PITCH_EMPTY) return;
@@ -998,7 +1052,7 @@ struct Engine {
   }
 
   void NudgeRatchet(int dir) {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
     if (s.time(tp) != 1) return;
     const uint8_t slot = s.pitch_index_for_note(tp);
@@ -1012,7 +1066,7 @@ struct Engine {
   }
 
   void SetRatchetAtCurrent(uint8_t val) {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
     if (s.time(tp) != 1) return;
     const uint8_t slot = s.pitch_index_for_note(tp);
@@ -1059,6 +1113,29 @@ struct Engine {
   Sequence &get_sequence() { return pattern[p_select]; }
   const Sequence &get_sequence() const { return pattern[p_select]; }
   const Sequence &get_pattern(uint8_t idx) const { return pattern[idx & 0xf]; }
+
+  // Hardware edit target: variation 1 (the playback/CV buffer) or one of the two
+  // resident shadow voices (variations 2/3). Playback never uses this; only the
+  // hardware pattern-write UI does, so var2/3 edits go to the shadow buffers.
+  Sequence &get_edit_sequence() {
+    if (edit_var_ == 0) return pattern[p_select];
+    shadow_stale_ = true;                 // a shadow is the edit target -> persist on save
+    shadow_dirty_ms_ = millis();          // refresh the idle-flush quiet timer
+    return shadow_[(edit_var_ - 1) & 0x1];
+  }
+  // Read-only view of the edit target (no dirty mark) for LED/display code.
+  const Sequence &edit_seq_view() const {
+    return (edit_var_ == 0) ? pattern[p_select] : shadow_[(edit_var_ - 1) & 0x1];
+  }
+  uint8_t get_edit_var() const { return edit_var_; }
+  bool SetEditVar(uint8_t v) { if (v >= NUM_VARIATIONS || v == edit_var_) return false; edit_var_ = v; return true; }
+  // Advance the edit cursor: variation 1 uses the full engine advance (and the
+  // playback sync when requested); a shadow just steps its own cursor forward.
+  void AdvanceEditCursor(bool sync) {
+    if (edit_var_ != 0) { shadow_[(edit_var_ - 1) & 0x1].Advance(); return; }
+    const bool send = Advance();
+    if (sync) SyncAfterManualAdvance(send);
+  }
 
   // Gate window: 50% of the step period in 16ths (clk_count < 3 of 6) and in
   // triplets (clk_count < 4 of 8). With 1-bit ratchet (Phase 3): r=0 normal,
@@ -1130,9 +1207,10 @@ struct Engine {
   void SetPattern(uint8_t p_, bool override = false) {
     next_p = p_ & 0xf;
     if (override) p_select = next_p;
+    edit_var_ = 0; // a new pattern always starts on variation 1 for editing
   }
   void SetLength(uint8_t len) {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t old_len = s.length;
     // Triplet mode caps at 24 steps (~2 bars of 4/4 in triplet 8ths). 16ths
     // mode caps at MAX_STEPS (32).
@@ -1149,8 +1227,9 @@ struct Engine {
   }
   bool BumpLength() {
     stale = true;
-    bool ok = get_sequence().BumpLength(MAX_STEPS);
-    sequence_rebuild_pitch_count(get_sequence());
+    Sequence &s = get_edit_sequence();
+    bool ok = s.BumpLength(MAX_STEPS);
+    sequence_rebuild_pitch_count(s);
     return ok;
   }
   void SetMode(SequencerMode m, bool reset = false) {
@@ -1158,43 +1237,43 @@ struct Engine {
     mode_ = m;
   }
   void NudgeOctave(int dir) {
-    get_sequence().nudge_octave_buttons(dir);
+    get_edit_sequence().nudge_octave_buttons(dir);
     stale = true;
   }
   void SetPitchSemitone(uint8_t p) {
-    get_sequence().SetPitchSemitone(p);
+    get_edit_sequence().SetPitchSemitone(p);
     stale = true;
   }
   void SetPitch(uint8_t p, uint8_t flags) {
-    get_sequence().SetPitch(p, flags);
+    get_edit_sequence().SetPitch(p, flags);
     stale = true;
   }
   /// TIME_MODE write. Surgically maintains pitch_count + pitch[].
   void SetTime(uint8_t t) {
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
     sequence_write_time_with_pitch_sync(s, tp, t);
     stale = true;
   }
   void ToggleSlide() {
     if (mode_ == PITCH_MODE)
-      get_sequence().ToggleSlide();
+      get_edit_sequence().ToggleSlide();
     stale = true;
   }
   void ToggleAccent() {
     if (mode_ == PITCH_MODE)
-      get_sequence().ToggleAccent();
+      get_edit_sequence().ToggleAccent();
     stale = true;
   }
 
   bool StepBack() {
-    bool moved = get_sequence().StepBack();
+    bool moved = get_edit_sequence().StepBack();
     if (moved) stale = true;
     return moved;
   }
 
   bool is_step_locked() const {
-    const Sequence &s = get_sequence();
+    const Sequence &s = (edit_var_ == 0) ? pattern[p_select] : shadow_[(edit_var_ - 1) & 0x1];
     if (mode_ == TIME_MODE)
       return s.step_locked(uint8_t(s.time_pos));
     if (mode_ == PITCH_MODE)
@@ -1203,7 +1282,8 @@ struct Engine {
   }
   void ToggleStepLockFromTimeMode() {
     if (mode_ != TIME_MODE) return;
-    get_sequence().ToggleStepLock(uint8_t(get_sequence().time_pos));
+    Sequence &s = get_edit_sequence();
+    s.ToggleStepLock(uint8_t(s.time_pos));
     stale = true;
   }
 
@@ -1246,7 +1326,7 @@ struct Engine {
     if (oct_btn > 3) oct_btn = 3;
     uint8_t key_idx = uint8_t(lin - oct_btn * 12);
     if (key_idx > PITCH_KEY_HIGH_C) key_idx = PITCH_KEY_HIGH_C;
-    Sequence &s = get_sequence();
+    Sequence &s = get_edit_sequence();
     const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
     if (s.time(tp) == 0) return; // REST: no slot to target
     const uint8_t pc = s.get_pitch_count();

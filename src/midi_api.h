@@ -14,14 +14,19 @@ uint8_t midi_sequencer_out_channel();
 /// Using a counter instead of a boolean ensures no clock ticks are lost when
 /// multiple clocks arrive during a single poll (e.g. while parsing a long SysEx).
 void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses);
-/// Call once per 16th when `engine.Clock()` returned true while transport running.
-void midi_after_clock(Engine &engine, uint8_t transpose);
+/// Main voice (variation 1) MIDI: call EVERY clock tick while running. Drives Note
+/// On/Off from engine.get_gate() so MIDI note length tracks the analog gate exactly.
+void midi_seq_gate_tick(Engine &engine, uint8_t transpose);
 /// Mute the sequencer's MIDI Note On for a specific step index. -1 = no muted step.
 /// Used by the step-select detail editor so the edited step doesn't repeat audibly.
 void midi_set_silence_step(int step);
-/// Call when `engine.is_ratchet_retrigger()` returns true (sub-tick within a ratcheted step).
-/// Sends Note Off + Note On for the current note without advancing the step.
-void midi_ratchet_retrigger(Engine &engine, uint8_t transpose);
+/// Shadow voices (variations 2/3) MIDI: call EVERY clock tick while running, after
+/// Engine::AdvanceShadows() ran at the 16th boundary. Gate-follows like the main voice.
+void midi_shadows_gate_tick(Engine &engine, uint8_t transpose);
+/// Send Note Off for any open shadow-voice notes (transport stop / pattern switch).
+void midi_shadows_all_notes_off(Engine &engine);
+/// Set MIDI output channels (1-16) for multitimbral variations 2 and 3.
+void midi_set_var_channels(uint8_t v2, uint8_t v3);
 /// DIN MIDI leader: clock pulses on `clocked` when transport runs and we are not synced to
 /// incoming MIDI Clock; optional Start/Stop with RUN edges.
 void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave,
@@ -69,6 +74,11 @@ void midi_send_direction_update(uint8_t direction);
 /// Broadcast pattern group change to host (SysEx 0x1C).
 /// Format: F0 7D 1C <group:0-3> F7
 void midi_send_group_update(uint8_t group);
+
+/// Broadcast / receive which variation the hardware is editing (SysEx 0x1F).
+/// Bidirectional: host sends the same format to set the edit variation.
+/// Format: F0 7D 1F <pat:0-15> <var:0-2> F7
+void midi_send_edit_variation(uint8_t pat, uint8_t var);
 
 /// Broadcast active pattern selection while stopped (SysEx 0x1E).
 /// Used so the web editor follows hardware pat-key presses without showing

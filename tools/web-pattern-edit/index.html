@@ -693,7 +693,7 @@
       </div>
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
         <span class="seq-toolbar-lbl" style="margin-right:4px">Out</span>
-        <b id="varOutLbl" style="font-size:12px" title="Variation 1 = the 303 hardware voice (CV/gate). Variations 2 & 3 = external gear on their own MIDI channel.">303 CV/Gate</b>
+        <b id="varOutLbl" style="font-size:12px" title="Variation 1 = the 303 hardware voice (CV/gate). Variations 2 & 3 = external gear on their own MIDI channel.">303</b>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
         <span class="seq-toolbar-lbl" style="margin-right:4px">MIDI ch</span>
@@ -1328,6 +1328,8 @@
   // device. Variations 2 & 3 are separate tracks for external gear (their own
   // MIDI channels / optional CV) -- editor-local until the firmware plays them.
   var VAR_303 = 0;
+  // The 303 CV/gate always plays variation 1, so variation 1 is the variation
+  // mirrored to/from the device. Variations 2 & 3 are separate MIDI-only tracks.
   function cvBlob(g, p) { return varStore[g][p][VAR_303]; }
   function activeIsCvVar() { return slotVar[activeGroup][activePat] === VAR_303; }
 
@@ -1501,6 +1503,14 @@
   var liveEnabled = true;
   var hwGroup        = -1;     // pattern group currently loaded on hardware (0-3); -1 = not yet synced
   var hwMidiChannel  = 0;      // 0 = omni / unknown; 1..16 = 303's configured MIDI input channel
+  var hwVar2Channel  = 2;      // variation 2 MIDI output channel (device global)
+  var hwVar3Channel  = 3;      // variation 3 MIDI output channel (device global)
+  // Output channel for a variation: var1 = device main channel, var2/var3 = globals.
+  function varChannelFor(v) {
+    if (v === 1) return hwVar2Channel;
+    if (v === 2) return hwVar3Channel;
+    return (hwMidiChannel >= 1 && hwMidiChannel <= 16) ? hwMidiChannel : 1;
+  }
   var initialSyncDone = false; // true after the first bulk download on connect
   var hwRunning = false;       // true while receiving 0x15 step position messages
   var hwRunningTimer = null;
@@ -1733,7 +1743,7 @@
   // Switch the active slot's displayed variation (0..2). groups[g][p] is a
   // reference into varStore, so re-pointing it makes every editor op target the
   // chosen variation. Undo history is per slot, so reset it on switch.
-  function switchVariation(v) {
+  function switchVariation(v, fromHw) {
     v = (v < 0) ? 0 : (v > 2 ? 2 : v);
     syncBlob();
     slotVar[activeGroup][activePat] = v;
@@ -1742,6 +1752,10 @@
     histIdx[activeGroup][activePat] = 0;
     commitIdx[activeGroup][activePat] = 0;
     if (activeGroup === hwGroup) { lastSentBlob = new Uint8Array(activeBlob()); lastSentPat = activePat; }
+    // Tell the 303 which variation to edit (so its hardware edit target follows),
+    // unless this switch came FROM the 303 (avoid echo loop).
+    if (!fromHw && activeGroup === hwGroup)
+      sendSysex(new Uint8Array([0x7d, 0x1f, activePat & 0x0f, v & 0x03]));
     syncPatternToolbar();
     syncVariationUI();
     refreshAllPills();
@@ -1756,8 +1770,12 @@
     var btns = document.querySelectorAll('.var-btn');
     btns.forEach(function(b){ b.classList.toggle('btn-primary', parseInt(b.dataset.var, 10) === v); });
     var ol = document.getElementById('varOutLbl');
-    if (ol) ol.textContent = (v === VAR_303) ? '303 CV/Gate' : ('MIDI ch ' + varMidiCh[g][p][v]);
-    var ch = document.getElementById('varChSel'); if (ch) ch.value = String(varMidiCh[g][p][v]);
+    if (ol) ol.textContent = (v === VAR_303) ? '303' : ('MIDI ch ' + varChannelFor(v));
+    var ch = document.getElementById('varChSel');
+    if (ch) {
+      ch.value = String(varChannelFor(v));
+      ch.disabled = (v === VAR_303); // variation 1 = the 303 on the device main channel
+    }
     var mb = document.getElementById('varModeBtn');
     if (mb) {
       var poly = (v !== VAR_303) && (varMode[g][p][v] === 'poly');
@@ -2376,13 +2394,15 @@
     midiOut.send(msg);
   }
   function requestPattern(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15])); }
-  function sendPattern(pat, blob) {
+  function sendPattern(pat, blob, varIdx) {
     var raw = buildWireFromBlob(blob);
     var x = xorBlob(raw), packed = pack7(raw);
-    var inner = new Uint8Array(5 + packed.length);
+    var extra = (varIdx && varIdx > 0) ? 1 : 0;  // append variation byte for var 2/3
+    var inner = new Uint8Array(5 + packed.length + extra);
     inner[0] = 0x7d; inner[1] = 0x12; inner[2] = pat & 15;
     inner[3] = x & 0x7f; inner[4] = (x >> 7) & 1;
     inner.set(packed, 5);
+    if (extra) inner[5 + packed.length] = varIdx & 0x03;
     sendSysex(inner);
   }
   var currentDirection = 0;
@@ -2425,11 +2445,22 @@
       sendCfgRead();
     }, 1500);
   }
-  function sendCfgWrite(ch, flags, dir, bri) {
+  function sendCfgWrite(ch, flags, dir, bri, var2, var3) {
     // <dir> kept for protocol compatibility but ignored by firmware (per-pattern now).
     var d = (dir === undefined) ? 0 : (dir & 0x07);
     var b = (bri === undefined) ? 8 : (bri & 0x7f);
-    sendSysex(new Uint8Array([0x7d, 0x22, ch & 0x7f, flags & 0x7f, d & 0x7f, b]));
+    var v2 = (var2 >= 1 && var2 <= 16) ? var2 : hwVar2Channel;
+    var v3 = (var3 >= 1 && var3 <= 16) ? var3 : hwVar3Channel;
+    sendSysex(new Uint8Array([0x7d, 0x22, ch & 0x7f, flags & 0x7f, d & 0x7f, b, v2 & 0x7f, v3 & 0x7f]));
+  }
+  // Push the current config-panel state + variation channels to the 303.
+  function pushConfig() {
+    var ch   = parseInt(document.getElementById('cfgMidiCh').value,   10);
+    var clk  = parseInt(document.getElementById('cfgMidiClk').value,  10) & 1;
+    var thru = parseInt(document.getElementById('cfgMidiThru').value, 10) & 1;
+    var bri  = parseInt(document.getElementById('cfgLedBri').value,   10);
+    if (!(ch >= 0 && ch <= 16)) ch = (hwMidiChannel >= 1 && hwMidiChannel <= 16) ? hwMidiChannel : 1;
+    sendCfgWrite(ch, clk | (thru << 1), currentDirection, bri, hwVar2Channel, hwVar3Channel);
   }
 
   function sendStepUpdate(pat, step, pitchByte, timeNibble) {
@@ -2514,10 +2545,8 @@
   function scheduleLiveSend() {
     if (!liveEnabled) return;
     if (!midiOut) { log('Live send skipped: no MIDI output selected', 'log-err'); return; }
-    // Only the CV-out variation mirrors to the device; edits to other variations
-    // stay editor-local (so editing variation 2 never overwrites what's playing).
-    if (!activeIsCvVar()) return;
     syncBlob();
+    var curVar = slotVar[activeGroup][activePat];
     if (liveTimer) clearTimeout(liveTimer);
     liveTimer = setTimeout(function() {
       liveTimer = null;
@@ -2525,6 +2554,14 @@
       var blob = activeBlob();
       if (hwGroup >= 0 && activeGroup !== hwGroup) {
         log('Live send skipped: activeGroup ' + (activeGroup+1) + ' != hwGroup ' + (hwGroup+1), 'log-err');
+        return;
+      }
+      // Variations 2/3 are full-pushed to that variation (device writes its flash
+      // half and reloads the shadow voice). Variation 1 uses the delta path below.
+      if (curVar !== VAR_303) {
+        sendPattern(pat, blob, curVar);
+        lastSentBlob = new Uint8Array(blob);
+        lastSentPat  = pat;
         return;
       }
       var haveBaseline = !!lastSentBlob && lastSentPat === pat;
@@ -2717,6 +2754,21 @@
       return;
     }
 
+    if (cmd === 0x1f && bytes.length >= 4) {
+      // 303 changed its edit-target variation: mirror it in the editor.
+      var evPat = bytes[2] & 0x0f, evVar = bytes[3] & 0x03, evG = hwGroup;
+      if (evVar < 3 && evG >= 0 && evG < 4) {
+        if (evG === activeGroup && evPat === activePat) {
+          switchVariation(evVar, true); // already viewing this slot: switch + render
+        } else {
+          slotVar[evG][evPat] = evVar;   // remember for when the user navigates there
+          repointSlot(evG, evPat);
+          saveGroupsToLS();
+        }
+      }
+      return;
+    }
+
     if (cmd === 0x16 && bytes.length >= 7) {
       if (!reflect303Enabled) return;
       var rPat  = bytes[2] & 0x0f;
@@ -2876,6 +2928,11 @@
           document.getElementById('cfgLedBri').value = String(br);
           briStr = ' bri=' + br;
         }
+      }
+      if (bytes.length >= 8) {
+        if (bytes[6] >= 1 && bytes[6] <= 16) hwVar2Channel = bytes[6];
+        if (bytes[7] >= 1 && bytes[7] <= 16) hwVar3Channel = bytes[7];
+        syncVariationUI();
       }
       document.getElementById('configStatus').textContent = 'Synced';
       document.getElementById('cfgFeedback').textContent  = 'Loaded from 303';
@@ -4039,10 +4096,12 @@
   });
   document.getElementById('varChSel').addEventListener('change', function() {
     var v = slotVar[activeGroup][activePat];
-    varMidiCh[activeGroup][activePat][v] = parseInt(this.value, 10);
-    saveGroupsToLS();
-    syncVariationUI();   // refresh the "Out" label (MIDI ch N) for vars 2 & 3
-    log('Variation ' + (v+1) + ' MIDI ch -> ' + this.value, 'log-syx');
+    if (v === VAR_303) return;             // variation 1 = device main channel (config panel)
+    var ch = parseInt(this.value, 10);
+    if (v === 1) hwVar2Channel = ch; else hwVar3Channel = ch;
+    pushConfig();                          // device-global per-variation channel
+    syncVariationUI();
+    log('Variation ' + (v+1) + ' MIDI ch -> ' + ch, 'log-syx');
   });
   document.getElementById('varModeBtn').addEventListener('click', function() {
     var v = slotVar[activeGroup][activePat];
