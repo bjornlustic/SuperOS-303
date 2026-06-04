@@ -275,84 +275,78 @@ glitch audio mid-playback. So writes are deferred to safe points:
 
 ## 5. Per-pattern dirty tracking (write-amplification reduction)
 
-> This section describes work in progress being added now. It refines the save
-> path; the rest of the subsystem above is stable.
-
 ### Problem
 
-`Engine::Save(-1)` currently rewrites **all 16 patterns** of the active group on
+`Engine::Save(-1)` originally rewrote **all 16 patterns** of the active group on
 every transport stop, even if only one pattern changed. At ~16 page appends per
-save, the active bank (127 record pages) fills in ~7 saves, forcing a GC every
-~7 saves. That is heavy write amplification and burns erase cycles fast.
+save, the active bank (127 record pages) fills in ~7 saves, forcing frequent GC
+and burning erase cycles fast. It also caused a visible burst of LED-refresh
+stalls (each page write holds `cli()` for a few ms while the LED ISR can't run).
 
-Note there are already two independent dirty flags in the codebase that this
-change consolidates:
-- `Engine::stale` - a single coarse "something in the group changed" bool.
-- `midi.cpp s_pat_dirty_mask` (`uint16_t`) - a per-pattern bitmap, but only for
-  web/SysEx edits, flushed by `midi_flush_pending_pattern_saves()`.
+### Design: content-hash dirty detection
 
-### Design
+Rather than instrument the ~40 scattered `stale = true;` edit sites with a
+per-pattern bitmap (easy to get wrong, and easy to miss an edit path such as the
+chain-view detail editor), the engine keeps a per-pattern content hash and writes
+only the patterns whose bytes actually changed. This is robust regardless of HOW
+a pattern was edited - hardware keys, randomize, clear, copy/paste, chain-view,
+or a web push all mutate the persisted bytes, and the hash catches every one.
 
-Add one authoritative per-pattern dirty bitmap on the Engine and route every
-pattern edit - hardware and web - through it.
-
-1. **Engine state.** Add `uint16_t pat_dirty_ = 0;` (bit i = pattern i in the
-   active group needs writing). Add a helper:
-
-   ```cpp
-   void MarkPatternDirty(uint8_t idx) { pat_dirty_ |= uint16_t(1u << (idx & 0x0F)); }
-   ```
-
-   Keep `stale` as a derived convenience (`stale = pat_dirty_ != 0`) or drop it
-   in favor of `pat_dirty_ != 0` at the call sites that test it.
-
-2. **Mark the right pattern.** Replace each `stale = true;` in `engine.h` with
-   `MarkPatternDirty(p_select)` for the edit ops that operate on the active
-   pattern (`get_sequence()` == `pattern[p_select]`). The few cross-pattern ops
-   mark their explicit target instead:
-   - `ClearPattern(idx)` -> `MarkPatternDirty(idx)`.
-   - `import_pattern_blob(idx, ...)` (clipboard paste, web set-pattern) ->
-     `MarkPatternDirty(idx)`.
-   - Whole-group operations that touch every pattern -> set `pat_dirty_ = 0xFFFF`.
-
-3. **Save only what changed.**
+1. **Baseline.** `uint32_t saved_hash_[NUM_PATTERNS]` holds a 32-bit FNV-1a hash
+   of each pattern's `PATTERN_SIZE` persisted bytes (the prefix of the `Sequence`
+   struct). `snapshot_pattern_hashes()` re-baselines all 16 and runs after
+   `Load()` and after `apply_pending_group()` (group switch) - i.e. whenever RAM
+   is made to match flash.
 
    ```cpp
-   void Save(int pidx = -1) {
-     if (pidx >= 0) {
-       if (pat_dirty_ & (1u << (pidx & 0x0F))) {
-         WritePattern(pattern[pidx], pidx, group_);
-         pat_dirty_ &= ~uint16_t(1u << (pidx & 0x0F));
-       }
-       return;
-     }
-     for (uint8_t i = 0; i < NUM_PATTERNS; ++i)
-       if (pat_dirty_ & (1u << i)) {
-         WritePattern(pattern[i], i, group_);
-         pat_dirty_ &= ~uint16_t(1u << i);
-       }
+   static uint32_t pattern_hash(const Sequence &s) {
+     const uint8_t *p = &s.pitch[0];
+     uint32_t h = 2166136261UL;
+     for (uint8_t i = 0; i < PATTERN_SIZE; ++i) { h ^= p[i]; h *= 16777619UL; }
+     return h;
    }
    ```
 
+   FNV-1a 32-bit, NOT CRC16: every pattern is the same length, so a 16-bit CRC
+   would have a ~1/65536 chance of missing a real change (a silently dropped
+   save), and CRC linearity means a second seed adds no strength for equal-length
+   data. FNV-1a 32-bit drops the miss probability to ~1/4e9.
+
+2. **Save only what changed.** `Engine::Save(-1)` hashes each pattern and writes
+   only those whose hash differs from the baseline, updating the baseline as it
+   goes:
+
+   ```cpp
+   for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+     const uint32_t h = pattern_hash(pattern[i]);
+     if (h != saved_hash_[i]) { WritePattern(pattern[i], i, group_); saved_hash_[i] = h; }
+   }
+   ```
+
+   The existing `Engine::stale` flag is kept only as a cheap early-out (skip the
+   16-hash scan when nothing was touched); the hash scan is the authority on what
+   actually gets written.
+
+3. **One write path.** Every single-pattern flash write routes through
+   `Engine::persist_pattern(idx)`, which writes the block AND updates
+   `saved_hash_[idx]`. It is used by `Save(pidx>=0)`, by `import_pattern_blob()`
+   (clipboard paste / web set-pattern), and by `midi_flush_pending_pattern_saves()`
+   (the deferred web flush). Keeping the baseline in sync there means web-pushed
+   patterns are not redundantly rewritten by the next RUN-stop save.
+   `midi.cpp`'s `s_pat_dirty_mask` is retained as-is for its 2-second coalescing /
+   one-write-per-idle-tick timing; only its write call now goes through
+   `engine.persist_pattern(i)`.
+
 4. **Group switch.** `apply_pending_group()` reloads all 16 patterns from flash
-   into RAM, so any unsaved edits to the outgoing group are discarded by design.
-   Clear the mask there: `pat_dirty_ = 0;` after the reload. (This preserves the
-   current "edits not stopped-through are lost on group switch" behavior.)
+   (discarding unsaved edits to the outgoing group by design), then calls
+   `snapshot_pattern_hashes()` so the new group's baseline matches flash.
 
-5. **Merge the MIDI mask.** Have the SysEx handlers call
-   `g_eng->MarkPatternDirty(pat)` instead of the private `s_pat_dirty_mask`, and
-   have `midi_flush_pending_pattern_saves()` consume `engine.pat_dirty_` (still
-   one pattern per tick, clock-stopped, 2 s quiet window). Web edits and hardware
-   edits then share one source of truth, and the active-group RAM that both
-   mutate is persisted exactly once per changed pattern. (Web edits always
-   address patterns 0..15 within the active group, the same `engine.pattern[]`
-   RAM hardware edits use, so a single mask is correct.)
+### Cost and effect
 
-### Effect
-
-A save now writes only the patterns that actually changed (often 1), cutting
-appends-per-save from 16 to N-changed and pushing GC frequency down by the same
-factor - directly extending flash lifetime.
+64 bytes of RAM (`uint32_t x 16`). A stop after editing one pattern writes one
+page instead of 16, cutting appends-per-save from 16 to N-changed, pushing GC
+frequency down by the same factor (longer flash life) and shrinking the LED
+flicker to a single blink.
 
 ---
 
