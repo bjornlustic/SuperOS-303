@@ -105,7 +105,6 @@ struct Engine {
   bool slide_gate = false;
   bool stale = false;
   bool resting = false;
-  bool fresh_init = false; // set by Load(): true = this boot clean-wiped (no valid settings found)
 
   uint32_t step_start_us_ = 0;
 
@@ -143,7 +142,6 @@ struct Engine {
   void Load() {
     GlobalSettings.Load();
     bool valid = GlobalSettings.Validate();
-    fresh_init = !valid;
 
     if (valid) {
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
