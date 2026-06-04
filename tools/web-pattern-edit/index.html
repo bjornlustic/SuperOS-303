@@ -692,10 +692,8 @@
         <button class="dir-btn var-btn" data-var="2" title="Variation 3 (E)">3</button>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
-        <span class="seq-toolbar-lbl" style="margin-right:4px">CV out</span>
-        <select id="cvVarSel" class="seq-pat-len" style="width:auto" title="Which variation drives the CV/gate output for this slot">
-          <option value="0">Var 1</option><option value="1">Var 2</option><option value="2">Var 3</option>
-        </select>
+        <span class="seq-toolbar-lbl" style="margin-right:4px">Out</span>
+        <b id="varOutLbl" style="font-size:12px" title="Variation 1 = the 303 hardware voice (CV/gate). Variations 2 & 3 = external gear on their own MIDI channel.">303 CV/Gate</b>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
         <span class="seq-toolbar-lbl" style="margin-right:4px">MIDI ch</span>
@@ -1325,11 +1323,13 @@
 
   // Keep groups[g][p] pointing at the slot's active variation.
   function repointSlot(g, p) { groups[g][p] = varStore[g][p][slotVar[g][p]]; }
-  // The variation that mirrors to the 303 (the device has one pattern per slot,
-  // so only the CV-out variation syncs with it). Editing other variations is
-  // editor-local and never touches the device.
-  function cvBlob(g, p) { return varStore[g][p][slotCvVar[g][p]]; }
-  function activeIsCvVar() { return slotVar[activeGroup][activePat] === slotCvVar[activeGroup][activePat]; }
+  // Variation 1 (index 0) is the 303's own hardware voice and is what the
+  // current single-voice firmware plays, so it is the variation mirrored to the
+  // device. Variations 2 & 3 are separate tracks for external gear (their own
+  // MIDI channels / optional CV) -- editor-local until the firmware plays them.
+  var VAR_303 = 0;
+  function cvBlob(g, p) { return varStore[g][p][VAR_303]; }
+  function activeIsCvVar() { return slotVar[activeGroup][activePat] === VAR_303; }
 
   function initGroups() {
     groups = []; varStore = []; slotVar = []; slotCvVar = []; varMidiCh = []; varMode = [];
@@ -1755,13 +1755,15 @@
     var g = activeGroup, p = activePat, v = slotVar[g][p];
     var btns = document.querySelectorAll('.var-btn');
     btns.forEach(function(b){ b.classList.toggle('btn-primary', parseInt(b.dataset.var, 10) === v); });
-    var cv = document.getElementById('cvVarSel'); if (cv) cv.value = String(slotCvVar[g][p]);
+    var ol = document.getElementById('varOutLbl');
+    if (ol) ol.textContent = (v === VAR_303) ? '303 CV/Gate' : ('MIDI ch ' + varMidiCh[g][p][v]);
     var ch = document.getElementById('varChSel'); if (ch) ch.value = String(varMidiCh[g][p][v]);
     var mb = document.getElementById('varModeBtn');
     if (mb) {
-      var poly = (varMode[g][p][v] === 'poly');
+      var poly = (v !== VAR_303) && (varMode[g][p][v] === 'poly');
       mb.textContent = poly ? 'Poly' : 'Mono';
       mb.classList.toggle('btn-primary', poly);
+      mb.disabled = (v === VAR_303); // variation 1 is the 303's mono analog voice
     }
   }
 
@@ -4035,23 +4037,11 @@
   document.querySelectorAll('.var-btn').forEach(function(btn) {
     btn.addEventListener('click', function() { switchVariation(parseInt(btn.dataset.var, 10)); });
   });
-  document.getElementById('cvVarSel').addEventListener('change', function() {
-    var g = activeGroup, p = activePat;
-    slotCvVar[g][p] = parseInt(this.value, 10) & 3;
-    saveGroupsToLS();
-    syncVariationUI();
-    // Push the chosen variation to the 303 so it actually plays/outputs it.
-    if (midiOut && g === hwGroup) {
-      sendPattern(p, cvBlob(g, p));
-      lastSentBlob = new Uint8Array(cvBlob(g, p));
-      lastSentPat = p;
-    }
-    log('CV out -> variation ' + (slotCvVar[g][p] + 1) + ' (pattern ' + (p+1) + ')', 'log-syx');
-  });
   document.getElementById('varChSel').addEventListener('change', function() {
     var v = slotVar[activeGroup][activePat];
     varMidiCh[activeGroup][activePat][v] = parseInt(this.value, 10);
     saveGroupsToLS();
+    syncVariationUI();   // refresh the "Out" label (MIDI ch N) for vars 2 & 3
     log('Variation ' + (v+1) + ' MIDI ch -> ' + this.value, 'log-syx');
   });
   document.getElementById('varModeBtn').addEventListener('click', function() {
