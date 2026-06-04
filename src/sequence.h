@@ -41,11 +41,12 @@ static inline uint8_t fast_rand(uint8_t n) {
   return uint8_t(s_fast_rng % n);
 }
 
-static constexpr int MAX_STEPS = 32;
+static constexpr int MAX_STEPS = 64;
 static constexpr int NUM_PATTERNS = 16; // patterns per bank
 static constexpr int NUM_BANKS = 4;     // banks 0..3 (was NUM_GROUPS)
 static constexpr int NUM_GROUPS = NUM_BANKS; // back-compat alias
-static constexpr int METADATA_SIZE = 8; // OS-303: reserved[5] + transpose + engine_select + length
+// reserved[9] (direction + 64-bit ratchet bitmap) + transpose + engine_select + length
+static constexpr int METADATA_SIZE = 12;
 
 enum SequencerMode {
   NORMAL_MODE,
@@ -97,7 +98,7 @@ struct Sequence {
   // ----- EEPROM-persisted layout (56 bytes, must match OS-303 byte-for-byte) -----
   uint8_t pitch[MAX_STEPS];           // 32 bytes
   uint8_t time_data[MAX_STEPS / 4];   // 8 bytes (2-bit cells, 4 steps/byte)
-  uint8_t reserved[METADATA_SIZE - 3]; // 5 bytes (reserved[0]=direction, [1..4]=ratchet bits)
+  uint8_t reserved[METADATA_SIZE - 3]; // 9 bytes (reserved[0]=direction, [1..8]=64-bit ratchet bitmap)
   uint8_t transpose     = 0;
   uint8_t engine_select = 0;
   uint8_t length        = 16;
@@ -130,7 +131,7 @@ struct Sequence {
     pitch_count_runtime = (n <= MAX_STEPS) ? n : MAX_STEPS;
   }
 
-  // Ratchet: 1 bit/step in reserved[1..4]. 0 = 1x (normal), 1 = 2x.
+  // Ratchet: 1 bit/step in reserved[1..8]. 0 = 1x (normal), 1 = 2x.
   uint8_t get_ratchet_val(uint8_t step) const {
     const uint8_t idx = step & (MAX_STEPS - 1);
     return (reserved[1 + (idx >> 3)] >> (idx & 7)) & 0x01;

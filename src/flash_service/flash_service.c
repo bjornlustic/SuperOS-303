@@ -30,7 +30,7 @@
  * application code (pages 0x000..0x0FF), the boot section, or the arena's
  * neighbours. The only page this service will ever write is one the caller
  * names AND that falls inside [ARENA_FIRST_PAGE, ARENA_LAST_PAGE]. */
-#define ARENA_FIRST_PAGE 0x100u /* 0x10000 / 256 */
+#define ARENA_FIRST_PAGE 0xE0u  /* 0xE000 / 256 -> 64 KB arena base */
 #define ARENA_LAST_PAGE  0x1DFu /* 0x1DF00 / 256 -> last page fully below 0x1E000 */
 
 /* Trampoline pinned at byte 0x1FF00 by the linker (--section-start). The app

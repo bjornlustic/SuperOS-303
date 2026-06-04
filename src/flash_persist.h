@@ -15,7 +15,7 @@ static constexpr uint8_t FB_TRACK_BASE   = 64;
 static constexpr uint8_t FB_SETTINGS     = 72;
 
 // Serialized sizes.
-static constexpr uint8_t FB_PATTERN_LEN  = 48;   // pitch[32] + time[8] + meta[8]
+static constexpr uint8_t FB_PATTERN_LEN  = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE; // pitch + time + meta
 static constexpr uint8_t FB_TRACK_LEN    = 104;  // p_chain[32] + last[8] + transpose[64]; == TRACK_BYTES (asserted in engine.h)
 static constexpr uint8_t FB_SETTINGS_LEN = 22;
 

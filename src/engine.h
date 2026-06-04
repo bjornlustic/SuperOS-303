@@ -485,10 +485,10 @@ struct Engine {
 
   void RandomizeFullPatternKeepRatchets() {
     Sequence &s = get_sequence();
-    uint8_t saved[4];
-    for (uint8_t i = 0; i < 4; ++i) saved[i] = s.reserved[1 + i];
+    uint8_t saved[MAX_STEPS / 8];
+    for (uint8_t i = 0; i < (MAX_STEPS / 8); ++i) saved[i] = s.reserved[1 + i];
     RandomizeFullPattern();
-    for (uint8_t i = 0; i < 4; ++i) s.reserved[1 + i] = saved[i];
+    for (uint8_t i = 0; i < (MAX_STEPS / 8); ++i) s.reserved[1 + i] = saved[i];
     stale = true;
   }
 
@@ -1140,7 +1140,7 @@ struct Engine {
   }
 
   // ---------------------------------------------------------------------------
-  // SysEx blob (PATTERN_SIZE = 48 bytes: pitch[32] + time_data[8] + reserved[5]
+  // SysEx blob (PATTERN_SIZE = 92 bytes: pitch[64] + time_data[16] + reserved[9]
   // + transpose + engine_select + length). Layout matches Sequence struct memory.
   // ---------------------------------------------------------------------------
   void export_pattern_blob(uint8_t idx, uint8_t *blob128) const {

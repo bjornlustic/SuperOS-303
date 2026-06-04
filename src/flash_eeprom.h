@@ -12,13 +12,13 @@
 #include <string.h>
 
 // --- Arena geometry (absolute flash page numbers; one page = 256 bytes) ------
-// Arena = 0x10000..0x1DFFF = pages 0x100..0x1DF (224 pages), all in RWW.
-// Split into two equal banks; page 0 of each bank is its header, the rest hold
-// one record each.
-static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x100;
-static constexpr uint16_t FE_BANK_PAGES       = 112;          // pages per bank
+// Arena = 0xE000..0x1DFFF = pages 0xE0..0x1DF (256 pages = 64 KB), all in RWW
+// (below the 0x1E000 NRWW edge). Split into two equal banks; page 0 of each
+// bank is its header, the rest hold one record each.
+static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0xE0;
+static constexpr uint16_t FE_BANK_PAGES       = 128;          // pages per bank
 static constexpr uint16_t FE_NUM_BANKS        = 2;
-static constexpr uint16_t FE_RECORD_PAGES     = FE_BANK_PAGES - 1; // 111 usable
+static constexpr uint16_t FE_RECORD_PAGES     = FE_BANK_PAGES - 1; // 127 usable
 static constexpr uint16_t FE_PAGE             = 256;
 
 // Logical block-id space. Sized with headroom over today's 73 live blocks
