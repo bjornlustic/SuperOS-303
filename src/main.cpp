@@ -12,8 +12,9 @@
 #include "drivers.h"
 #include "engine.h"
 #include "midi_api.h"
+#include "flash_store.h"
 
-EEPROMClass storage;
+FlashEeprom g_flash;
 PersistentSettings GlobalSettings;
 
 // =============================================================================
@@ -413,6 +414,53 @@ static void usb_shutdown_hw() {
   PLLCSR = 0;
 }
 
+#if defined(FLASH_SELFTEST) && FLASH_SELFTEST
+// Phase 0 proof: write a known pattern to one arena page, read it back, verify.
+// Needs the SPM service (service-install.syx) installed. Never returns; shows
+// the result on the keypad LEDs so it works without USB. Uses the LAST arena
+// page so it never collides with real saved data once Phase 1 lands.
+static void flash_selftest() {
+  const uint16_t test_page = FLASH_ARENA_LAST_PAGE;
+  const uint32_t base = uint32_t(test_page) * FLASH_PAGE_SIZE;
+
+  static uint8_t buf[FLASH_PAGE_SIZE];
+  for (uint16_t i = 0; i < FLASH_PAGE_SIZE; ++i) buf[i] = uint8_t(i ^ 0x5A);
+
+  const bool present = flash_service_present();
+  const uint8_t wr = flash_write_page(test_page, buf);
+
+  bool ok = (wr == FLASH_OK);
+  if (ok) {
+    for (uint16_t i = 0; i < FLASH_PAGE_SIZE; ++i) {
+      if (flash_read(base + i) != uint8_t(i ^ 0x5A)) { ok = false; break; }
+    }
+  }
+
+#if DEBUG
+  Serial.print(F("flash_selftest: service_present="));
+  Serial.print(present);
+  Serial.print(F(" write_rc="));
+  Serial.print(wr);
+  Serial.print(F(" verify="));
+  Serial.println(ok ? F("PASS") : F("FAIL"));
+#endif
+
+  for (;;) {
+    if (ok) {
+      for (uint8_t k = 0; k < 13; ++k) Leds::Set(pitch_leds[k], true); // PASS: row solid
+    } else {
+      const bool blink = (millis() >> 8) & 1;
+      Leds::Set(ACCENT_KEY_LED, blink);
+      Leds::Set(SLIDE_KEY_LED, blink);
+      // Hint which failure: no service -> DOWN, write/verify fail -> UP.
+      Leds::Set(present ? UP_KEY_LED : DOWN_KEY_LED, true);
+    }
+    Leds::Swap();
+    delay(2);
+  }
+}
+#endif
+
 void setup() {
 #if !DEBUG
   usb_shutdown_hw();
@@ -433,10 +481,23 @@ void setup() {
   Serial.begin(9600);
 #endif
 
+  const bool fe_mounted = flash_persist_begin(); // mount flash-as-EEPROM (formats on first boot)
+#if DEBUG
+  Serial.print(F("flash mount=")); Serial.print(fe_mounted);
+  Serial.print(F(" bank=")); Serial.print(g_flash.active_bank());
+  Serial.print(F(" gen=")); Serial.print((unsigned long)g_flash.active_gen());
+  Serial.print(F(" append=")); Serial.println(g_flash.append_page());
+#else
+  (void)fe_mounted;
+#endif
   engine.Load();
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
   Leds::brightness = GlobalSettings.led_brightness;
   Leds::BeginRefresh();
+
+#if defined(FLASH_SELFTEST) && FLASH_SELFTEST
+  flash_selftest(); // never returns
+#endif
 }
 
 // =============================================================================

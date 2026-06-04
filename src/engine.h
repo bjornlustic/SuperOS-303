@@ -15,8 +15,6 @@
 
 #pragma once
 #include <Arduino.h>
-#include <EEPROM.h>
-
 #include "persistent_settings.h"
 
 // =============================================================================
@@ -41,6 +39,7 @@ static constexpr uint8_t TRACK_BYTES = P_CHAIN_PACKED_BYTES
                                      + T_CHAIN_BITS_BYTES
                                      + MAX_CHAIN;                          // 104
 static constexpr uint8_t TRACK_TRANSPOSE_ZERO = 12;                        // 0 semitones
+static_assert(TRACK_BYTES == FB_TRACK_LEN, "track block size must match flash block length");
 
 struct Engine {
   Sequence pattern[NUM_PATTERNS];
@@ -175,12 +174,12 @@ struct Engine {
     // "fresh EEPROM" sentinel) so LoadTrack's uninit detection fires and
     // initialises p_chain to 0 + transpose to TRACK_TRANSPOSE_ZERO. Patterns
     // are unaffected.
-    const uint8_t saved_tf = storage.read(PersistentSettings::kEepromTrackFormat);
-    if (saved_tf != PersistentSettings::kTrackFormatVersion) {
-      for (int i = 0; i < TRACK_DATA_SIZE; ++i)
-        storage.update(TRACK_DATA_OFFSET + i, 0xFF);
-      storage.update(PersistentSettings::kEepromTrackFormat,
-                     PersistentSettings::kTrackFormatVersion);
+    if (GlobalSettings.get_track_format() != PersistentSettings::kTrackFormatVersion) {
+      uint8_t blank[FB_TRACK_LEN];
+      memset(blank, 0xFF, FB_TRACK_LEN);          // LoadTrack treats 0xFF as fresh
+      for (uint8_t t = 0; t < NUM_TRACKS; ++t)
+        g_flash.write(uint8_t(FB_TRACK_BASE + t), blank, FB_TRACK_LEN);
+      GlobalSettings.set_track_format(PersistentSettings::kTrackFormatVersion);
     }
   }
 
@@ -200,13 +199,16 @@ struct Engine {
   void LoadTrack(uint8_t track) {
     track &= (NUM_TRACKS - 1);
     track_select = track;
-    const int base = TRACK_DATA_OFFSET + (int(track) * int(TRACK_BYTES));
-    storage.get(base, p_chain_packed);
-    storage.get(base + int(P_CHAIN_PACKED_BYTES), t_chain_last);
-    storage.get(base + int(P_CHAIN_PACKED_BYTES) + int(T_CHAIN_BITS_BYTES), t_chain_transpose);
-    // Uninitialized EEPROM is 0xFF on AVR. If everything is 0xFF, treat as fresh.
-    bool uninit = (p_chain_packed[0] == 0xFF);
-    if (uninit) {
+    uint8_t b[FB_TRACK_LEN];
+    const bool have = (g_flash.read(uint8_t(FB_TRACK_BASE + track), b, FB_TRACK_LEN) == FB_TRACK_LEN);
+    if (have) {
+      memcpy(p_chain_packed, b, P_CHAIN_PACKED_BYTES);
+      memcpy(t_chain_last, b + P_CHAIN_PACKED_BYTES, T_CHAIN_BITS_BYTES);
+      memcpy(t_chain_transpose, b + P_CHAIN_PACKED_BYTES + T_CHAIN_BITS_BYTES, MAX_CHAIN);
+    }
+    // Absent block, or 0xFF-filled (track-format wipe): treat as fresh.
+    bool uninit = !have || (p_chain_packed[0] == 0xFF);
+    if (uninit && have) {
       for (uint8_t i = 0; i < T_CHAIN_BITS_BYTES; ++i)
         if (t_chain_last[i] != 0xFF) { uninit = false; break; }
     }
@@ -234,10 +236,11 @@ struct Engine {
     // Reset the last-step bitmap based on p_chain_len (single bit at len-1).
     t_chain_last_clear_all();
     if (p_chain_len > 0) t_chain_last_set(uint8_t(p_chain_len - 1), true);
-    const int base = TRACK_DATA_OFFSET + (int(track_select) * int(TRACK_BYTES));
-    storage.put(base, p_chain_packed);
-    storage.put(base + int(P_CHAIN_PACKED_BYTES), t_chain_last);
-    storage.put(base + int(P_CHAIN_PACKED_BYTES) + int(T_CHAIN_BITS_BYTES), t_chain_transpose);
+    uint8_t b[FB_TRACK_LEN];
+    memcpy(b, p_chain_packed, P_CHAIN_PACKED_BYTES);
+    memcpy(b + P_CHAIN_PACKED_BYTES, t_chain_last, T_CHAIN_BITS_BYTES);
+    memcpy(b + P_CHAIN_PACKED_BYTES + T_CHAIN_BITS_BYTES, t_chain_transpose, MAX_CHAIN);
+    g_flash.write(uint8_t(FB_TRACK_BASE + track_select), b, FB_TRACK_LEN);
     track_stale = false;
   }
   uint8_t get_track_select() const { return track_select; }
