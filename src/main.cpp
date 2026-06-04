@@ -117,7 +117,8 @@ static bool s_track_arm_last = false;
 // Chase LED lights only when playhead is within the active bank. -1 = no selection.
 // `s_step_sel_edit` = entered the per-step detail editor via ACCENT_KEY rising.
 static int     s_step_sel      = -1;
-static uint8_t s_step_sel_base = 0; // 0, 8, 16, or 24
+static uint8_t s_step_sel_base = 0; // 0,8,16,24 (+32 in extended half)
+static bool    s_step_sel_ext  = false; // A# toggle: reach steps 32..63
 static bool    s_step_sel_edit = false;
 static bool    s_step_sel_time = false; // true = time sub-mode, false = pitch sub-mode
 static bool    s_step_sel_mode = false; // toggled: FN+PITCH enters, FN exits
@@ -1072,6 +1073,7 @@ void loop() {
     s_step_sel_edit = false;
     s_step_sel_time = false;
     s_step_sel      = -1;
+    s_step_sel_ext  = false;
     s_dir_mode      = false;
     if (s_keyboard_mode) {
       s_keyboard_mode = false;
@@ -1350,6 +1352,7 @@ void loop() {
       s_step_sel_mode = true;
       s_step_sel_chain_view = 0; // always default to first chain slot on entry
       s_step_sel_base = 0;
+      s_step_sel_ext  = false;
     } else if (s_step_sel_mode) {
       // Step-select mode: two sub-modes — pitch (default) and time.
       // PITCH_KEY switches to pitch sub-mode, TIME_KEY switches to time sub-mode.
@@ -1386,11 +1389,18 @@ void loop() {
 
       // ── Picker (shared between pitch and time sub-modes) ──
       if (!s_step_sel_edit) {
+        // A# toggles the extended half (steps 32..63); keep the same black-key
+        // offset when flipping so the picker stays on the same column.
+        if (inputs[ASHARP_KEY].rising()) {
+          s_step_sel_ext = !s_step_sel_ext;
+          s_step_sel_base = uint8_t((s_step_sel_base & 31) + (s_step_sel_ext ? 32 : 0));
+        }
+        const uint8_t ext = s_step_sel_ext ? 32 : 0;
         // Bank pick
-        if (inputs[CSHARP_KEY].rising()) s_step_sel_base = 0;
-        if (inputs[DSHARP_KEY].rising()) s_step_sel_base = 8;
-        if (inputs[FSHARP_KEY].rising()) s_step_sel_base = 16;
-        if (inputs[GSHARP_KEY].rising()) s_step_sel_base = 24;
+        if (inputs[CSHARP_KEY].rising()) s_step_sel_base = uint8_t(ext + 0);
+        if (inputs[DSHARP_KEY].rising()) s_step_sel_base = uint8_t(ext + 8);
+        if (inputs[FSHARP_KEY].rising()) s_step_sel_base = uint8_t(ext + 16);
+        if (inputs[GSHARP_KEY].rising()) s_step_sel_base = uint8_t(ext + 24);
         // Step pick
         for (uint8_t wi = 0; wi < 8; ++wi) {
           if (inputs[kCfgWhiteKeys[wi]].rising()) {
@@ -1417,16 +1427,19 @@ void loop() {
           if ((tp & ~uint8_t(7)) == s_step_sel_base)
             Leds::Set(OutputIndex(tp & 0x7), bool(clk_count & 4));
         }
-        // Cover-bank LEDs
+        // Cover-bank LEDs (within the visible half; A# shows extended state).
         const bool blinkb = bool((millis() >> 8) & 1);
+        const uint8_t base_off = uint8_t(s_step_sel_base & 31);
         const OutputIndex sel_base_led =
-            (s_step_sel_base == 0)  ? CSHARP_KEY_LED :
-            (s_step_sel_base == 8)  ? DSHARP_KEY_LED :
-            (s_step_sel_base == 16) ? FSHARP_KEY_LED : GSHARP_KEY_LED;
-        Leds::Set(CSHARP_KEY_LED, (blen > 0)  && (sel_base_led == CSHARP_KEY_LED ? blinkb : true));
-        Leds::Set(DSHARP_KEY_LED, (blen > 8)  && (sel_base_led == DSHARP_KEY_LED ? blinkb : true));
-        Leds::Set(FSHARP_KEY_LED, (blen > 16) && (sel_base_led == FSHARP_KEY_LED ? blinkb : true));
-        Leds::Set(GSHARP_KEY_LED, (blen > 24) && (sel_base_led == GSHARP_KEY_LED ? blinkb : true));
+            (base_off == 0)  ? CSHARP_KEY_LED :
+            (base_off == 8)  ? DSHARP_KEY_LED :
+            (base_off == 16) ? FSHARP_KEY_LED : GSHARP_KEY_LED;
+        Leds::Set(CSHARP_KEY_LED, (blen > ext + 0)  && (sel_base_led == CSHARP_KEY_LED ? blinkb : true));
+        Leds::Set(DSHARP_KEY_LED, (blen > ext + 8)  && (sel_base_led == DSHARP_KEY_LED ? blinkb : true));
+        Leds::Set(FSHARP_KEY_LED, (blen > ext + 16) && (sel_base_led == FSHARP_KEY_LED ? blinkb : true));
+        Leds::Set(GSHARP_KEY_LED, (blen > ext + 24) && (sel_base_led == GSHARP_KEY_LED ? blinkb : true));
+        // A#: solid in the extended half, blink when extended steps exist.
+        Leds::Set(ASHARP_KEY_LED, s_step_sel_ext ? true : (blen > 32 ? blinkb : false));
         // Selection flash
         if (s_step_sel >= 0 && (uint8_t(s_step_sel) & ~uint8_t(7)) == s_step_sel_base)
           Leds::Set(OutputIndex(s_step_sel & 0x7), bool((millis() >> 7) & 1));
@@ -1435,10 +1448,10 @@ void loop() {
         // step-edit feedback on DOWN/UP/ACCENT/SLIDE can take over the moment
         // a step is picked. Hidden entirely when chain has < 2 patterns.
         if (chain_view_active && s_step_sel < 0) {
-          if (inputs[DOWN_KEY].rising()   && s_chain_len > 0) { s_step_sel_chain_view = 0; s_step_sel_base = 0; }
-          if (inputs[UP_KEY].rising()     && s_chain_len > 1) { s_step_sel_chain_view = 1; s_step_sel_base = 0; }
-          if (inputs[ACCENT_KEY].rising() && s_chain_len > 2) { s_step_sel_chain_view = 2; s_step_sel_base = 0; }
-          if (inputs[SLIDE_KEY].rising()  && s_chain_len > 3) { s_step_sel_chain_view = 3; s_step_sel_base = 0; }
+          if (inputs[DOWN_KEY].rising()   && s_chain_len > 0) { s_step_sel_chain_view = 0; s_step_sel_base = 0; s_step_sel_ext = false; }
+          if (inputs[UP_KEY].rising()     && s_chain_len > 1) { s_step_sel_chain_view = 1; s_step_sel_base = 0; s_step_sel_ext = false; }
+          if (inputs[ACCENT_KEY].rising() && s_chain_len > 2) { s_step_sel_chain_view = 2; s_step_sel_base = 0; s_step_sel_ext = false; }
+          if (inputs[SLIDE_KEY].rising()  && s_chain_len > 3) { s_step_sel_chain_view = 3; s_step_sel_base = 0; s_step_sel_ext = false; }
           const bool blinkc = bool((millis() >> 7) & 1);
           Leds::Set(DOWN_KEY_LED,   s_chain_len > 0 && (s_step_sel_chain_view == 0 ? blinkc : true));
           Leds::Set(UP_KEY_LED,     s_chain_len > 1 && (s_step_sel_chain_view == 1 ? blinkc : true));
