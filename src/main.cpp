@@ -483,6 +483,7 @@ void setup() {
 #endif
 
   const bool fe_mounted = flash_persist_begin(); // mount flash-as-EEPROM (formats on first boot)
+  const uint8_t fe_append0 = g_flash.append_page(); // append AT MOUNT, before Load writes records
 #if DEBUG
   Serial.print(F("flash mount=")); Serial.print(fe_mounted);
   Serial.print(F(" bank=")); Serial.print(g_flash.active_bank());
@@ -495,6 +496,23 @@ void setup() {
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
   Leds::brightness = GlobalSettings.led_brightness;
   Leds::BeginRefresh();
+
+#if defined(FLASH_BOOTDIAG) && FLASH_BOOTDIAG
+  // Panel-LED flash diagnostic (no USB needed). Shows for ~4 s at boot:
+  //   ACCENT_KEY_LED = flash mounted OK   |  SLIDE_KEY_LED = mount FAILED
+  //   UP_KEY_LED     = loaded saved data  |  DOWN_KEY_LED  = this boot wiped (no saved data)
+  //   pat LEDs 0..7  = append-at-mount in binary (how many records mount found)
+  for (uint16_t t = 0; t < 200; ++t) {
+    Leds::Set(fe_mounted ? ACCENT_KEY_LED : SLIDE_KEY_LED, true);
+    Leds::Set(engine.fresh_init ? DOWN_KEY_LED : UP_KEY_LED, true);
+    for (uint8_t b = 0; b < 8; ++b)
+      if (fe_append0 & (1u << b)) Leds::Set(OutputIndex(b), true);
+    Leds::Swap();
+    delay(20);
+  }
+#else
+  (void)fe_append0;
+#endif
 
 #if defined(FLASH_SELFTEST) && FLASH_SELFTEST
   flash_selftest(); // never returns
@@ -1045,13 +1063,19 @@ void loop() {
     s_last_dial = dial;
     s_last_dial_init = true;
   }
-  // EEPROM saves only on RUN.falling (clock stop). Saving on dial-mode change
-  // would block the main loop while writing up to 16 patterns x ~50 bytes
-  // (~25-100 ms total), causing audible lag while the sequencer is still
-  // playing. Edits made and not stopped through are kept in RAM until the
-  // next stop -- if the user power-cycles without stopping, they're lost
-  // (per user spec).
-  if (inputs[RUN].falling() && !midi_clk) {
+  // Save patterns when the transport STOPS, from ANY clock source: the internal
+  // RUN button, MIDI clock Stop, or DIN sync stop. (Previously gated to
+  // `RUN.falling() && !midi_clk`, which never fired under external MIDI/DIN
+  // sync, so externally-synced edits were lost on power-off.) midi_clk already
+  // reflects this frame because midi_poll() ran above. Saving on dial-mode
+  // change is still avoided (it would block the loop ~25-100 ms mid-playback);
+  // edits not stopped through stay in RAM and are lost on power-cycle.
+  const bool running_now =
+      inputs[RUN].held() || (midi_clk && GlobalSettings.midi_clock_receive);
+  static bool s_was_running = false;
+  const bool transport_stopped = s_was_running && !running_now;
+  s_was_running = running_now;
+  if (transport_stopped) {
     engine.Save();
     if (engine.track_stale) engine.SaveTrack();
     midi_flush_pending_saves();
