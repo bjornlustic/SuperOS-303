@@ -688,7 +688,7 @@
       <div class="seq-toolbar-steps">
         <span class="seq-toolbar-lbl">Steps</span>
         <button class="len-adj-btn" id="patLenDec" title="Fewer steps">−</button>
-        <input type="number" id="patLen" class="seq-pat-len" min="1" max="32" value="16" />
+        <input type="number" id="patLen" class="seq-pat-len" min="1" max="64" value="16" />
         <button class="len-adj-btn" id="patLenInc" title="More steps">+</button>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
@@ -720,7 +720,7 @@
         <b>N</b> note &nbsp;&middot;&nbsp; <b>T</b> tie &nbsp;&middot;&nbsp; <b>R</b> rest &nbsp;&mdash;&nbsp;
         vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide
         &nbsp;&mdash;&nbsp;
-        up to <b>32</b> steps (<b>24</b> in triplet mode) &nbsp;&middot;&nbsp; red dot = currently playing step
+        up to <b>64</b> steps (<b>48</b> in triplet mode) &nbsp;&middot;&nbsp; red dot = currently playing step
       </span>
     </div>
     <div class="seq-grid-wrap">
@@ -841,31 +841,31 @@
 
   // ── Constants ──────────────────────────────────────────────────────
   // In-memory blob layout (matches firmware Sequence struct):
-  //   bytes  0..31  pitch[32]    NOTE-event-indexed pitch stream
+  //   bytes  0..63  pitch[64]    NOTE-event-indexed pitch stream
   //                              (slot K = pitch for the K-th NOTE event in time order)
-  //   bytes 32..39  time_data[8]  2-bit cells, 4 steps/byte (0=REST, 1=NOTE, 2=TIE)
-  //   byte  40      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
-  //   bytes 41..44  reserved[1..4] ratchet bitmap (1 bit/step, 32 bits)
-  //   byte  45      transpose
-  //   byte  46      engine_select (round-tripped untouched)
-  //   byte  47      length (1..32 normal, 1..24 triplet)
+  //   bytes 64..79  time_data[16] 2-bit cells, 4 steps/byte (0=REST, 1=NOTE, 2=TIE)
+  //   byte  80      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
+  //   bytes 81..88  reserved[1..8] ratchet bitmap (1 bit/step, 64 bits)
+  //   byte  89      transpose
+  //   byte  90      engine_select (round-tripped untouched)
+  //   byte  91      length (1..64 normal, 1..48 triplet)
   //
   // Pitches are NOT indexed by time step. Use noteIdx(blob, s) to map a time
   // step to its stream slot. Time edits never shift pitch[]; the stream
   // auto-extends with PITCH_DEFAULT only when note_count > pitch_count.
   // Removing a NOTE preserves the pitch stream so re-adding NOTEs replays
   // the same pitches in stream order. Same model as the firmware.
-  var PATTERN_SIZE   = 48;
-  var MAX_STEPS      = 32;
-  var TRIPLET_MAX_STEPS = 24;
-  var TIME_OFF       = 32;
-  var TIME_BYTES     = 8;   // MAX_STEPS / 4 (2-bit cells, 4 steps/byte)
-  var RES0_OFF       = 40;
-  var RAT_OFF        = 41;
-  var TRANSPOSE_OFF  = 45;
-  var ENGINE_OFF     = 46;
-  var LEN_OFF        = 47;
-  var PACKED_SIZE    = 55;  // 48 raw -> 6 full chunks (48 B) + 1 partial (7 B)
+  var PATTERN_SIZE   = 92;
+  var MAX_STEPS      = 64;
+  var TRIPLET_MAX_STEPS = 48;
+  var TIME_OFF       = 64;
+  var TIME_BYTES     = 16;  // MAX_STEPS / 4 (2-bit cells, 4 steps/byte)
+  var RES0_OFF       = 80;
+  var RAT_OFF        = 81;
+  var TRANSPOSE_OFF  = 89;
+  var ENGINE_OFF     = 90;
+  var LEN_OFF        = 91;
+  var PACKED_SIZE    = 106; // 92 raw -> 13 full chunks (104 B) + 1 partial (2 B)
 
   var PITCH_PACK_MASK = 0x3F;
   var PITCH_MAX       = 0x3C; // semi=12 | (oct=3 << 4)
@@ -1214,8 +1214,8 @@
   }
 
   // ── Storage ────────────────────────────────────────────────────────
-  // groups[g][p] = Uint8Array(48) for group g (0-3), pattern p (0-15).
-  // Wire format = firmware Sequence struct (48 B: pitch[32] + time_data[8] + 8 metadata).
+  // groups[g][p] = Uint8Array(92) for group g (0-3), pattern p (0-15).
+  // Wire format = firmware Sequence struct (92 B: pitch[64] + time_data[16] + 12 metadata).
   var groups = []; // [4][16]
   var LS_KEY = 'superos303_groups_v7'; // bumped for 2-bit time layout; old key dropped
   var LS_SCALE_LOCK = 'superos303_scale_lock';
