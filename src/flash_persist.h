@@ -6,16 +6,24 @@
 #include "flash_store.h"   // flash_write_page / pgm_read_byte_far / arena bounds
 #include "flash_eeprom.h"
 
+// Patterns are stored two-per-page: super-block s holds flat patterns 2s, 2s+1
+// (each 92 bytes; 2x92 = 184 <= FE_MAX_PAYLOAD). This halves the page count vs
+// one-per-page and is what lets >118 patterns fit the wear-leveled arena.
+static constexpr uint8_t FB_PATTERNS_PER_BLOCK = 2;
+static constexpr uint8_t FB_PATTERN_LEN_ONE   = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE; // 92
+static constexpr uint8_t FB_PATTERN_SUPERBLOCKS =
+    (NUM_PATTERNS * NUM_BANKS) / FB_PATTERNS_PER_BLOCK; // 32 for 64 patterns
+
 // Logical block ids (must stay < FE_MAX_BLOCKS).
-//   0..63  : patterns (flat index bank*16 + pat)
-//   64..71 : tracks 0..7
-//   72     : settings
+//   0 .. FB_PATTERN_SUPERBLOCKS-1 : pattern pairs (super-block s = flat 2s, 2s+1)
+//   FB_TRACK_BASE .. +7           : tracks 0..7
+//   FB_SETTINGS                   : settings
 static constexpr uint8_t FB_PATTERN_BASE = 0;
-static constexpr uint8_t FB_TRACK_BASE   = 64;
-static constexpr uint8_t FB_SETTINGS     = 72;
+static constexpr uint8_t FB_TRACK_BASE   = FB_PATTERN_SUPERBLOCKS;        // 32
+static constexpr uint8_t FB_SETTINGS     = FB_TRACK_BASE + 8;             // 40 (8 tracks)
 
 // Serialized sizes.
-static constexpr uint8_t FB_PATTERN_LEN  = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE; // pitch + time + meta
+static constexpr uint8_t FB_PATTERN_LEN  = FB_PATTERNS_PER_BLOCK * FB_PATTERN_LEN_ONE; // 184 (one super-block)
 static constexpr uint8_t FB_TRACK_LEN    = 104;  // p_chain[32] + last[8] + transpose[64]; == TRACK_BYTES (asserted in engine.h)
 static constexpr uint8_t FB_SETTINGS_LEN = 22;
 

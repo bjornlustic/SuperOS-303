@@ -212,23 +212,34 @@ single page on every save.
 
 ### 4.4 Block-id map and serialized sizes (`flash_persist.h`)
 
+Patterns are stored **two-per-page** (a "super-block"): super-block `s` holds
+flat patterns `2s` and `2s+1` (each 92 bytes; 2x92 = 184 <= `FE_MAX_PAYLOAD`).
+This halves the page count and is what lets >118 patterns fit the wear-leveled
+arena. Both halves of a pair are always in RAM together (the whole 16-pattern
+group is loaded), so a write packs both from RAM - no flash read-modify-write.
+
 ```
-0..63   patterns   (flat index = bank*16 + pat, banks 0..3 x 16 patterns)
-64..71  tracks 0..7
-72      settings
+0  .. FB_PATTERN_SUPERBLOCKS-1   pattern pairs (super-block s = flat 2s, 2s+1)
+FB_TRACK_BASE .. +7              tracks 0..7
+FB_SETTINGS                      settings
 ```
 
-`FE_MAX_BLOCKS = 96` leaves headroom over the 73 live blocks in use today.
+For today's 64 patterns: 32 super-blocks (ids 0..31), tracks 32..39, settings 40
+-> 41 live blocks (was 73). `FE_MAX_BLOCKS = 96` leaves headroom. At 192 patterns
+(Phase B): 96 super-blocks + 8 tracks + 1 settings = 105 blocks, still <= the 127
+record pages of one bank.
 
 | Block | Constant | Bytes | Composition |
 |---|---|---|---|
-| Pattern | `FB_PATTERN_LEN` | 92 | `pitch[64]` + `time_data[16]` + `METADATA_SIZE (12)` |
+| Pattern super-block | `FB_PATTERN_LEN` | 184 | two patterns of `FB_PATTERN_LEN_ONE (92)` = `pitch[64]` + `time_data[16]` + `METADATA_SIZE (12)` each |
 | Track | `FB_TRACK_LEN` | 104 | `p_chain_packed[32]` + `t_chain_last[8]` + `t_chain_transpose[64]` |
 | Settings | `FB_SETTINGS_LEN` | 22 | signature[16] + midi_channel + flags + direction + thru + led_brightness + track_format |
 
-`FB_PATTERN_LEN` is derived from `MAX_STEPS (64)`:
-`MAX_STEPS + MAX_STEPS/4 + METADATA_SIZE = 64 + 16 + 12 = 92`. `FB_TRACK_LEN` is
-asserted equal to the engine's `TRACK_BYTES` so the two never drift.
+`engine.h` writes/reads super-blocks via `WritePatternPair/ReadPatternPair`;
+`Save()` writes a pair only if either of its two patterns' content hash changed.
+`FB_TRACK_LEN` is asserted equal to the engine's `TRACK_BYTES` so the two never
+drift. The signature prefix was bumped to `superOS-pack` so old (one-per-page)
+arenas wipe to the new packed format on first boot.
 
 The device hooks:
 
@@ -467,7 +478,7 @@ Bank header                  'FE01' + gen u32 + crc16
 FE_MAX_BLOCKS                96
 FE_MAX_PAYLOAD               243
 
-Block ids                    0..63 patterns, 64..71 tracks, 72 settings
+Block ids                    0..31 pattern pairs (2/page), 32..39 tracks, 40 settings
 Pattern block                92 bytes (pitch[64] + time[16] + meta[12])
 Track block                  104 bytes (== TRACK_BYTES)
 Settings block               22 bytes

@@ -125,12 +125,7 @@ struct Engine {
     // without stopping, edits to the outgoing group are discarded.
     group_ = pending_group_;
     pending_group_ = 0xff;
-    for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
-      ReadPattern(pattern[i], i, group_);
-      if (!pattern[i].length) pattern[i].SetLength(8);
-      sequence_rebuild_pitch_count(pattern[i]);
-      normalize_pattern_times(pattern[i]);
-    }
+    load_group_patterns();
     snapshot_pattern_hashes();
     stale = false;
   }
@@ -146,12 +141,7 @@ struct Engine {
     bool valid = GlobalSettings.Validate();
 
     if (valid) {
-      for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
-        ReadPattern(pattern[i], i, group_);
-        if (!pattern[i].length) pattern[i].SetLength(8);
-        sequence_rebuild_pitch_count(pattern[i]);
-        normalize_pattern_times(pattern[i]);
-      }
+      load_group_patterns();
       GlobalSettings.load_midi_from_storage();
       direction_ = DIR_FORWARD;
     } else {
@@ -167,8 +157,9 @@ struct Engine {
       // at different offsets; without this, switching to bank 1/2/3 reads
       // garbage at the new offsets.
       for (uint8_t b = 0; b < NUM_BANKS; ++b)
-        for (uint8_t i = 0; i < NUM_PATTERNS; ++i)
-          WritePattern(pattern[i], i, b);
+        for (uint8_t k = 0; k < NUM_PATTERNS / 2; ++k)
+          WritePatternPair(pattern[2 * k], pattern[2 * k + 1],
+                           uint8_t(b * (NUM_PATTERNS / 2) + k));
       stale = false;
     }
     snapshot_pattern_hashes(); // baseline dirty detection for the active group
@@ -198,12 +189,29 @@ struct Engine {
   void snapshot_pattern_hashes() {
     for (uint8_t i = 0; i < NUM_PATTERNS; ++i) saved_hash_[i] = pattern_hash(pattern[i]);
   }
-  // Write one pattern to flash and update its saved baseline (keeps the dirty
-  // detector in sync across the RUN-stop save and the web-editor save paths).
+  // Absolute super-block index for a pattern in the active group (2 patterns/page).
+  uint8_t super_of(uint8_t pat_in_group) const {
+    return uint8_t(group_ * (NUM_PATTERNS / 2) + (pat_in_group >> 1));
+  }
+  // Read the active group's NUM_PATTERNS patterns from flash (NUM_PATTERNS/2
+  // super-blocks), then normalize each.
+  void load_group_patterns() {
+    for (uint8_t k = 0; k < NUM_PATTERNS / 2; ++k)
+      ReadPatternPair(pattern[2 * k], pattern[2 * k + 1], super_of(uint8_t(2 * k)));
+    for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+      if (!pattern[i].length) pattern[i].SetLength(8);
+      sequence_rebuild_pitch_count(pattern[i]);
+      normalize_pattern_times(pattern[i]);
+    }
+  }
+  // Persist the super-block (pattern pair) that contains idx, and re-baseline
+  // both halves. Used by the RUN-stop save and the web-editor save paths.
   void persist_pattern(uint8_t idx) {
     idx &= uint8_t(NUM_PATTERNS - 1);
-    WritePattern(pattern[idx], idx, group_);
-    saved_hash_[idx] = pattern_hash(pattern[idx]);
+    const uint8_t a = uint8_t(idx & ~uint8_t(1)), b = uint8_t(idx | 1u);
+    WritePatternPair(pattern[a], pattern[b], super_of(idx));
+    saved_hash_[a] = pattern_hash(pattern[a]);
+    saved_hash_[b] = pattern_hash(pattern[b]);
   }
 
   void Save(int pidx = -1) {
@@ -211,14 +219,17 @@ struct Engine {
     if (pidx >= 0) {
       persist_pattern(uint8_t(pidx));
     } else {
-      // Write only the patterns whose content actually changed since the last
-      // save/load, so a stop after editing one pattern writes one pattern, not
-      // all 16 (less flash wear, shorter LED-refresh stall).
-      for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
-        const uint32_t h = pattern_hash(pattern[i]);
-        if (h != saved_hash_[i]) {
-          WritePattern(pattern[i], i, group_);
-          saved_hash_[i] = h;
+      // Write only the super-blocks whose two patterns actually changed since
+      // the last save/load (one page-write per changed pair, not all 16
+      // patterns): less flash wear, shorter LED-refresh stall.
+      for (uint8_t k = 0; k < NUM_PATTERNS / 2; ++k) {
+        const uint8_t a = uint8_t(2 * k), b = uint8_t(2 * k + 1);
+        const uint32_t ha = pattern_hash(pattern[a]);
+        const uint32_t hb = pattern_hash(pattern[b]);
+        if (ha != saved_hash_[a] || hb != saved_hash_[b]) {
+          WritePatternPair(pattern[a], pattern[b], super_of(a));
+          saved_hash_[a] = ha;
+          saved_hash_[b] = hb;
         }
       }
     }

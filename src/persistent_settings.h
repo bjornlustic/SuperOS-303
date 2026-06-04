@@ -13,8 +13,10 @@
 static constexpr int PATTERN_SIZE = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE;
 
 // Sig is prefix-matched: anything starting with sig_compat_prefix passes.
-const char *const sig_pew = "superOS-2bit-v1";
-const char *const sig_compat_prefix = "superOS-2bit";
+// Prefix bumped from "superOS-2bit" because the flash layout changed (patterns
+// are now stored two-per-page); old arenas must wipe to a clean packed format.
+const char *const sig_pew = "superOS-pack-v1";
+const char *const sig_compat_prefix = "superOS-pack";
 static constexpr int kSigCompatPrefixLen = 12;
 static constexpr int kSigEepromLen = 16;
 
@@ -91,35 +93,40 @@ struct PersistentSettings {
 extern PersistentSettings GlobalSettings;
 
 // -----------------------------------------------------------------------------
-// Pattern read/write -- one 48-byte block per flat pattern index (0..63).
+// Pattern serialization (one pattern = FB_PATTERN_LEN_ONE = 92 bytes) and
+// two-per-page super-blocks. Super-block s holds flat patterns 2s and 2s+1.
 // -----------------------------------------------------------------------------
-inline void WritePatternFlat(Sequence &seq, uint8_t flat_idx) {
-  flat_idx &= 0x3F;
-  uint8_t b[FB_PATTERN_LEN];
-  memcpy(b, seq.pitch, MAX_STEPS);
-  memcpy(b + MAX_STEPS, seq.time_data, MAX_STEPS / 4);
-  memcpy(b + MAX_STEPS + (MAX_STEPS / 4), seq.reserved, METADATA_SIZE); // reserved[5]+transpose+engine+length
-  g_flash.write(uint8_t(FB_PATTERN_BASE + flat_idx), b, FB_PATTERN_LEN);
+inline void serialize_pattern(const Sequence &seq, uint8_t *dst) {
+  memcpy(dst, seq.pitch, MAX_STEPS);
+  memcpy(dst + MAX_STEPS, seq.time_data, MAX_STEPS / 4);
+  memcpy(dst + MAX_STEPS + (MAX_STEPS / 4), seq.reserved, METADATA_SIZE); // reserved[]+transpose+engine+length
 }
-inline void ReadPatternFlat(Sequence &seq, uint8_t flat_idx) {
-  flat_idx &= 0x3F;
-  uint8_t b[FB_PATTERN_LEN];
-  if (g_flash.read(uint8_t(FB_PATTERN_BASE + flat_idx), b, FB_PATTERN_LEN) == FB_PATTERN_LEN) {
-    memcpy(seq.pitch, b, MAX_STEPS);
-    memcpy(seq.time_data, b + MAX_STEPS, MAX_STEPS / 4);
-    memcpy(seq.reserved, b + MAX_STEPS + (MAX_STEPS / 4), METADATA_SIZE);
-  } else {
-    memset(seq.pitch, PITCH_EMPTY, MAX_STEPS);
-    memset(seq.time_data, 0, MAX_STEPS / 4);
-    memset(seq.reserved, 0, METADATA_SIZE);
-    seq.length = 0; // Load() promotes 0 -> SetLength(8)
-  }
+inline void deserialize_pattern(Sequence &seq, const uint8_t *src) {
+  memcpy(seq.pitch, src, MAX_STEPS);
+  memcpy(seq.time_data, src + MAX_STEPS, MAX_STEPS / 4);
+  memcpy(seq.reserved, src + MAX_STEPS + (MAX_STEPS / 4), METADATA_SIZE);
+}
+inline void clear_pattern_bytes(Sequence &seq) {
+  memset(seq.pitch, PITCH_EMPTY, MAX_STEPS);
+  memset(seq.time_data, 0, MAX_STEPS / 4);
+  memset(seq.reserved, 0, METADATA_SIZE);
+  seq.length = 0; // Load() promotes 0 -> SetLength(8)
 }
 
-// Back-compat shim for engine.h's (idx, group) call style.
-inline void WritePattern(Sequence &seq, int idx, int bank) {
-  WritePatternFlat(seq, uint8_t(bank * NUM_PATTERNS + (idx & 0x0F)));
+// Write/read one super-block (the pattern pair 2*super, 2*super+1).
+inline void WritePatternPair(const Sequence &a, const Sequence &b, uint8_t super) {
+  uint8_t buf[FB_PATTERN_LEN];
+  serialize_pattern(a, buf);
+  serialize_pattern(b, buf + FB_PATTERN_LEN_ONE);
+  g_flash.write(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN);
 }
-inline void ReadPattern(Sequence &seq, int idx, int bank) {
-  ReadPatternFlat(seq, uint8_t(bank * NUM_PATTERNS + (idx & 0x0F)));
+inline void ReadPatternPair(Sequence &a, Sequence &b, uint8_t super) {
+  uint8_t buf[FB_PATTERN_LEN];
+  if (g_flash.read(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN) == FB_PATTERN_LEN) {
+    deserialize_pattern(a, buf);
+    deserialize_pattern(b, buf + FB_PATTERN_LEN_ONE);
+  } else {
+    clear_pattern_bytes(a);
+    clear_pattern_bytes(b);
+  }
 }
