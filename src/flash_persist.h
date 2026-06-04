@@ -7,25 +7,30 @@
 #include "flash_eeprom.h"
 
 // Patterns are stored two-per-page: super-block s holds flat patterns 2s, 2s+1
-// (each 92 bytes; 2x92 = 184 <= FE_MAX_PAYLOAD). This halves the page count vs
-// one-per-page and is what lets >118 patterns fit the wear-leveled arena.
+// (each 92 bytes; 2x92 = 184 <= FE_MAX_PAYLOAD). 192 patterns (64 slots x 3
+// variations) -> 96 super-blocks. flat pattern index = slot*3 + variation
+// (slot = bank*16 + pat), so a slot's variations span adjacent super-blocks;
+// writes are read-modify-write of the affected super-block.
 static constexpr uint8_t FB_PATTERNS_PER_BLOCK = 2;
 static constexpr uint8_t FB_PATTERN_LEN_ONE   = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE; // 92
-static constexpr uint8_t FB_PATTERN_SUPERBLOCKS =
-    (NUM_PATTERNS * NUM_BANKS) / FB_PATTERNS_PER_BLOCK; // 32 for 64 patterns
+static constexpr uint16_t FB_TOTAL_PATTERNS    = uint16_t(NUM_SLOTS) * NUM_VARIATIONS;        // 192
+static constexpr uint8_t FB_PATTERN_SUPERBLOCKS = FB_TOTAL_PATTERNS / FB_PATTERNS_PER_BLOCK;  // 96
 
 // Logical block ids (must stay < FE_MAX_BLOCKS).
 //   0 .. FB_PATTERN_SUPERBLOCKS-1 : pattern pairs (super-block s = flat 2s, 2s+1)
 //   FB_TRACK_BASE .. +7           : tracks 0..7
 //   FB_SETTINGS                   : settings
+//   FB_CVVAR                      : per-slot CV variation (64 bytes, one per slot)
 static constexpr uint8_t FB_PATTERN_BASE = 0;
-static constexpr uint8_t FB_TRACK_BASE   = FB_PATTERN_SUPERBLOCKS;        // 32
-static constexpr uint8_t FB_SETTINGS     = FB_TRACK_BASE + 8;             // 40 (8 tracks)
+static constexpr uint8_t FB_TRACK_BASE   = FB_PATTERN_SUPERBLOCKS;        // 96
+static constexpr uint8_t FB_SETTINGS     = FB_TRACK_BASE + 8;             // 104 (8 tracks)
+static constexpr uint8_t FB_CVVAR        = FB_SETTINGS + 1;               // 105
 
 // Serialized sizes.
 static constexpr uint8_t FB_PATTERN_LEN  = FB_PATTERNS_PER_BLOCK * FB_PATTERN_LEN_ONE; // 184 (one super-block)
 static constexpr uint8_t FB_TRACK_LEN    = 104;  // p_chain[32] + last[8] + transpose[64]; == TRACK_BYTES (asserted in engine.h)
 static constexpr uint8_t FB_SETTINGS_LEN = 22;
+static constexpr uint8_t FB_CVVAR_LEN    = NUM_SLOTS; // 64 (one variation byte per slot)
 
 // Page hooks: the block store addresses absolute flash pages; program via the
 // boot SPM service, read via far program-memory reads.

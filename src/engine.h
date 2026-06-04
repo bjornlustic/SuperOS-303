@@ -105,6 +105,8 @@ struct Engine {
   bool slide_gate = false;
   bool stale = false;
   uint32_t saved_hash_[NUM_PATTERNS] = {}; // per-pattern content hash at last save/load (dirty detection)
+  uint8_t cv_var_[NUM_SLOTS] = {};         // per-slot CV variation (which of 3 the CV/gate plays)
+  bool cv_var_dirty_ = false;              // cv_var_ changed; persist on next save
   bool resting = false;
 
   uint32_t step_start_us_ = 0;
@@ -139,6 +141,7 @@ struct Engine {
   void Load() {
     GlobalSettings.Load();
     bool valid = GlobalSettings.Validate();
+    ReadCvVarConfig(cv_var_);   // per-slot CV variation (defaults to 0 if absent)
 
     if (valid) {
       load_group_patterns();
@@ -153,13 +156,15 @@ struct Engine {
       memcpy(GlobalSettings.signature, sig_pew, kSigEepromLen);
       GlobalSettings.Save();
       GlobalSettings.save_midi_to_storage();
-      // Wipe all 4 banks, not just the active one. Old EEPROM had time_data
-      // at different offsets; without this, switching to bank 1/2/3 reads
-      // garbage at the new offsets.
-      for (uint8_t b = 0; b < NUM_BANKS; ++b)
-        for (uint8_t k = 0; k < NUM_PATTERNS / 2; ++k)
-          WritePatternPair(pattern[2 * k], pattern[2 * k + 1],
-                           uint8_t(b * (NUM_PATTERNS / 2) + k));
+      // Clean init: write all 192 patterns (96 super-blocks) cleared, and reset
+      // every slot's CV variation to 1 (index 0).
+      Sequence blank;
+      blank.Clear();
+      for (uint8_t s = 0; s < FB_PATTERN_SUPERBLOCKS; ++s)
+        WritePatternPair(blank, blank, s);
+      memset(cv_var_, 0, NUM_SLOTS);
+      WriteCvVarConfig(cv_var_);
+      cv_var_dirty_ = false;
       stale = false;
     }
     snapshot_pattern_hashes(); // baseline dirty detection for the active group
@@ -189,47 +194,67 @@ struct Engine {
   void snapshot_pattern_hashes() {
     for (uint8_t i = 0; i < NUM_PATTERNS; ++i) saved_hash_[i] = pattern_hash(pattern[i]);
   }
-  // Absolute super-block index for a pattern in the active group (2 patterns/page).
-  uint8_t super_of(uint8_t pat_in_group) const {
-    return uint8_t(group_ * (NUM_PATTERNS / 2) + (pat_in_group >> 1));
+  // Absolute slot index (0..63) for a pattern position in the active group.
+  uint8_t abs_slot(uint8_t pat_in_group) const {
+    return uint8_t(group_ * NUM_PATTERNS + (pat_in_group & uint8_t(NUM_PATTERNS - 1)));
   }
-  // Read the active group's NUM_PATTERNS patterns from flash (NUM_PATTERNS/2
-  // super-blocks), then normalize each.
+  // CV variation each active-group slot routes to the CV/gate (0..2).
+  uint8_t GetSlotVariation(uint8_t pat) const { return cv_var_[abs_slot(pat)]; }
+
+  // Read the active group's NUM_PATTERNS patterns from flash, each at its own
+  // CV variation, then normalize each.
   void load_group_patterns() {
-    for (uint8_t k = 0; k < NUM_PATTERNS / 2; ++k)
-      ReadPatternPair(pattern[2 * k], pattern[2 * k + 1], super_of(uint8_t(2 * k)));
     for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+      const uint8_t s = abs_slot(i);
+      ReadPatternAt(pattern[i], s, cv_var_[s]);
       if (!pattern[i].length) pattern[i].SetLength(8);
       sequence_rebuild_pitch_count(pattern[i]);
       normalize_pattern_times(pattern[i]);
     }
   }
-  // Persist the super-block (pattern pair) that contains idx, and re-baseline
-  // both halves. Used by the RUN-stop save and the web-editor save paths.
+  // Persist one pattern at its slot's CV variation and re-baseline its hash.
   void persist_pattern(uint8_t idx) {
     idx &= uint8_t(NUM_PATTERNS - 1);
-    const uint8_t a = uint8_t(idx & ~uint8_t(1)), b = uint8_t(idx | 1u);
-    WritePatternPair(pattern[a], pattern[b], super_of(idx));
-    saved_hash_[a] = pattern_hash(pattern[a]);
-    saved_hash_[b] = pattern_hash(pattern[b]);
+    const uint8_t s = abs_slot(idx);
+    WritePatternAt(pattern[idx], s, cv_var_[s]);
+    saved_hash_[idx] = pattern_hash(pattern[idx]);
+  }
+
+  // Switch which variation slot `pat` routes to CV/gate, and load it from flash.
+  // Persists the outgoing variation's edits first (so they are not lost). The
+  // cv_var change itself is persisted on the next save (clock stop).
+  bool SetSlotVariation(uint8_t pat, uint8_t var) {
+    pat &= uint8_t(NUM_PATTERNS - 1);
+    if (var >= NUM_VARIATIONS) return false;
+    const uint8_t s = abs_slot(pat);
+    if (cv_var_[s] == var) return false;
+    if (pattern_hash(pattern[pat]) != saved_hash_[pat])
+      WritePatternAt(pattern[pat], s, cv_var_[s]);   // keep the outgoing edits
+    cv_var_[s] = var;
+    cv_var_dirty_ = true;
+    ReadPatternAt(pattern[pat], s, var);
+    if (!pattern[pat].length) pattern[pat].SetLength(8);
+    sequence_rebuild_pitch_count(pattern[pat]);
+    normalize_pattern_times(pattern[pat]);
+    saved_hash_[pat] = pattern_hash(pattern[pat]);
+    return true;
   }
 
   void Save(int pidx = -1) {
+    if (cv_var_dirty_) { WriteCvVarConfig(cv_var_); cv_var_dirty_ = false; }
     if (!stale) return;
     if (pidx >= 0) {
       persist_pattern(uint8_t(pidx));
     } else {
-      // Write only the super-blocks whose two patterns actually changed since
-      // the last save/load (one page-write per changed pair, not all 16
-      // patterns): less flash wear, shorter LED-refresh stall.
-      for (uint8_t k = 0; k < NUM_PATTERNS / 2; ++k) {
-        const uint8_t a = uint8_t(2 * k), b = uint8_t(2 * k + 1);
-        const uint32_t ha = pattern_hash(pattern[a]);
-        const uint32_t hb = pattern_hash(pattern[b]);
-        if (ha != saved_hash_[a] || hb != saved_hash_[b]) {
-          WritePatternPair(pattern[a], pattern[b], super_of(a));
-          saved_hash_[a] = ha;
-          saved_hash_[b] = hb;
+      // Write only the patterns whose content changed since the last save/load
+      // (one read-modify-write page op per changed pattern, not all 16): less
+      // flash wear, shorter LED-refresh stall.
+      for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+        const uint32_t h = pattern_hash(pattern[i]);
+        if (h != saved_hash_[i]) {
+          const uint8_t s = abs_slot(i);
+          WritePatternAt(pattern[i], s, cv_var_[s]);
+          saved_hash_[i] = h;
         }
       }
     }

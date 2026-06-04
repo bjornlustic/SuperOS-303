@@ -45,6 +45,11 @@ static constexpr int MAX_STEPS = 64;
 static constexpr int NUM_PATTERNS = 16; // patterns per bank
 static constexpr int NUM_BANKS = 4;     // banks 0..3 (was NUM_GROUPS)
 static constexpr int NUM_GROUPS = NUM_BANKS; // back-compat alias
+// Each of the 64 slots (bank*16 + pat) holds 3 variations. Variation 1 is the
+// 303's own voice by default; the per-slot CV variation selects which one the
+// CV/gate plays. 64 slots x 3 = 192 patterns total.
+static constexpr int NUM_VARIATIONS = 3;
+static constexpr int NUM_SLOTS = NUM_PATTERNS * NUM_BANKS; // 64
 // reserved[9] (direction + 64-bit ratchet bitmap) + transpose + engine_select + length
 static constexpr int METADATA_SIZE = 12;
 

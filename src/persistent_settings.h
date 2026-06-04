@@ -130,3 +130,38 @@ inline void ReadPatternPair(Sequence &a, Sequence &b, uint8_t super) {
     clear_pattern_bytes(b);
   }
 }
+
+// One pattern at (slot, variation). flat = slot*NUM_VARIATIONS + var; the pattern
+// is one half of super-block flat/2. Writes are read-modify-write so the other
+// half (a different slot/variation) is preserved.
+inline void ReadPatternAt(Sequence &seq, uint8_t abs_slot, uint8_t var) {
+  uint16_t flat = uint16_t(abs_slot) * NUM_VARIATIONS + var;
+  uint8_t super = uint8_t(flat >> 1), half = uint8_t(flat & 1);
+  uint8_t buf[FB_PATTERN_LEN];
+  if (g_flash.read(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN) == FB_PATTERN_LEN)
+    deserialize_pattern(seq, buf + half * FB_PATTERN_LEN_ONE);
+  else
+    clear_pattern_bytes(seq);
+}
+inline void WritePatternAt(const Sequence &seq, uint8_t abs_slot, uint8_t var) {
+  uint16_t flat = uint16_t(abs_slot) * NUM_VARIATIONS + var;
+  uint8_t super = uint8_t(flat >> 1), half = uint8_t(flat & 1);
+  uint8_t buf[FB_PATTERN_LEN];
+  if (g_flash.read(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN) != FB_PATTERN_LEN)
+    memset(buf, 0, FB_PATTERN_LEN);        // unwritten neighbour half -> empty (length 0)
+  serialize_pattern(seq, buf + half * FB_PATTERN_LEN_ONE);
+  g_flash.write(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN);
+}
+
+// Per-slot CV variation (which of the 3 variations the CV/gate plays), 64 bytes.
+inline void ReadCvVarConfig(uint8_t *dst /*[NUM_SLOTS]*/) {
+  if (g_flash.read(FB_CVVAR, dst, FB_CVVAR_LEN) != FB_CVVAR_LEN) {
+    memset(dst, 0, FB_CVVAR_LEN);          // default: variation 1 for all slots
+  } else {
+    for (uint8_t i = 0; i < FB_CVVAR_LEN; ++i)
+      if (dst[i] >= NUM_VARIATIONS) dst[i] = 0;
+  }
+}
+inline void WriteCvVarConfig(const uint8_t *src /*[NUM_SLOTS]*/) {
+  g_flash.write(FB_CVVAR, src, FB_CVVAR_LEN);
+}

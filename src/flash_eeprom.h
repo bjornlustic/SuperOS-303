@@ -21,9 +21,9 @@ static constexpr uint16_t FE_NUM_BANKS        = 2;
 static constexpr uint16_t FE_RECORD_PAGES     = FE_BANK_PAGES - 1; // 127 usable
 static constexpr uint16_t FE_PAGE             = 256;
 
-// Logical block-id space. Sized with headroom over today's 73 live blocks
-// (64 patterns + 8 tracks + 1 settings); must stay <= FE_RECORD_PAGES.
-static constexpr uint8_t  FE_MAX_BLOCKS = 96;
+// Logical block-id space. 96 pattern super-blocks + 8 tracks + settings + cv-var
+// config = 106 live blocks; must stay <= FE_RECORD_PAGES (127).
+static constexpr uint8_t  FE_MAX_BLOCKS = 120;
 
 static constexpr uint8_t  FE_REC_HDR   = 13;                  // record header bytes
 static constexpr uint8_t  FE_MAX_PAYLOAD = FE_PAGE - FE_REC_HDR; // 243

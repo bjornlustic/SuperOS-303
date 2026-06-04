@@ -521,6 +521,23 @@ void ProcessDirectionMode(bool persist) {
 }
 
 // ---------------------------------------------------------------------------
+// ProcessVariationSelect -- hold TAP_NEXT while playing in normal mode to pick
+// which of the 3 slot variations drives the output. C/D/E = variation 1/2/3;
+// the active variation's LED flashes, the others are solid. Pressing a key
+// switches the active slot's CV variation and reloads that pattern.
+// ---------------------------------------------------------------------------
+void ProcessVariationSelect() {
+  const uint8_t pat = engine.get_patsel() & uint8_t(NUM_PATTERNS - 1);
+  const uint8_t cur = engine.GetSlotVariation(pat);
+  static const OutputIndex kVarLeds[NUM_VARIATIONS] = { C_KEY_LED, D_KEY_LED, E_KEY_LED };
+  static const InputIndex  kVarKeys[NUM_VARIATIONS] = { C_KEY, D_KEY, E_KEY };
+  for (uint8_t v = 0; v < NUM_VARIATIONS; ++v) {
+    Leds::Set(kVarLeds[v], v == cur ? bool(clk_count & 4) : true);
+    if (inputs[kVarKeys[v]].rising()) engine.SetSlotVariation(pat, v);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ProcessEdit — TAP_NEXT held: pitch/time edit UI
 //
 // BACK_KEY behaviour:
@@ -1695,6 +1712,9 @@ void loop() {
           }
         }
       }
+    } else if (clk_run && edit_mode && !clear_mod && !s_metronome_active &&
+               engine.get_mode() == NORMAL_MODE) {
+      ProcessVariationSelect();
     } else {
       ProcessDefault(write_mode, clear_mod, clk_run, dial_pattern_write);
     }
