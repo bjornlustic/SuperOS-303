@@ -60,16 +60,17 @@ void midi_send_pattern_steps(uint8_t pat, const struct Sequence &seq, uint8_t le
 /// Broadcast a single step edit to host (SysEx 0x16).
 /// Called after every pitch or time write in pattern-write mode so the
 /// web editor can reflect 303 hardware edits in real time.
-/// Format: F0 7D 16 <pat:0-15> <step:0-63> <pitch_lo7> <pitch_hi1> <time_nibble> F7
-void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble);
+/// Format: F0 7D 16 <pat:0-15> <step:0-63> <pitch_lo7> <pitch_hi1> <time_nibble> <var:0-2> F7
+void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble,
+                           uint8_t var = 0);
 
 /// Broadcast pattern length change to host (SysEx 0x18).
-/// Format: F0 7D 18 <pat:0-15> <length:1-64> F7
-void midi_send_length_update(uint8_t pat, uint8_t len);
+/// Format: F0 7D 18 <pat:0-15> <length:1-64> <var:0-2> F7
+void midi_send_length_update(uint8_t pat, uint8_t len, uint8_t var = 0);
 
 /// Broadcast sequencer direction change to host (SysEx 0x17).
-/// Format: F0 7D 17 <direction:0-4> F7
-void midi_send_direction_update(uint8_t direction);
+/// Format: F0 7D 17 <direction:0-5> <var:0-2> F7
+void midi_send_direction_update(uint8_t direction, uint8_t var = 0);
 
 /// Broadcast pattern group change to host (SysEx 0x1C).
 /// Format: F0 7D 1C <group:0-3> F7
@@ -92,9 +93,9 @@ void midi_send_active_pattern(uint8_t pat);
 void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
 
 /// Broadcast a single ratchet value change to host (SysEx 0x1B).
-/// Format: F0 7D 1B <pat:0-15> <step:0-63> <val:0-2> F7
+/// Format: F0 7D 1B <pat:0-15> <step:0-63> <val:0-2> <var:0-2> F7
 /// Targeted replacement for midi_send_pattern_update() on single-step ratchet edits.
-void midi_send_ratchet_update(uint8_t pat, uint8_t step, uint8_t val);
+void midi_send_ratchet_update(uint8_t pat, uint8_t step, uint8_t val, uint8_t var = 0);
 
 /// Play a metronome tick note via MIDI (E3 on first beat of pattern, E4 otherwise).
 void midi_metronome_tick(bool first_beat);

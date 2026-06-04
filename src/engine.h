@@ -121,6 +121,8 @@ struct Engine {
   // shadow MIDI gate-follow so var2/3 note length tracks the analog gate).
   bool     shadow_resting_[NUM_VARIATIONS - 1]    = {true, true};
   bool     shadow_slide_gate_[NUM_VARIATIONS - 1] = {false, false};
+  int8_t   shadow_pp_dir_[NUM_VARIATIONS - 1]     = {1, 1}; // ping-pong/brownian walk state
+  int8_t   shadow_step_dir_[NUM_VARIATIONS - 1]   = {1, 1}; // last step direction (slide lookups)
 
   uint32_t step_start_us_ = 0;
 
@@ -232,6 +234,8 @@ struct Engine {
       shadow_notecount_[i] = shadow_[i].note_count();
       shadow_resting_[i]   = true;
       shadow_slide_gate_[i] = false;
+      shadow_pp_dir_[i]    = 1;
+      shadow_step_dir_[i]  = 1;
     }
     shadow_last_p_     = p_select;
     shadow_last_group_ = group_;
@@ -248,15 +252,32 @@ struct Engine {
     for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
       if (!shadow_notecount_[i]) { shadow_resting_[i] = true; shadow_slide_gate_[i] = false; continue; }
       Sequence &s = shadow_[i];
-      s.Advance();
-      const uint8_t cur = s.time(uint8_t(s.time_pos));
-      shadow_resting_[i] = (cur == 0);
-      const uint8_t len  = s.length ? s.length : 1;
-      const uint8_t npos = uint8_t((unsigned(s.time_pos) + 1u) % len);
-      const uint8_t nt   = s.time(npos);
-      shadow_slide_gate_[i] = (nt != 0 && s.get_slide())          // slides into a sounding step
-                            || (nt == 2)                          // next step is a tie
-                            || (cur == 2 && s.slide_from_prev());  // a tie that was slid into
+      const uint8_t dir = s.get_direction_stored();   // each variation has its own direction
+      bool result;
+      int8_t step_dir, next_step_dir;
+      if (dir == DIR_FORWARD) {
+        result = s.Advance();
+        step_dir = next_step_dir = 1;
+      } else {
+        step_dir = (dir == DIR_REVERSE) ? int8_t(-1)
+                 : (dir == DIR_PINGPONG || dir == DIR_BROWNIAN) ? shadow_pp_dir_[i] : int8_t(1);
+        result = s.AdvanceDirectional(dir, shadow_pp_dir_[i]);
+        next_step_dir = (dir == DIR_REVERSE) ? int8_t(-1)
+                      : (dir == DIR_PINGPONG || dir == DIR_BROWNIAN) ? shadow_pp_dir_[i] : int8_t(1);
+      }
+      shadow_step_dir_[i] = step_dir;
+      shadow_resting_[i]  = !result;
+      if (result) {
+        const bool next_is_tie = s.is_tied_dir(dir, next_step_dir);
+        const bool tie_slide   = s.is_tie() && s.slide_from_prev_dir(dir, step_dir);
+        const uint8_t len  = s.length ? s.length : 1;
+        const uint8_t npos = uint8_t((unsigned(s.time_pos) +
+                                      (next_step_dir >= 0 ? 1u : unsigned(len) - 1u)) % unsigned(len));
+        const bool next_is_rest = (s.time(npos) == 0);
+        shadow_slide_gate_[i] = (!next_is_rest && s.get_slide()) || next_is_tie || tie_slide;
+      } else {
+        shadow_slide_gate_[i] = false;
+      }
     }
   }
   // Apply a web-editor variation 2/3 blob (raw PATTERN_SIZE bytes, import layout)
@@ -561,7 +582,11 @@ struct Engine {
       direction_change_pending_ = false;
     }
     get_sequence().Reset();
-    for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) shadow_[i].Reset();
+    for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
+      shadow_[i].Reset();
+      shadow_pp_dir_[i] = 1;
+      shadow_step_dir_[i] = 1;
+    }
     clk_count = -1;
     slide_gate = false;
     resting = true;
@@ -1294,6 +1319,17 @@ struct Engine {
   void export_pattern_blob(uint8_t idx, uint8_t *blob128) const {
     idx &= 0xf;
     memcpy(blob128, pattern[idx].pitch, PATTERN_SIZE);
+  }
+  // Export one variation's blob: var1 = pattern[idx]; var2/3 = the resident
+  // shadow if idx is the active slot, else read from flash. Used to send all 3
+  // variations to the web editor on a full request.
+  void export_pattern_blob_var(uint8_t idx, uint8_t var, uint8_t *blob) {
+    idx &= uint8_t(NUM_PATTERNS - 1);
+    if (var == 0 || var >= NUM_VARIATIONS) { memcpy(blob, pattern[idx].pitch, PATTERN_SIZE); return; }
+    if (idx == p_select) { memcpy(blob, shadow_[(var - 1) & 0x1].pitch, PATTERN_SIZE); return; }
+    Sequence tmp;
+    ReadPatternAt(tmp, abs_slot(idx), var);
+    memcpy(blob, tmp.pitch, PATTERN_SIZE);
   }
 
   bool import_pattern_blob(uint8_t idx, const uint8_t *blob128, bool persist_eeprom = true) {

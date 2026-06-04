@@ -173,19 +173,20 @@ static uint8_t xor_blob_pattern(const uint8_t *p) {
   return x;
 }
 
-static void enqueue_pattern_reply(uint8_t pat) {
+static void enqueue_pattern_reply(uint8_t pat, uint8_t var = 0) {
   if (!g_eng) return;
   uint8_t raw[PATTERN_SIZE];
-  g_eng->export_pattern_blob(pat, raw);
+  g_eng->export_pattern_blob_var(pat, var, raw);
   const uint8_t cx = xor_blob_pattern(raw);
-  uint8_t inner[5 + kPackedPatternLen];
+  uint8_t inner[5 + kPackedPatternLen + 1];
   inner[0] = 0x7D;
   inner[1] = 0x11;
   inner[2] = pat & 0x0F;
   inner[3] = static_cast<uint8_t>(cx & 0x7F);
   inner[4] = static_cast<uint8_t>((cx >> 7) & 1);
   const uint16_t pl = pack_7bit(raw, PATTERN_SIZE, inner + 5);
-  tx_push_message(inner, static_cast<uint16_t>(5 + pl));
+  inner[5 + pl] = static_cast<uint8_t>(var & 0x03); // trailing variation byte
+  tx_push_message(inner, static_cast<uint16_t>(5 + pl + 1));
 }
 
 static void send_ack(uint8_t status) {
@@ -248,10 +249,11 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
   const uint8_t cmd = p[1];
 
   switch (cmd) {
-  case 0x10: { // request pattern
+  case 0x10: { // request pattern; optional trailing <var> selects the variation
     if (n < 3) return;
     const uint8_t pat = p[2] & 0x0F;
-    enqueue_pattern_reply(pat);
+    const uint8_t var = (n >= 4) ? (p[3] & 0x03) : 0;
+    enqueue_pattern_reply(pat, var);
     break;
   }
   case 0x12: { // set pattern. Optional trailing byte = variation (0=var1/default,
@@ -571,22 +573,32 @@ static void note_off_cb(byte ch, byte pitch, byte vel) {
 // --- Audition note (pitch write / edit step preview) ----------------------------
 static uint8_t s_audition_note = 0;
 static bool    s_audition_on   = false;
+static uint8_t s_audition_ch   = 0;
+
+// Audition note (pitch write/edit/step) plays on the channel of the variation
+// being edited, so stepping through variation 2/3 sounds the external synth on
+// its own MIDI channel (variation 1 = the 303's main channel).
+static uint8_t audition_ch() {
+  return out_ch_for_var(g_eng ? g_eng->get_edit_var() : 0);
+}
 
 void midi_audition_note_on(uint8_t note, uint8_t vel) {
-  if (s_audition_on && s_audition_note != note) {
-    // Pitch changed mid-press — close previous note first
-    MIDI.sendNoteOff(s_audition_note, 0, out_ch());
+  const byte ch = static_cast<byte>(audition_ch());
+  if (s_audition_on && (s_audition_note != note || s_audition_ch != ch)) {
+    MIDI.sendNoteOff(s_audition_note, 0, s_audition_ch); // close prev on its channel
+    s_audition_on = false;
   }
-  if (!s_audition_on || s_audition_note != note) {
-    MIDI.sendNoteOn(note, vel, out_ch());
+  if (!s_audition_on) {
+    MIDI.sendNoteOn(note, vel, ch);
     s_audition_note = note;
+    s_audition_ch   = ch;
     s_audition_on   = true;
   }
 }
 
 void midi_audition_note_off() {
   if (s_audition_on) {
-    MIDI.sendNoteOff(s_audition_note, 0, out_ch());
+    MIDI.sendNoteOff(s_audition_note, 0, s_audition_ch);
     s_audition_on = false;
   }
 }
@@ -603,15 +615,16 @@ void midi_send_step_position(uint8_t pat, uint8_t step) {
 }
 
 // --- Length update broadcast (SysEx 0x18) ----------------------------------------
-void midi_send_length_update(uint8_t pat, uint8_t len) {
-  const uint8_t inner[4] = {0x7D, 0x18, (uint8_t)(pat & 0x0F), (uint8_t)(len & 0x3F)};
-  tx_push_message(inner, 4);
+void midi_send_length_update(uint8_t pat, uint8_t len, uint8_t var) {
+  const uint8_t inner[5] = {0x7D, 0x18, (uint8_t)(pat & 0x0F), (uint8_t)(len & 0x7F),
+                            (uint8_t)(var & 0x03)};
+  tx_push_message(inner, 5);
 }
 
 // --- Direction update broadcast (SysEx 0x17) -------------------------------------
-void midi_send_direction_update(uint8_t direction) {
-  const uint8_t inner[3] = {0x7D, 0x17, (uint8_t)(direction & 0x07)};
-  tx_push_message(inner, 3);
+void midi_send_direction_update(uint8_t direction, uint8_t var) {
+  const uint8_t inner[4] = {0x7D, 0x17, (uint8_t)(direction & 0x07), (uint8_t)(var & 0x03)};
+  tx_push_message(inner, 4);
 }
 
 // --- Track state broadcast (SysEx 0x23) -----------------------------------------
@@ -709,27 +722,31 @@ void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked) {
 
 // --- Ratchet broadcast (SysEx 0x1B) ---------------------------------------------
 // Same format as host-to-device 0x1B. Web editor listens symmetrically.
-void midi_send_ratchet_update(uint8_t pat, uint8_t step, uint8_t val) {
-  const uint8_t inner[5] = {
+void midi_send_ratchet_update(uint8_t pat, uint8_t step, uint8_t val, uint8_t var) {
+  const uint8_t inner[6] = {
     0x7D, 0x1B,
     static_cast<uint8_t>(pat & 0x0F),
     static_cast<uint8_t>(step & 0x3F),
-    static_cast<uint8_t>(val & 0x03)
+    static_cast<uint8_t>(val & 0x03),
+    static_cast<uint8_t>(var & 0x03)
   };
-  tx_push_message(inner, 5);
+  tx_push_message(inner, 6);
 }
 
 // --- Step edit broadcast (SysEx 0x16) -------------------------------------------
-void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble) {
-  const uint8_t inner[7] = {
+// Trailing <var> tags which variation the edit belongs to (0=var1, 1/2=var2/3).
+void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble,
+                           uint8_t var) {
+  const uint8_t inner[8] = {
     0x7D, 0x16,
     static_cast<uint8_t>(pat & 0x0F),
     static_cast<uint8_t>(step & 0x3F),
     static_cast<uint8_t>(pitch_byte & 0x7F),       // low 7 bits
     static_cast<uint8_t>((pitch_byte >> 7) & 0x01), // bit 7 (slide/empty flag)
-    static_cast<uint8_t>(time_nibble & 0x0F)
+    static_cast<uint8_t>(time_nibble & 0x0F),
+    static_cast<uint8_t>(var & 0x03)
   };
-  tx_push_message(inner, 7);
+  tx_push_message(inner, 8);
 }
 
 // --- midi_init ------------------------------------------------------------------

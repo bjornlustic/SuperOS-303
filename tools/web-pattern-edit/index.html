@@ -2622,7 +2622,9 @@
 
     if (cmd === 0x11) {
       if (bytes.length < 5 + PACKED_SIZE) { log('0x11 too short (' + bytes.length + ')', 'log-err'); return; }
-      var pat = bytes[2];
+      var pat = bytes[2] & 0x0f;
+      var rVar = (bytes.length > 5 + PACKED_SIZE) ? (bytes[5 + PACKED_SIZE] & 0x03) : 0;
+      if (rVar > 2) rVar = 0;
       var cx  = bytes[3] | (bytes[4] << 7);
       var raw = unpack7(bytes.subarray(5), PATTERN_SIZE);
       if (!raw)         { log('0x11 unpack failed', 'log-err'); return; }
@@ -2632,19 +2634,20 @@
       var bulkDone = false;
       if (inBulk) {
         expectDump--;
-        var recvd = 16 - expectDump;
-        log('Pattern ' + (pat+1) + ' received (' + recvd + '/16)', 'log-syx');
+        var recvd = 48 - expectDump;
+        log('Pattern ' + (pat+1) + ' var ' + (rVar+1) + ' (' + recvd + '/48)', 'log-syx');
         updateSyncOverlay(recvd);
         if (expectDump === 0) {
           bulkDone = true;
           bulkNextPat = -1;
           hideSyncOverlay();
         } else {
-          sendSysex(new Uint8Array([0x7d, 0x10, bulkNextPat & 15]));
+          // bulkNextPat = next linear index 0..47 (var-outer: var*16 + pat).
+          sendSysex(new Uint8Array([0x7d, 0x10, bulkNextPat % 16, (bulkNextPat / 16) | 0]));
           bulkNextPat++;
         }
       } else {
-        log('Pattern ' + (pat+1) + ' received', 'log-syx');
+        log('Pattern ' + (pat+1) + ' var ' + (rVar+1) + ' received', 'log-syx');
       }
       var g = inBulk ? patternBulkTargetGroup : activeGroup;
       // Wire blob has pitch[] in NOTE-event order. Expand to per-time-step
@@ -2652,15 +2655,16 @@
       var dst = new Uint8Array(PATTERN_SIZE);
       applyWireToBlob(dst, raw);
       normalizePatternTimes(dst, getLength(dst));
-      cvBlob(g, pat).set(dst);   // device data mirrors the CV-out variation
-      if (g === hwGroup) {
-        lastSentBlob = new Uint8Array(dst);
-        lastSentPat  = pat;
+      varStore[g][pat][rVar].set(dst);   // store into the received variation
+      var shown = (rVar === slotVar[g][pat]);
+      if (shown) {
+        repointSlot(g, pat);
+        if (g === hwGroup) { lastSentBlob = new Uint8Array(dst); lastSentPat = pat; }
       }
       saveGroupsToLS();
 
-      // History/UI only when the CV-out variation is the one on screen.
-      if (slotCvVar[g][pat] === slotVar[g][pat]) {
+      // History/UI only when the received variation is the one on screen.
+      if (shown) {
         pushHistory(g, pat);
         commitIdx[g][pat] = histIdx[g][pat];
         if (activeGroup === g && pat === activePat) {
@@ -2775,14 +2779,17 @@
       var rStep = bytes[3] & 0x3f;
       var pitchByte = (bytes[4] & 0x7f) | ((bytes[5] & 0x01) << 7);
       var timeNibble = bytes[6] & 0x0f;
-      var rBlob = cvBlob(hwGroup, rPat);   // device mirrors the CV-out variation
+      var rVar = (bytes.length >= 8) ? (bytes[7] & 0x03) : 0;
+      if (rVar > 2 || hwGroup < 0) return;
+      var rBlob = varStore[hwGroup][rPat][rVar];
+      var shown = (rVar === slotVar[hwGroup][rPat]);
       // Apply time first, then auto-extend the stream so noteIdx maps correctly.
       setTime(rBlob, rStep, timeNibble);
       ensurePitchStream(rBlob);
       if (timeNibble === 1 && pitchByte !== PITCH_EMPTY) {
         rBlob[noteIdx(rBlob, rStep)] = pitchByte;
       }
-      if (lastSentBlob && lastSentPat === rPat) {
+      if (shown && lastSentBlob && lastSentPat === rPat) {
         setTime(lastSentBlob, rStep, timeNibble);
         ensurePitchStream(lastSentBlob);
         if (timeNibble === 1 && pitchByte !== PITCH_EMPTY) {
@@ -2790,14 +2797,16 @@
         }
       }
       saveGroupsToLS();
-      if (activeGroup === hwGroup && rPat === activePat && slotCvVar[hwGroup][rPat] === slotVar[hwGroup][rPat]) renderGrid();
+      if (activeGroup === hwGroup && rPat === activePat && shown) renderGrid();
       recomputeDirty();
-      if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
-      reflect303HistTimer = setTimeout(function() {
-        reflect303HistTimer = null;
-        pushHistory(hwGroup, rPat);
-        recomputeDirty();
-      }, 1200);
+      if (shown) {
+        if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
+        reflect303HistTimer = setTimeout(function() {
+          reflect303HistTimer = null;
+          pushHistory(hwGroup, rPat);
+          recomputeDirty();
+        }, 1200);
+      }
       return;
     }
 
@@ -2811,41 +2820,53 @@
       var rPat  = bytes[2] & 0x0f;
       var rStep = bytes[3] & 0x3f;
       var rVal  = bytes[4] & 0x01;
-      var rBlob = cvBlob(hwGroup, rPat);
+      var rVar  = (bytes.length >= 6) ? (bytes[5] & 0x03) : 0;
+      if (rVar > 2 || hwGroup < 0) return;
+      var rBlob = varStore[hwGroup][rPat][rVar];
+      var shown = (rVar === slotVar[hwGroup][rPat]);
       setRatchet(rBlob, rStep, rVal);
-      if (lastSentBlob && lastSentPat === rPat) setRatchet(lastSentBlob, rStep, rVal);
+      if (shown && lastSentBlob && lastSentPat === rPat) setRatchet(lastSentBlob, rStep, rVal);
       saveGroupsToLS();
-      if (activeGroup === hwGroup && rPat === activePat) renderGrid();
+      if (activeGroup === hwGroup && rPat === activePat && shown) renderGrid();
       recomputeDirty();
       return;
     }
 
     if (cmd === 0x17 && bytes.length >= 3) {
       var newDir = bytes[2] & DIR_MASK;
+      var dVar = (bytes.length >= 4) ? (bytes[3] & 0x03) : 0;
+      if (dVar > 2) dVar = 0;
       if (hwGroup >= 0 && playingPat >= 0) {
-        setDirection(cvBlob(hwGroup, playingPat), newDir);
-        if (lastSentBlob && lastSentPat === playingPat) setDirection(lastSentBlob, newDir);
+        setDirection(varStore[hwGroup][playingPat][dVar], newDir);
+        var dShown = (dVar === slotVar[hwGroup][playingPat]);
+        if (dShown && lastSentBlob && lastSentPat === playingPat) setDirection(lastSentBlob, newDir);
         saveGroupsToLS();
+        if (dShown) {
+          setActiveDirection(newDir);
+          if (activeGroup === hwGroup && playingPat === activePat) renderGrid();
+        }
       }
-      setActiveDirection(newDir);
-      log('Direction: ' + (kDirNames[newDir] || newDir), 'log-ack');
+      log('Direction: ' + (kDirNames[newDir] || newDir) + ' var ' + (dVar+1), 'log-ack');
       return;
     }
 
     if (cmd === 0x18 && bytes.length >= 4) {
       var lPat = bytes[2] & 0x0f;
-      var lBlob = (hwGroup >= 0 && lPat < 16) ? cvBlob(hwGroup, lPat) : null;
-      var cap = lBlob ? patternMaxSteps(lBlob) : MAX_STEPS;
+      var lVar = (bytes.length >= 5) ? (bytes[4] & 0x03) : 0;
+      if (lVar > 2 || hwGroup < 0 || lPat >= 16) return;
+      var lBlob = varStore[hwGroup][lPat][lVar];
+      var lShown = (lVar === slotVar[hwGroup][lPat]);
+      var cap = patternMaxSteps(lBlob);
       var newLen = bytes[3] & 0x7f;
       if (newLen < 1) newLen = 1;
       if (newLen > cap) newLen = cap;
-      if (lBlob) lBlob[LEN_OFF] = newLen;
-      if (lastSentBlob && lastSentPat === lPat) lastSentBlob[LEN_OFF] = newLen;
-      if (activeGroup === hwGroup && lPat === activePat) {
+      lBlob[LEN_OFF] = newLen;
+      if (lShown && lastSentBlob && lastSentPat === lPat) lastSentBlob[LEN_OFF] = newLen;
+      if (activeGroup === hwGroup && lPat === activePat && lShown) {
         document.getElementById('patLen').value = String(newLen);
         renderGrid();
       }
-      log('Length update pat ' + (lPat+1) + ' \u2192 ' + newLen, 'log-ack');
+      log('Length update pat ' + (lPat+1) + ' var ' + (lVar+1) + ' \u2192 ' + newLen, 'log-ack');
       return;
     }
 
@@ -3944,9 +3965,9 @@
     else                       el.textContent = 'Device config: requesting (attempt ' + attempt + ')...';
   }
   function updateSyncOverlay(done) {
-    var pct = Math.round((done / 16) * 100);
+    var pct = Math.round((done / 48) * 100);
     document.getElementById('syncBar').style.width = pct + '%';
-    document.getElementById('syncCount').textContent = done + ' / 16';
+    document.getElementById('syncCount').textContent = done + ' / 48';
   }
   function hideSyncOverlay() {
     var ov = document.getElementById('syncOverlay');
@@ -3959,10 +3980,10 @@
       return;
     }
     patternBulkTargetGroup = g;
-    expectDump = 16;
-    bulkNextPat = 1; // after pattern 0 arrives, request 1, then 2, etc.
-    if (showOverlay) showSyncOverlay('Loading patterns from 303 (group ' + (g + 1) + ')...');
-    sendSysex(new Uint8Array([0x7d, 0x10, 0x00])); // request pattern 0 first
+    expectDump = 48;       // 16 patterns x 3 variations
+    bulkNextPat = 1;       // next linear index (var*16 + pat); 0 = pat0/var0 sent below
+    if (showOverlay) showSyncOverlay('Loading patterns + variations from 303 (group ' + (g + 1) + ')...');
+    sendSysex(new Uint8Array([0x7d, 0x10, 0x00, 0x00])); // pattern 0, variation 1 first
   }
   document.getElementById('btnReqAll').onclick = function() {
     if (!midiOut) { log('All 16: no midiOut — connect MIDI first', 'log-err'); return; }

@@ -317,12 +317,11 @@ static uint8_t resolve_octave() {
 // Returns the MIDI note number (36-108) written this call, or 0 if nothing was written.
 // Helper: SysEx broadcast of the pitch byte for the current edit cursor (time_pos).
 static void send_step_update_for_cursor(Sequence &s) {
-  if (engine.get_edit_var() != 0) return; // var2/3 edits don't broadcast to editor var1
   const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
   uint8_t slot;
   uint8_t pb = PITCH_EMPTY;
   if (s.edit_slot_index(slot)) pb = s.pitch[slot];
-  midi_send_step_update(engine.get_patsel(), tp, pb, s.time(tp));
+  midi_send_step_update(engine.get_patsel(), tp, pb, s.time(tp), engine.get_edit_var());
 }
 
 uint8_t input_pitch(bool mod = false, bool clk_run = false) {
@@ -385,12 +384,12 @@ void input_time(bool mod = false, bool clk_run = false) {
   // tp as a NOTE and writes the pitch into the wrong stream slot, corrupting
   // pitch[]. Sending tp first lets the editor update time_data at tp so every
   // subsequent step computes the same K-th-NOTE index the firmware did.
-  if (engine.get_edit_var() != 0) return; // var2/3 edits don't broadcast to editor var1
   const uint8_t pat = engine.get_patsel();
-  midi_send_step_update(pat, tp, after_pt[tp], written_time);
+  const uint8_t ev = engine.get_edit_var();
+  midi_send_step_update(pat, tp, after_pt[tp], written_time, ev);
   for (uint8_t i = 0; i < len; ++i) {
     if (i != tp && before_pt[i] != after_pt[i])
-      midi_send_step_update(pat, i, after_pt[i], s.time(i));
+      midi_send_step_update(pat, i, after_pt[i], s.time(i), ev);
   }
 }
 
@@ -520,18 +519,24 @@ static const char *const kDirNames[DIR_COUNT] = {"Fwd","Rev","Ping","Rnd","Half"
 // EEPROM consistent with the user's intent for the current session.
 void ProcessDirectionMode(bool persist) {
   Leds::Set(TIME_MODE_LED, clk_count & 4);
+  const uint8_t ev = engine.get_edit_var();
+  // Show/edit the direction of the variation being edited. Variation 1 uses the
+  // engine's live direction; variations 2/3 store it on the shadow (read each
+  // tick by AdvanceShadows) and persist with the shadow.
+  const uint8_t cur_dir = (ev == 0) ? uint8_t(engine.get_direction())
+                                    : engine.edit_seq_view().get_direction_stored();
   for (uint8_t d = 0; d < DIR_COUNT; ++d) {
-    const bool active = (engine.get_direction() == SequenceDirection(d));
-    // Active direction blinks, others solid
+    const bool active = (cur_dir == d);
     Leds::Set(kDirLeds[d], active ? bool(clk_count & 4) : true);
     if (inputs[kDirKeys[d]].rising()) {
-      engine.SetDirection(SequenceDirection(d));
-      if (persist) {
-        engine.get_sequence().store_direction(uint8_t(d));
+      if (ev == 0) {
+        engine.SetDirection(SequenceDirection(d));
+        if (persist) engine.get_sequence().store_direction(uint8_t(d));
+        else engine.stale = false;
       } else {
-        engine.stale = false;
+        engine.get_edit_sequence().store_direction(uint8_t(d)); // var2/3 -> shadow
       }
-      midi_send_direction_update(d);
+      midi_send_direction_update(d, ev); // var-tagged so the editor follows
     }
   }
   // Exit handled in main loop FUNCTION_KEY.rising() block
@@ -575,8 +580,8 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
         // Ratchet view: DOWN = 1x (off), UP = 2x (ratchet on). 1-bit storage
         // since Phase 3, so 3x is no longer available. LED shows current state.
         const uint8_t tp = uint8_t(engine.edit_seq_view().time_pos & (MAX_STEPS - 1));
-        if (inputs[DOWN_KEY].rising()) { engine.SetRatchetAtCurrent(0); midi_send_ratchet_update(engine.get_patsel(), tp, 0); }
-        if (inputs[UP_KEY].rising())   { engine.SetRatchetAtCurrent(1); midi_send_ratchet_update(engine.get_patsel(), tp, 1); }
+        if (inputs[DOWN_KEY].rising()) { engine.SetRatchetAtCurrent(0); midi_send_ratchet_update(engine.get_patsel(), tp, 0, engine.get_edit_var()); }
+        if (inputs[UP_KEY].rising())   { engine.SetRatchetAtCurrent(1); midi_send_ratchet_update(engine.get_patsel(), tp, 1, engine.get_edit_var()); }
         const uint8_t r = engine.edit_seq_view().get_ratchet_val(tp);
         Leds::Set(DOWN_KEY_LED, r == 0);
         Leds::Set(UP_KEY_LED,   r == 1);
@@ -1363,7 +1368,11 @@ void loop() {
       const uint8_t view_pat_idx = chain_view_active
           ? s_chain_pats[s_step_sel_chain_view]
           : engine.get_patsel();
-      Sequence &seq = engine.pattern[view_pat_idx];
+      // Edit the current variation when viewing the active pattern (var2/3 live
+      // in the shadow buffers); chained non-active patterns edit variation 1.
+      Sequence &seq = (view_pat_idx == engine.get_patsel())
+                          ? engine.get_edit_sequence()
+                          : engine.pattern[view_pat_idx];
       const uint8_t blen = seq.length;
       const bool playing_matches_view = (engine.get_patsel() == view_pat_idx);
 
@@ -1414,8 +1423,10 @@ void loop() {
         }
         // Chase LED: only when the currently-playing pattern is the one
         // being viewed (so chain slots not currently playing stay quiet).
+        // Read the playhead from the edited variation (seq), not variation 1,
+        // so the chase follows the right length when editing variation 2/3.
         if (clk_run && playing_matches_view) {
-          const uint8_t tp = engine.get_time_pos();
+          const uint8_t tp = uint8_t(seq.time_pos & (MAX_STEPS - 1));
           if ((tp & ~uint8_t(7)) == s_step_sel_base)
             Leds::Set(OutputIndex(tp & 0x7), bool(clk_count & 4));
         }
@@ -1736,7 +1747,7 @@ void loop() {
           if (inputs[kCfgWhiteKeys[wi]].rising()) {
             const uint8_t base = s_len_black_pressed ? s_len_black_base : 0;
             engine.SetLength(base + wi + 1);
-            if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), engine.get_length());
+            midi_send_length_update(engine.get_patsel(), engine.edit_seq_view().length, engine.get_edit_var());
           }
         }
       }
@@ -2151,7 +2162,7 @@ void loop() {
       seq.set_triplet_mode(now_triplet);
       if (now_triplet && seq.length > 24) {
         seq.length = 24;
-        if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), seq.length);
+        midi_send_length_update(engine.get_patsel(), seq.length, engine.get_edit_var());
       }
       engine.stale = true;
     }
@@ -2173,7 +2184,7 @@ void loop() {
         engine.SetLength(cl < 64 ? cl + 1 : 64);
       }
       engine.stale = true;
-      if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), engine.get_length());
+      midi_send_length_update(engine.get_patsel(), engine.edit_seq_view().length, engine.get_edit_var());
     }
 
     // FN + BACK_KEY: length -1, FN + TAP_NEXT: length +1. Pattern Write only.
@@ -2182,13 +2193,13 @@ void loop() {
       uint8_t cl = engine.edit_seq_view().length;
       engine.SetLength(cl > 1 ? cl - 1 : 1);
       engine.stale = true;
-      if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), engine.get_length());
+      midi_send_length_update(engine.get_patsel(), engine.edit_seq_view().length, engine.get_edit_var());
     }
     if (fn_mod && !pitch_mod && dial_pattern_write && inputs[TAP_NEXT].rising()) {
       uint8_t cl = engine.edit_seq_view().length;
       engine.SetLength(cl < 64 ? cl + 1 : 64);
       engine.stale = true;
-      if (engine.get_edit_var() == 0) midi_send_length_update(engine.get_patsel(), engine.get_length());
+      midi_send_length_update(engine.get_patsel(), engine.edit_seq_view().length, engine.get_edit_var());
     }
 
     if (inputs[TAP_NEXT].rising() && !fn_mod) {
