@@ -366,7 +366,6 @@ flicker to a single blink.
 | Env | Target | Output | Purpose |
 |---|---|---|---|
 | `app` | Teensy++ 2.0 | `app-update.syx` | Main firmware. `makesyx.py` fails the build if the app image reaches `0xE000` (would clobber the arena). |
-| `app-debug` | Teensy++ 2.0 | - | `-DUSB_SERIAL -DDEBUG=1`; prints `flash mount=...` over USB serial at boot. |
 | `flash-service` | AT90USB1286 | `service-install.syx` | The SPM service. Freestanding (no crt0/main); linked at `0x1FE00`. `make_service_syx.py` refuses any page below `0x1F4`. |
 | `bootloader` | AT90USB1286 | - | Pre-existing SysEx bootloader at `0x1F000` (unchanged; flashed via ISP only). |
 
@@ -408,8 +407,7 @@ files go in through the existing bootloader's SysEx page-writer.
 7. Power-cycle normally.
 
 **Verify persistence:** create/edit a pattern, STOP the clock (this is the save
-trigger), power-cycle, confirm it is still there. An `app-debug` build prints
-`flash mount=1 bank=.. gen=.. append=..` over USB serial at boot.
+trigger), power-cycle, confirm it is still there.
 
 If the service is missing, the app still boots and runs but does not persist
 (no hang). Re-do the service install.

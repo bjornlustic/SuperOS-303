@@ -631,7 +631,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
 // edit variation is latched until a new pattern is selected (SetPattern resets
 // it to variation 1). Edit a different pattern's variations by selecting that
 // pattern first (TAP released), then holding TAP again.
-void ProcessEditVarPicker() {
+void ProcessEditVarPicker(bool clk_run) {
   const uint8_t pat = engine.get_patsel();
   if (inputs[C_KEY].rising() && engine.SetEditVar(0)) midi_send_edit_variation(pat, 0);
   if (inputs[D_KEY].rising() && engine.SetEditVar(1)) midi_send_edit_variation(pat, 1);
@@ -640,6 +640,75 @@ void ProcessEditVarPicker() {
   Leds::Set(C_KEY_LED, ev == 0); Leds::SetDim(C_KEY_LED, ev != 0);
   Leds::Set(D_KEY_LED, ev == 1); Leds::SetDim(D_KEY_LED, ev != 1);
   Leds::Set(E_KEY_LED, ev == 2); Leds::SetDim(E_KEY_LED, ev != 2);
+
+  // Variation 3 only: SLIDE_KEY toggles poly/mono for the active slot (stopped
+  // only -- it does a settings write + shadow reload). SLIDE_KEY_LED = poly.
+  const uint8_t slot = engine.abs_slot(pat);
+  if (ev == 2 && !clk_run && inputs[SLIDE_KEY].rising()) {
+    engine.persist_shadows();                                       // flush pending var2/3 edits
+    GlobalSettings.set_var3_poly(slot, !GlobalSettings.var3_is_poly(slot));
+    GlobalSettings.Save();
+    engine.ReloadShadows();                                          // (de)activate poly_ for this slot
+    midi_send_poly_flag(pat, GlobalSettings.var3_is_poly(slot));     // tell the web editor
+  }
+  Leds::Set(SLIDE_KEY_LED, ev == 2 && GlobalSettings.var3_is_poly(slot));
+}
+
+// ---------------------------------------------------------------------------
+// ProcessPolyEdit — variation-3 polyphonic chord editor (PITCH_MODE, var3 poly).
+// View octave = held DOWN/UP (0/1/2/3). A pitch key toggles that note at the view
+// octave (up to POLY_VOICES per step); ACCENT/SLIDE toggle the step flags;
+// TAP_NEXT / BACK move between steps. A step plays when it holds >=1 note.
+// (Moving a note across octaves = toggle it off at one octave, on at another.)
+// ---------------------------------------------------------------------------
+static uint8_t s_poly_step = 0;
+void ProcessPolyEdit() {
+  PolyVoice &p = engine.poly_;
+  const uint8_t len = p.length ? p.length : 1;
+  if (s_poly_step >= len) s_poly_step = 0;
+
+  if (inputs[TAP_NEXT].rising()) s_poly_step = uint8_t((s_poly_step + 1) % len);
+  if (inputs[BACK_KEY].rising())  s_poly_step = uint8_t((s_poly_step + len - 1) % len);
+
+  const uint8_t view_oct = resolve_octave();
+  bool changed = false;
+
+  for (uint8_t k = 0; k < ARRAY_SIZE(pitched_keys); ++k) {
+    if (!inputs[pitched_keys[k]].rising()) continue;
+    const uint8_t packed = pack_pitch(k, view_oct);
+    if (p.has_note(s_poly_step, packed)) {
+      p.remove_note(s_poly_step, packed);                       // time unchanged (decoupled, like mono)
+    } else if (p.add_note(s_poly_step, packed)) {
+      if (p.time(s_poly_step) == 0) p.set_time(s_poly_step, 1); // adding to a rest promotes it to NOTE
+    }
+    changed = true;
+  }
+  if (inputs[ACCENT_KEY].rising()) { p.toggle_accent(s_poly_step); changed = true; }
+  if (inputs[SLIDE_KEY].rising())  { p.toggle_slide(s_poly_step);  changed = true; }
+  if (inputs[TIME_KEY].rising()) { // cycle this step's time NOTE -> TIE -> REST (chord is kept)
+    const uint8_t prv = uint8_t((s_poly_step + len - 1) % len);
+    const uint8_t cur = p.time(s_poly_step);
+    uint8_t nt = (cur == 1) ? 2 : (cur == 2) ? 0 : 1; // note -> tie -> rest -> note
+    if (nt == 2 && p.time(prv) == 0) nt = 0;          // no tie after a rest -> skip to rest
+    p.set_time(s_poly_step, nt);
+    changed = true;
+  }
+  if (changed) { engine.poly_stale_ = true; engine.shadow_dirty_ms_ = millis(); }
+
+  // ---- LEDs ----
+  const uint8_t *v = p.step(s_poly_step);
+  for (uint8_t i = 0; i < POLY_VOICES; ++i)
+    if (v[i] != POLY_EMPTY && ((v[i] >> 4) & 0x03) == view_oct)
+      Leds::Set(pitch_leds[v[i] & 0x0F], true);
+  Leds::Set(DOWN_KEY_LED, view_oct == 0 || view_oct == 3);
+  Leds::Set(UP_KEY_LED,   view_oct == 2 || view_oct == 3);
+  Leds::Set(ACCENT_KEY_LED, p.accent(s_poly_step));
+  Leds::Set(SLIDE_KEY_LED,  p.slide(s_poly_step));
+  Leds::Set(TIME_MODE_LED,  p.time(s_poly_step) == 2);                              // tie indicator
+  Leds::Set(OutputIndex(s_poly_step & 0x07), bool((millis() >> 7) & 1));            // step pat-LED (blink)
+  Leds::Set(OutputIndex(CSHARP_KEY_LED + ((s_poly_step & 31) >> 3)), true);          // 8-step bank
+  if (s_poly_step >= 32) Leds::Set(ASHARP_KEY_LED, (millis() >> 7) & 1);
+  Leds::Set(PITCH_MODE_LED, true);
 }
 
 // Default overlay: pattern select, bank A/B, mode LEDs, running step chase
@@ -924,10 +993,17 @@ void loop() {
 
 #if DEBUG
   if (Serial.available() && Serial.read()) {
-    for (uint8_t i = 0; i < INPUT_COUNT/2; ++i) {
-      Serial.printf("Input #%2u = %x   |  Input #%2u = %x\n",
-                    i, inputs[i].state, i + INPUT_COUNT/2, inputs[i + INPUT_COUNT/2].state);
+    const uint8_t s = engine.abs_slot(engine.get_patsel());
+    uint8_t noteSteps = 0, ties = 0, notes = 0;
+    for (uint8_t st = 0; st < engine.poly_.length; ++st) {
+      const uint8_t t = engine.poly_.time(st);
+      if (t == 1) ++noteSteps; else if (t == 2) ++ties;
+      notes += engine.poly_.note_count(st);
     }
+    Serial.printf("POLY slot=%u flag=%u active=%u len=%u noteSteps=%u ties=%u notes=%u tpos=%u rest=%u chord=%u evar=%u mode=%u\n",
+                  s, GlobalSettings.var3_is_poly(s), engine.poly_active_, engine.poly_.length,
+                  noteSteps, ties, notes, engine.poly_time_pos_, engine.poly_resting_,
+                  engine.poly_chord_step_, engine.edit_var_, engine.get_mode());
   }
 #endif
 
@@ -1188,6 +1264,9 @@ void loop() {
 
   if (s_cfg_menu != CfgMenu::Off) {
     process_config_menu();
+  } else if (!clk_run && dial_pattern_write && engine.get_mode() == PITCH_MODE &&
+             engine.edit_var_ == 2 && engine.poly_active_) {
+    ProcessPolyEdit();
   } else if (edit_mode && !fn_mod && !clk_run && engine.get_mode() != NORMAL_MODE) {
     ProcessEdit(write_mode, clk_run);
   } else if (s_dir_mode) {
@@ -1754,7 +1833,7 @@ void loop() {
     } else if (edit_mode && dial_pattern_write && !fn_mod && !clear_mod &&
                !s_metronome_active && engine.get_mode() == NORMAL_MODE) {
       // Hold TAP_NEXT in Pattern Write/normal mode: edit-variation picker.
-      ProcessEditVarPicker();
+      ProcessEditVarPicker(clk_run);
     } else {
       ProcessDefault(write_mode, clear_mod, clk_run, dial_pattern_write);
     }
@@ -1892,7 +1971,8 @@ void loop() {
 
   if (s_cfg_menu == CfgMenu::Off) {
     // PITCH_MODE / TIME_MODE entry: Pattern Write only.
-    if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
+    const bool in_poly_edit = (engine.get_mode() == PITCH_MODE && engine.edit_var_ == 2 && engine.poly_active_);
+    if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode && !in_poly_edit) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
     if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod) engine.SetMode(PITCH_MODE, !clk_run);
 
     // Keyboard play mode toggle: FN + PITCH_KEY rising while dial is in Pattern Play.
@@ -2458,6 +2538,15 @@ void loop() {
   }
 
   ++ticks;
+  // --- TEMP poly diagnostic (no USB): while running, FUNCTION_MODE_LED solid =
+  //     variation 3 poly is active; PITCH_MODE_LED flashes = poly is sending MIDI
+  //     notes. FUNCTION off => not active; FUNCTION on + PITCH never flashes =>
+  //     active but no note steps (empty/all-rest); both => MIDI is going out. ---
+  if (clk_run) {
+    Leds::Set(FUNCTION_MODE_LED, engine.poly_active_);
+    Leds::Set(PITCH_MODE_LED,    engine.poly_emitting_);
+  }
+
   // DAC::Send latches the buffered CV values to the hardware ports and pulses
   // the slide line for ~10us. Calling it every loop iteration (1000+/sec)
   // wastes CPU on hardware I/O and creates a high-frequency pulse train on

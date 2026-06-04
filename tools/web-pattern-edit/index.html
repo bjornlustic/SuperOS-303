@@ -508,6 +508,26 @@
     /* ── Error toast ── */
     #errorToast { position: fixed; right: 16px; bottom: 16px; background: #c80000; color: #fff; border: 2px solid #800; padding: 10px 14px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; border-radius: 2px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 9999; display: none; }
     #errorToast.visible { display: block; }
+    /* Variation-3 poly chord editor: each note is the same vertical pitch-knob
+       as the mono channels (note-name label + draggable track), stacked. */
+    .poly-notes { display: flex; flex-direction: column; gap: 4px; margin: 2px 0; }
+    .poly-row { display: flex; gap: 3px; align-items: stretch; }
+    .poly-name { width: 30px; flex: 0 0 30px; height: auto; font-size: 13px;
+      display: flex; align-items: center; justify-content: center; }
+    .poly-row .pitch-knob-wrap { flex: 1; min-height: 40px; }
+    .poly-row .pitch-knob-track { height: 40px; }
+    .poly-rm { width: 20px; flex: 0 0 20px; border: var(--rule-sm); background: var(--white);
+      color: var(--gray-3); font-weight: 900; cursor: pointer; border-radius: 0; line-height: 1; font-size: 11px; }
+    .poly-rm:hover { background: var(--gray-1); color: var(--black); }
+    .poly-card.is-note .poly-rm { background: transparent; border-color: rgba(255,255,255,0.3); color: rgba(255,255,255,0.6); }
+    .poly-add { height: 20px; border: 1px dashed var(--gray-3); background: transparent; color: var(--gray-3);
+      font-size: 9px; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer;
+      border-radius: 0; font-family: var(--font); }
+    .poly-add:hover { border-color: var(--black); color: var(--black); }
+    .poly-card.is-note .poly-add { border-color: rgba(255,255,255,0.3); color: rgba(255,255,255,0.5); }
+    .poly-flags { display: flex; gap: 2px; }
+    .poly-tie-hint { text-align: center; font-size: 9px; font-weight: 900; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--gray-4); padding: 14px 0; }
   </style>
 </head>
 <body>
@@ -884,6 +904,18 @@
   var LEN_OFF        = 91;
   var PACKED_SIZE    = 106; // 92 raw -> 13 full chunks (104 B) + 1 partial (2 B)
 
+  // Variation-3 poly blob (matches firmware poly.h). Notes pack 4x6 bits = 3
+  // bytes/step; then time/accent/slide bitmaps + dir + len. 226 raw -> 259 packed.
+  var POLY_BLOB_SIZE = 226;
+  var POLY_VOICES    = 4;
+  var POLY_EMPTY     = 0x3F;
+  var POLY_TIME_OFF  = 192;  // MAX_STEPS*3
+  var POLY_ACC_OFF   = 208;  // + MAX_STEPS/4
+  var POLY_SLD_OFF   = 216;  // + MAX_STEPS/8
+  var POLY_DIR_OFF   = 224;
+  var POLY_LEN_OFF   = 225;
+  var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 259
+
   var PITCH_PACK_MASK = 0x3F;
   var PITCH_MAX       = 0x3C; // semi=12 | (oct=3 << 4)
   var PITCH_DEFAULT   = 0x10; // semi=0, oct=1 (centre C)
@@ -1088,6 +1120,46 @@
     for (var i = 0; i < PATTERN_SIZE; i++) x ^= u8[i];
     return x & 0xff;
   }
+  function xorN(u8, len) { var x = 0; for (var i = 0; i < len; i++) x ^= u8[i]; return x & 0xff; }
+
+  // ── Variation-3 poly blob accessors (mirror firmware poly.h) ───────────
+  function makeBlankPoly() {
+    var b = new Uint8Array(POLY_BLOB_SIZE);
+    for (var s = 0; s < MAX_STEPS; s++) polySetStepNotes(b, s, []); // all POLY_EMPTY
+    b[POLY_LEN_OFF] = 16;
+    return b;
+  }
+  // Decode the 4 packed 6-bit notes at step s (POLY_EMPTY = empty voice).
+  function polyStepNotes(blob, s) {
+    var o = s * 3, b0 = blob[o], b1 = blob[o+1], b2 = blob[o+2];
+    return [ b0 & 0x3F,
+             ((b0 >> 6) | (b1 << 2)) & 0x3F,
+             ((b1 >> 4) | (b2 << 4)) & 0x3F,
+             (b2 >> 2) & 0x3F ];
+  }
+  function polySetStepNotes(blob, s, notes) {
+    var v = [POLY_EMPTY, POLY_EMPTY, POLY_EMPTY, POLY_EMPTY];
+    for (var i = 0; i < notes.length && i < POLY_VOICES; i++) v[i] = notes[i] & 0x3F;
+    var o = s * 3;
+    blob[o]   = (v[0] | (v[1] << 6)) & 0xFF;
+    blob[o+1] = ((v[1] >> 2) | (v[2] << 4)) & 0xFF;
+    blob[o+2] = ((v[2] >> 4) | (v[3] << 2)) & 0xFF;
+  }
+  function polyTime(blob, s)   { return (blob[POLY_TIME_OFF + (s>>2)] >> (2*(s&3))) & 3; }
+  function polySetTime(blob, s, t) {
+    var i = POLY_TIME_OFF + (s>>2), sh = 2*(s&3);
+    blob[i] = (blob[i] & ~(3 << sh)) | ((t & 3) << sh);
+  }
+  function polyAccent(blob, s) { return (blob[POLY_ACC_OFF + (s>>3)] >> (s&7)) & 1; }
+  function polySlide(blob, s)  { return (blob[POLY_SLD_OFF + (s>>3)] >> (s&7)) & 1; }
+  function polyLen(blob)       { return blob[POLY_LEN_OFF] || 16; }
+  function polyNoteCount(blob, s) {
+    var v = polyStepNotes(blob, s), n = 0;
+    for (var i = 0; i < POLY_VOICES; i++) if (v[i] !== POLY_EMPTY) n++;
+    return n;
+  }
+  // Is variation 3 of slot (g,p) poly?
+  function isVar3Poly(g, p) { return varMode[g][p][2] === 'poly'; }
 
   // ── Time cell helpers (2 bits/step, 4 steps/byte) ──────────────────
   function getTime(blob, s) {
@@ -1246,6 +1318,7 @@
   var slotCvVar = [];
   var varMidiCh = [];
   var varMode   = [];
+  var polyStore = []; // [g][p] -> Uint8Array(POLY_BLOB_SIZE) or null (variation-3 poly data)
   var groups = []; // [4][16] -> reference into varStore[g][p][slotVar[g][p]]
   var LS_KEY = 'superos303_groups_v8'; // bumped for per-slot variations; old key dropped
   var LS_SCALE_LOCK = 'superos303_scale_lock';
@@ -1334,13 +1407,14 @@
   function activeIsCvVar() { return slotVar[activeGroup][activePat] === VAR_303; }
 
   function initGroups() {
-    groups = []; varStore = []; slotVar = []; slotCvVar = []; varMidiCh = []; varMode = [];
+    groups = []; varStore = []; slotVar = []; slotCvVar = []; varMidiCh = []; varMode = []; polyStore = [];
     for (var g = 0; g < NUM_GROUPS; g++) {
-      groups[g] = []; varStore[g] = []; slotVar[g] = []; slotCvVar[g] = []; varMidiCh[g] = []; varMode[g] = [];
+      groups[g] = []; varStore[g] = []; slotVar[g] = []; slotCvVar[g] = []; varMidiCh[g] = []; varMode[g] = []; polyStore[g] = [];
       for (var p = 0; p < PATS_PER_GROUP; p++) {
         varStore[g][p] = [];
         varMidiCh[g][p] = [];
         varMode[g][p] = [];
+        polyStore[g][p] = null;
         for (var v = 0; v < NUM_VARIATIONS; v++) {
           varStore[g][p][v] = makeBlankPat();
           varMidiCh[g][p][v] = v + 1;     // variation 1->ch1, 2->ch2, 3->ch3
@@ -1372,7 +1446,8 @@
             sel:  slotVar[g][p],
             cv:   slotCvVar[g][p],
             ch:   varMidiCh[g][p].slice(),
-            mode: varMode[g][p].slice()
+            mode: varMode[g][p].slice(),
+            poly: polyStore[g][p] ? Array.from(polyStore[g][p]) : null
           };
         }
       }
@@ -1397,6 +1472,7 @@
           }
           slotVar[g][p]   = s.sel | 0;
           slotCvVar[g][p] = s.cv | 0;
+          polyStore[g][p] = (s.poly && s.poly.length === POLY_BLOB_SIZE) ? new Uint8Array(s.poly) : null;
           repointSlot(g, p);
         }
       }
@@ -1474,6 +1550,11 @@
   var clkSubTick  = -1;
   var clkLocalStep = -1;
   var clkPpDir   = 1;
+  // Absolute 16th-note counter since transport start / pattern restart. All
+  // variations advance one step per 16th in lockstep, so each variation's step =
+  // posFor(gTick16, its length, its direction). The 0x15 anchor (variation 1's
+  // wrap) snaps gTick16 to correct drift.
+  var gTick16 = -1;
   var queuedPat   = -1;  // pattern queued for next play (sent via PC)
   var patChain       = [];    // active chain (2-4 patterns)
   var queuedChain    = [];    // chain waiting to activate after current finishes
@@ -1904,6 +1985,8 @@
         section.appendChild(innerGrid);
         grid.appendChild(section);
       }
+    } else if (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat)) {
+      renderPolyEditor(grid, currentPatLen());
     } else {
       var blob = activeBlob();
       var len = currentPatLen();
@@ -2117,6 +2200,175 @@
     }
   }
 
+  // ── Variation-3 poly chord editor ──────────────────────────────────
+  function curPolyBlob() {
+    var g = activeGroup, p = activePat;
+    if (!polyStore[g][p]) { polyStore[g][p] = makeBlankPoly(); polyStore[g][p][POLY_LEN_OFF] = currentPatLen(); }
+    return polyStore[g][p];
+  }
+  function polyStepArr(blob, s) {
+    return polyStepNotes(blob, s).filter(function(x){ return x !== POLY_EMPTY; });
+  }
+  // Per-step device push: send just the edited step (12-byte SysEx 0x27) instead of
+  // the whole 226-byte blob (~85ms on the wire), so editing a chord note no longer
+  // stalls the running sequencer. Full-blob 0x26 (sendPoly) is reserved for the
+  // mode toggle and bulk sync.
+  function polyEdited(s) {
+    var g = activeGroup, p = activePat;
+    varMode[g][p][2] = 'poly';
+    saveGroupsToLS();
+    sendPolyStep(g, p, s);
+    renderGrid();
+  }
+  function addPolyNote(s) {
+    var blob = curPolyBlob(), arr = polyStepArr(blob, s);
+    if (arr.length >= POLY_VOICES) return;
+    var lin = 12; // default centre C; bump to the next pitch not already present
+    while (arr.indexOf(linearToPacked(lin)) !== -1 && lin < 48) lin++;
+    arr.push(linearToPacked(lin));
+    polySetStepNotes(blob, s, arr);
+    if (polyTime(blob, s) === 0) polySetTime(blob, s, 1); // adding to a rest promotes it to NOTE
+    polyEdited(s);
+  }
+  function removePolyNote(s, packed) {
+    var blob = curPolyBlob();
+    var arr = polyStepArr(blob, s).filter(function(x){ return x !== packed; });
+    polySetStepNotes(blob, s, arr);                       // time unchanged: voices and R/T/N are independent
+    polyEdited(s);
+  }
+  function togglePolyBit(off, s) {
+    var blob = curPolyBlob();
+    blob[off + (s >> 3)] ^= (1 << (s & 7));
+    polyEdited(s);
+  }
+  // Save + push the edited step without a full re-render (DOM already updated live
+  // during a knob drag), matching the mono pitch-knob's drag-end behaviour.
+  function polyCommit(s) {
+    varMode[activeGroup][activePat][2] = 'poly';
+    saveGroupsToLS();
+    sendPolyStep(activeGroup, activePat, s);
+  }
+  // A poly note rendered as the same vertical pitch-knob as the mono channels
+  // (note-name label + draggable track/fill/thumb), bound to voice `vi` of step s.
+  function buildPolyNoteRow(s, vi, packed) {
+    var row = document.createElement('div'); row.className = 'poly-row';
+    var nameEl = document.createElement('div'); nameEl.className = 'step-name poly-name';
+    nameEl.textContent = noteNameFromLinear(unpackLinear(packed));
+
+    var wrap = document.createElement('div'); wrap.className = 'pitch-knob-wrap';
+    var track = document.createElement('div'); track.className = 'pitch-knob-track';
+    var fill  = document.createElement('div'); fill.className  = 'pitch-knob-fill';
+    var thumb = document.createElement('div'); thumb.className = 'pitch-knob-thumb';
+    track.appendChild(fill); track.appendChild(thumb); wrap.appendChild(track);
+    polyKnobPosition(fill, thumb, unpackLinear(packed));
+
+    var rm = document.createElement('button'); rm.className = 'poly-rm'; rm.textContent = '×';
+    rm.title = 'Remove note';
+    rm.addEventListener('click', function(){ removePolyNote(s, packed); });
+
+    row.appendChild(nameEl); row.appendChild(wrap); row.appendChild(rm);
+    bindPolyKnob(track, fill, thumb, nameEl, s, vi);
+    return row;
+  }
+  function polyKnobPosition(fill, thumb, lin) {
+    var span = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
+    var pct = span > 0 ? ((clampFullLinear(lin) - PITCH_FULL_LIN_MIN) / span) * 100 : 0;
+    thumb.style.bottom = pct + '%'; fill.style.height = pct + '%';
+  }
+  function bindPolyKnob(track, fill, thumb, nameEl, s, vi) {
+    function valueFromY(clientY) {
+      var r = track.getBoundingClientRect();
+      var t = r.height > 0 ? (r.bottom - clientY) / r.height : 0;
+      var span = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
+      return clampFullLinear(Math.round(PITCH_FULL_LIN_MIN + t * span));
+    }
+    var dragging = false;
+    function apply(clientY) {
+      var blob = curPolyBlob();
+      var arr = polyStepArr(blob, s);
+      if (vi >= arr.length) return;
+      var v = valueFromY(clientY);
+      var np = linearToPacked(v);
+      for (var i = 0; i < arr.length; i++) if (i !== vi && arr[i] === np) return; // collision -> clamp
+      arr[vi] = np;
+      polySetStepNotes(blob, s, arr);
+      polyKnobPosition(fill, thumb, v);
+      nameEl.textContent = noteNameFromLinear(v);
+    }
+    track.addEventListener('pointerdown', function(ev){ track.setPointerCapture(ev.pointerId); dragging = true; apply(ev.clientY); });
+    track.addEventListener('pointermove', function(ev){ if (track.hasPointerCapture(ev.pointerId)) apply(ev.clientY); });
+    function up(ev){ try { track.releasePointerCapture(ev.pointerId); } catch(e){} if (dragging) { dragging = false; polyCommit(s); } }
+    track.addEventListener('pointerup', up);
+    track.addEventListener('pointercancel', up);
+  }
+  function polySetTimeUI(s, t) {
+    var blob = curPolyBlob();
+    var L = currentPatLen();
+    var nxt = (s + 1) % L, prv = (s + L - 1) % L;
+    if (t === 0 && polyTime(blob, nxt) === 2) { showErrorToast('Cannot put rest before a tie.'); return; }
+    if (t === 2 && polyTime(blob, prv) === 0) { showErrorToast('Cannot put tie after a rest.'); return; }
+    polySetTime(blob, s, t); // chord is kept: rest just silences it (same as mono)
+    polyEdited(s);
+  }
+  function buildPolyCard(blob, s) {
+    var t = polyTime(blob, s);
+    var card = document.createElement('div');
+    var cls = 'step-card poly-card';
+    if (t === 2)      cls += ' is-tie';
+    else if (t === 1) cls += ' is-note';
+    else              cls += ' is-rest';
+    card.className = cls;
+    card.dataset.s = s; // so updatePlayingStep() can find this card for the chase light
+    if (s === playingStep && activePat === playingPat) card.className += ' is-playing-step';
+    var dot = document.createElement('div'); dot.className = 'step-play-dot'; card.appendChild(dot);
+    var numEl = document.createElement('div'); numEl.className = 'step-num';
+    numEl.textContent = String(s + 1).padStart(2, '0'); card.appendChild(numEl);
+
+    var timeRow = document.createElement('div'); timeRow.className = 'step-time';
+    [['N', 1], ['T', 2], ['R', 0]].forEach(function(pair) {
+      var b = document.createElement('button');
+      b.className = 't-btn' + (t === pair[1] ? ' is-on' : '');
+      b.textContent = pair[0];
+      b.addEventListener('click', function(){ polySetTimeUI(s, pair[1]); });
+      timeRow.appendChild(b);
+    });
+    card.appendChild(timeRow);
+
+    if (t === 2) { // tie: holds the previous chord; no own notes/flags
+      var hint = document.createElement('div'); hint.className = 'poly-tie-hint';
+      hint.textContent = '— held —';
+      card.appendChild(hint);
+      return card;
+    }
+
+    var present = polyStepArr(blob, s); // a rest step keeps its (silent) chord, editable
+    var notes = document.createElement('div'); notes.className = 'poly-notes';
+    present.forEach(function(packed, vi){ notes.appendChild(buildPolyNoteRow(s, vi, packed)); });
+    if (present.length < POLY_VOICES) {
+      var add = document.createElement('button'); add.className = 'poly-add';
+      add.textContent = '+ note'; add.addEventListener('click', function(){ addPolyNote(s); });
+      notes.appendChild(add);
+    }
+    card.appendChild(notes);
+
+    var flags = document.createElement('div'); flags.className = 'poly-flags';
+    var acc = document.createElement('button');
+    acc.className = 't-btn' + (polyAccent(blob, s) ? ' is-on' : ''); acc.textContent = 'Acc';
+    acc.addEventListener('click', function(){ togglePolyBit(POLY_ACC_OFF, s); });
+    var sld = document.createElement('button');
+    sld.className = 't-btn' + (polySlide(blob, s) ? ' is-on' : ''); sld.textContent = 'Sld';
+    sld.addEventListener('click', function(){ togglePolyBit(POLY_SLD_OFF, s); });
+    flags.appendChild(acc); flags.appendChild(sld);
+    card.appendChild(flags);
+    return card;
+  }
+  function renderPolyEditor(grid, len) {
+    var blob = curPolyBlob();
+    blob[POLY_LEN_OFF] = len;
+    grid.className = 'seq-grid';
+    for (var s = 0; s < len; s++) grid.appendChild(buildPolyCard(blob, s));
+  }
+
   function syncBlob() {
     var blob = activeBlob();
     var len = Math.min(patternMaxSteps(blob), Math.max(1, Number(document.getElementById('patLen').value) | 0));
@@ -2289,6 +2541,35 @@
   // Forward / Reverse / Ping-Pong are exact; Random / Half-Random / Brownian
   // are unpredictable so the dot is left where it is and snapped back to step 0
   // on the next 0x15 anchor (sent at every pattern wrap).
+  // Step a variation of `len`/`dir` is on after `g` 16th-notes from its start.
+  // dir: 0=fwd 1=rev 2=pingpong (3/4/5 random -> fall back to forward; the chase
+  // can't track random deterministically).
+  function posFor(g, len, dir) {
+    if (len < 1) len = 1;
+    if (g < 0) g = 0;
+    var m = g % len;
+    if (dir === 1) return (len - m) % len;          // reverse
+    if (dir === 2) {                                 // ping-pong (period 2*(len-1))
+      if (len === 1) return 0;
+      var period = 2 * (len - 1);
+      var p = g % period;
+      return (p < len) ? p : (period - p);
+    }
+    return m;                                         // forward / random fallback
+  }
+
+  // Length + direction the playhead chases over for the displayed slot. Variation 3
+  // in poly mode advances forward-only over the poly blob's own length (the firmware
+  // AdvancePoly is forward-only), so it must not inherit the mono var3 direction.
+  function chaseLenDir(g, pat) {
+    if (slotVar[g][pat] === 2 && isVar3Poly(g, pat)) {
+      var pb = polyStore[g][pat];
+      return { len: (pb && pb[POLY_LEN_OFF]) || 8, dir: 0 };
+    }
+    var db = groups[g][pat];
+    return { len: getLength(db), dir: getDirection(db) };
+  }
+
   function advanceClkStep(blob) {
     var len = blob ? getLength(blob) : 16;
     if (len < 1) len = 1;
@@ -2315,11 +2596,17 @@
     if (b === 0xF8) {
       if (!clkRunning) return;
       var pat = (playingPat >= 0) ? playingPat : activePat;
-      var blob = (hwGroup >= 0 ? groups[hwGroup] : groups[activeGroup])[pat];
-      var ticksPerStep = (blob && isTriplet(blob)) ? 8 : 6;
+      var g = (hwGroup >= 0) ? hwGroup : activeGroup;
+      var blob = groups[g][pat];
+      var poly = (slotVar[g][pat] === 2 && isVar3Poly(g, pat));
+      var ticksPerStep = (!poly && blob && isTriplet(blob)) ? 8 : 6;
       clkSubTick = (clkSubTick + 1) % ticksPerStep;
       if (clkSubTick === 0) {
-        advanceClkStep(blob);
+        gTick16++;
+        // Each variation's step is an absolute function of the 16th count, so the
+        // displayed variation chases over its own length/direction (not var1's).
+        var ld = chaseLenDir(g, pat);
+        clkLocalStep = posFor(gTick16, ld.len, ld.dir);
         updatePlayingStep(pat, clkLocalStep);
       }
     } else if (b === 0xFA) {
@@ -2327,6 +2614,7 @@
       clkSubTick = -1;
       clkLocalStep = -1;
       clkPpDir = 1;
+      gTick16 = -1;
       hwRunning = true;
     } else if (b === 0xFB) {
       clkRunning = true;
@@ -2394,6 +2682,33 @@
     midiOut.send(msg);
   }
   function requestPattern(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15])); }
+  // Request variation 3 of a slot (device replies 0x25 if poly, else 0x11).
+  function requestPoly(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15, 2])); }
+  function sendPoly(g, p) {
+    var blob = polyStore[g][p];
+    if (!blob) return;
+    var packed = pack7(blob);
+    var msg = new Uint8Array(5 + packed.length);
+    msg[0] = 0x7d; msg[1] = 0x26; msg[2] = p & 15;
+    var cx = xorN(blob, POLY_BLOB_SIZE);
+    msg[3] = cx & 0x7f; msg[4] = (cx >> 7) & 1;
+    msg.set(packed, 5);
+    sendSysex(msg);
+  }
+  function sendPolyFlag(p, poly) { sendSysex(new Uint8Array([0x7d, 0x29, p & 15, poly ? 1 : 0])); }
+  // Push ONE poly step (12-byte SysEx 0x27) instead of the whole 226-byte blob, so
+  // editing a chord note doesn't stall the running sequencer. Voices ride raw 6-bit
+  // (POLY_EMPTY = 0x3f for an empty voice); flags bit0=accent bit1=slide.
+  function sendPolyStep(g, p, s) {
+    if (g !== hwGroup) return;
+    var blob = polyStore[g][p];
+    if (!blob) return;
+    var v = polyStepNotes(blob, s);
+    sendSysex(new Uint8Array([0x7d, 0x27, p & 15, s & 0x3f,
+      v[0] & 0x3f, v[1] & 0x3f, v[2] & 0x3f, v[3] & 0x3f,
+      polyTime(blob, s) & 3,
+      (polyAccent(blob, s) ? 1 : 0) | (polySlide(blob, s) ? 2 : 0)]));
+  }
   function sendPattern(pat, blob, varIdx) {
     var raw = buildWireFromBlob(blob);
     var x = xorBlob(raw), packed = pack7(raw);
@@ -2690,6 +3005,52 @@
       return;
     }
 
+    if (cmd === 0x25) { // variation-3 poly blob (sent in place of 0x11 for poly slots)
+      if (bytes.length < 5 + PACKED_POLY) { log('0x25 too short (' + bytes.length + ')', 'log-err'); return; }
+      var ppat = bytes[2] & 0x0f;
+      var pcx  = bytes[3] | (bytes[4] << 7);
+      var praw = unpack7(bytes.subarray(5), POLY_BLOB_SIZE);
+      if (!praw) { log('0x25 unpack failed', 'log-err'); return; }
+      if (xorN(praw, POLY_BLOB_SIZE) !== pcx) { log('0x25 checksum mismatch', 'log-err'); return; }
+
+      var pInBulk = expectDump > 0, pBulkDone = false;
+      if (pInBulk) {
+        expectDump--;
+        var prcvd = 48 - expectDump;
+        log('Pattern ' + (ppat+1) + ' var 3 poly (' + prcvd + '/48)', 'log-syx');
+        updateSyncOverlay(prcvd);
+        if (expectDump === 0) { pBulkDone = true; bulkNextPat = -1; hideSyncOverlay(); }
+        else { sendSysex(new Uint8Array([0x7d, 0x10, bulkNextPat % 16, (bulkNextPat / 16) | 0])); bulkNextPat++; }
+      } else {
+        log('Pattern ' + (ppat+1) + ' var 3 poly received', 'log-syx');
+      }
+      var pg = pInBulk ? patternBulkTargetGroup : activeGroup;
+      polyStore[pg][ppat] = praw;
+      varMode[pg][ppat][2] = 'poly';
+      saveGroupsToLS();
+      if (pg === activeGroup && ppat === activePat) { syncPatternToolbar(); renderGrid(); }
+      if (pBulkDone) {
+        var pBanner = document.getElementById('downloadToast');
+        pBanner.textContent = '✔ All 16 patterns synced — Group ' + (patternBulkTargetGroup + 1);
+        pBanner.classList.add('visible');
+        setTimeout(function() { pBanner.classList.remove('visible'); }, 3000);
+        switchToPat(activePat);
+      }
+      if (expectDump === 0) sendCfgRead();
+      return;
+    }
+
+    if (cmd === 0x29 && bytes.length >= 4) { // variation-3 poly/mono flag
+      var fpat  = bytes[2] & 0x0f;
+      var fpoly = bytes[3] ? true : false;
+      varMode[activeGroup][fpat][2] = fpoly ? 'poly' : 'mono';
+      if (fpoly && !polyStore[activeGroup][fpat]) requestPoly(fpat); // fetch the chord data
+      saveGroupsToLS();
+      if (fpat === activePat) { syncPatternToolbar(); renderGrid(); }
+      log('Slot ' + (fpat+1) + ' var 3 -> ' + (fpoly ? 'poly' : 'mono'), 'log-syx');
+      return;
+    }
+
     if (cmd === 0x14 && bytes.length >= 3) {
       var names = ['ok','bad_checksum','bad_pattern','blocked_clock'];
       var st = bytes[2];
@@ -2715,12 +3076,31 @@
         switchGroup(sGrp);
         if (!initialSyncDone) { initialSyncDone = true; startBulkRequest(sGrp, true); }
       }
-      clkLocalStep = sStep;
       clkSubTick = 0;
-      clkPpDir = 1;
       clkRunning = true;
       hwRunning = true;
-      updatePlayingStep(sPat, sStep);
+      clkPpDir = 1;
+      // The 0x15 anchor is variation 1's wrap, so the absolute 16th counter should
+      // be a multiple of variation 1's length. Snap it to correct drift, then
+      // recompute the displayed variation's step from it -- so variations 2/3 stay
+      // in lockstep over their own length instead of resetting at var1's length.
+      var dispVar = (hwGroup >= 0) ? slotVar[hwGroup][sPat] : 0;
+      var patChanged = (sPat !== playingPat);
+      if (patChanged) {
+        gTick16 = 0;                       // new pattern: every variation restarts at 0
+        clkLocalStep = (dispVar === 0) ? sStep : 0;
+      } else {
+        var v1len = (hwGroup >= 0) ? getLength(varStore[hwGroup][sPat][0]) : 8;
+        if (v1len < 1) v1len = 1;
+        gTick16 = Math.round(gTick16 / v1len) * v1len;
+        if (dispVar === 0) {
+          clkLocalStep = sStep;
+        } else {
+          var ld = chaseLenDir(hwGroup, sPat);
+          clkLocalStep = posFor(gTick16, ld.len, ld.dir);
+        }
+      }
+      updatePlayingStep(sPat, clkLocalStep);
       return;
     }
 
@@ -4125,11 +4505,18 @@
     log('Variation ' + (v+1) + ' MIDI ch -> ' + ch, 'log-syx');
   });
   document.getElementById('varModeBtn').addEventListener('click', function() {
-    var v = slotVar[activeGroup][activePat];
-    varMode[activeGroup][activePat][v] = (varMode[activeGroup][activePat][v] === 'poly') ? 'mono' : 'poly';
+    var g = activeGroup, p = activePat, v = slotVar[g][p];
+    if (v === VAR_303) return; // variation 1 is the 303's mono analog voice
+    var nowPoly = (varMode[g][p][v] !== 'poly');
+    varMode[g][p][v] = nowPoly ? 'poly' : 'mono';
+    if (v === 2) { // variation 3 is the only one the firmware plays polyphonically
+      if (nowPoly && !polyStore[g][p]) { polyStore[g][p] = makeBlankPoly(); polyStore[g][p][POLY_LEN_OFF] = currentPatLen(); }
+      if (g === hwGroup) { sendPolyFlag(p, nowPoly); if (nowPoly) sendPoly(g, p); }
+    }
     syncVariationUI();
     saveGroupsToLS();
-    log('Variation ' + (v+1) + ' mode -> ' + varMode[activeGroup][activePat][v], 'log-syx');
+    renderGrid();
+    log('Variation ' + (v+1) + ' mode -> ' + varMode[g][p][v], 'log-syx');
   });
   syncVariationUI();
 

@@ -21,9 +21,12 @@ static constexpr uint16_t FE_NUM_BANKS        = 2;
 static constexpr uint16_t FE_RECORD_PAGES     = FE_BANK_PAGES - 1; // 127 usable
 static constexpr uint16_t FE_PAGE             = 256;
 
-// Logical block-id space. 96 pattern super-blocks + 8 tracks + settings + cv-var
-// config = 106 live blocks; must stay <= FE_RECORD_PAGES (127).
-static constexpr uint8_t  FE_MAX_BLOCKS = 120;
+// Logical block-id space: 64 pair blocks + 32 mono-var3 blocks + 64 poly-var3
+// blocks + 8 tracks + 1 settings -> ids run 0..168, so the index must span 169.
+// LIVE records still must stay <= FE_RECORD_PAGES (127) for GC to fit: a fully-used
+// device is ~105 live when var3 is mono (fits), rising toward 137 as poly slots
+// accumulate. Past 127 live, GC fails gracefully (write returns false), no corruption.
+static constexpr uint8_t  FE_MAX_BLOCKS = 170;
 
 static constexpr uint8_t  FE_REC_HDR   = 13;                  // record header bytes
 static constexpr uint8_t  FE_MAX_PAYLOAD = FE_PAGE - FE_REC_HDR; // 243

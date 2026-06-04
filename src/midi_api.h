@@ -81,6 +81,11 @@ void midi_send_group_update(uint8_t group);
 /// Format: F0 7D 1F <pat:0-15> <var:0-2> F7
 void midi_send_edit_variation(uint8_t pat, uint8_t var);
 
+/// Broadcast variation-3 poly/mono flag for a slot (SysEx 0x29).
+/// Bidirectional: host sends the same format to set the flag.
+/// Format: F0 7D 29 <pat:0-15> <flag:0|1> F7
+void midi_send_poly_flag(uint8_t pat, uint8_t flag);
+
 /// Broadcast active pattern selection while stopped (SysEx 0x1E).
 /// Used so the web editor follows hardware pat-key presses without showing
 /// the "playing" indicator that 0x15 would imply. Includes the current group

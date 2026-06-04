@@ -8,15 +8,20 @@
 #include <Arduino.h>
 #include "sequence.h"
 #include "flash_persist.h"
+#include "poly.h"
 
 // SysEx pattern blob = 48 raw bytes (pitch[32] + time_data[8] + 8 metadata).
 static constexpr int PATTERN_SIZE = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE;
 
+static_assert(POLY_STEPS == MAX_STEPS, "poly step count must match MAX_STEPS");
+static_assert(POLY_BLOB_SIZE <= FE_MAX_PAYLOAD, "poly blob must fit one flash record");
+static_assert(FB_SETTINGS_LEN <= FE_MAX_PAYLOAD, "settings block must fit one record");
+
 // Sig is prefix-matched: anything starting with sig_compat_prefix passes.
-// Prefix bumped from "superOS-2bit" because the flash layout changed (patterns
-// are now stored two-per-page); old arenas must wipe to a clean packed format.
-const char *const sig_pew = "superOS-pack-v1";
-const char *const sig_compat_prefix = "superOS-pack";
+// Prefix bumped to "superOS-pol2" because the flash block map changed (mono var3
+// now packs two slots per block; only poly var3 is dedicated); wipe to relayout.
+const char *const sig_pew = "superOS-pol2-v1";
+const char *const sig_compat_prefix = "superOS-pol2";
 static constexpr int kSigCompatPrefixLen = 12;
 static constexpr int kSigEepromLen = 16;
 
@@ -38,13 +43,25 @@ struct PersistentSettings {
   /// Variation 1 uses midi_channel; these drive the shadow voices.
   uint8_t var2_channel = 2;
   uint8_t var3_channel = 3;
+  /// Per-slot bitmap: bit set = variation 3 of that slot is polyphonic.
+  uint8_t var3_poly[NUM_SLOTS / 8] = {0};
 
   static constexpr uint8_t kTrackFormatVersion = 4;
 
-  // Settings block byte layout (FB_SETTINGS_LEN = 24):
+  bool var3_is_poly(uint8_t slot) const {
+    slot &= uint8_t(NUM_SLOTS - 1);
+    return (var3_poly[slot >> 3] >> (slot & 7)) & 1;
+  }
+  void set_var3_poly(uint8_t slot, bool on) {
+    slot &= uint8_t(NUM_SLOTS - 1);
+    const uint8_t m = uint8_t(1u << (slot & 7));
+    if (on) var3_poly[slot >> 3] |= m; else var3_poly[slot >> 3] &= uint8_t(~m);
+  }
+
+  // Settings block byte layout (FB_SETTINGS_LEN = 32):
   //   [0..15] signature  [16] midi_channel  [17] flags(bit0=clock_rx)
   //   [18] direction  [19] thru  [20] led_brightness  [21] track_format
-  //   [22] var2_channel  [23] var3_channel
+  //   [22] var2_channel  [23] var3_channel  [24..31] var3 poly bitmap
   void serialize(uint8_t *b) const {
     memcpy(b, signature, 16);
     b[16] = midi_channel;
@@ -55,6 +72,7 @@ struct PersistentSettings {
     b[21] = track_format;
     b[22] = var2_channel;
     b[23] = var3_channel;
+    memcpy(b + 24, var3_poly, sizeof(var3_poly));
   }
   void deserialize(const uint8_t *b) {
     memcpy(signature, b, 16);
@@ -66,6 +84,7 @@ struct PersistentSettings {
     track_format       = b[21];
     var2_channel       = (b[22] >= 1 && b[22] <= 16) ? b[22] : 2;
     var3_channel       = (b[23] >= 1 && b[23] <= 16) ? b[23] : 3;
+    memcpy(var3_poly, b + 24, sizeof(var3_poly));
   }
 
   // Load the settings block. If absent (fresh flash), zero the signature so
@@ -75,6 +94,7 @@ struct PersistentSettings {
   void Load() {
     uint8_t b[FB_SETTINGS_LEN];
     b[22] = 2; b[23] = 3;
+    memset(b + 24, 0, FB_SETTINGS_LEN - 24); // default var3 poly bitmap = all mono
     const int got = g_flash.read(FB_SETTINGS, b, FB_SETTINGS_LEN);
     if (got >= 22)
       deserialize(b);
@@ -126,42 +146,43 @@ inline void clear_pattern_bytes(Sequence &seq) {
   seq.length = 0; // Load() promotes 0 -> SetLength(8)
 }
 
-// Write/read one super-block (the pattern pair 2*super, 2*super+1).
-inline void WritePatternPair(const Sequence &a, const Sequence &b, uint8_t super) {
-  uint8_t buf[FB_PATTERN_LEN];
-  serialize_pattern(a, buf);
-  serialize_pattern(b, buf + FB_PATTERN_LEN_ONE);
-  g_flash.write(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN);
+// One mono pattern at (abs_slot, var), all packed two-per-page. var0+var1 share
+// block = slot (half = var). Variation 3 in MONO form packs two slots per block:
+// block = FB_MONOVAR2_BASE + slot/2, half = slot&1. Each write is a read-modify-
+// write so the neighbouring half is preserved. (Poly var3 uses ReadPolyAt/WritePolyAt.)
+inline void mono_block_of(uint8_t abs_slot, uint8_t var, uint8_t &block, uint8_t &half) {
+  if (var >= 2) { block = uint8_t(FB_MONOVAR2_BASE + (abs_slot >> 1)); half = abs_slot & 1; }
+  else          { block = uint8_t(FB_PATTERN_BASE + abs_slot);         half = var & 1; }
 }
-inline void ReadPatternPair(Sequence &a, Sequence &b, uint8_t super) {
-  uint8_t buf[FB_PATTERN_LEN];
-  if (g_flash.read(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN) == FB_PATTERN_LEN) {
-    deserialize_pattern(a, buf);
-    deserialize_pattern(b, buf + FB_PATTERN_LEN_ONE);
-  } else {
-    clear_pattern_bytes(a);
-    clear_pattern_bytes(b);
-  }
-}
-
-// One pattern at (slot, variation). flat = slot*NUM_VARIATIONS + var; the pattern
-// is one half of super-block flat/2. Writes are read-modify-write so the other
-// half (a different slot/variation) is preserved.
 inline void ReadPatternAt(Sequence &seq, uint8_t abs_slot, uint8_t var) {
-  uint16_t flat = uint16_t(abs_slot) * NUM_VARIATIONS + var;
-  uint8_t super = uint8_t(flat >> 1), half = uint8_t(flat & 1);
+  uint8_t block, half;
+  mono_block_of(abs_slot, var, block, half);
   uint8_t buf[FB_PATTERN_LEN];
-  if (g_flash.read(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN) == FB_PATTERN_LEN)
+  if (g_flash.read(block, buf, FB_PATTERN_LEN) == FB_PATTERN_LEN)
     deserialize_pattern(seq, buf + half * FB_PATTERN_LEN_ONE);
   else
     clear_pattern_bytes(seq);
 }
 inline void WritePatternAt(const Sequence &seq, uint8_t abs_slot, uint8_t var) {
-  uint16_t flat = uint16_t(abs_slot) * NUM_VARIATIONS + var;
-  uint8_t super = uint8_t(flat >> 1), half = uint8_t(flat & 1);
+  uint8_t block, half;
+  mono_block_of(abs_slot, var, block, half);
   uint8_t buf[FB_PATTERN_LEN];
-  if (g_flash.read(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN) != FB_PATTERN_LEN)
+  if (g_flash.read(block, buf, FB_PATTERN_LEN) != FB_PATTERN_LEN)
     memset(buf, 0, FB_PATTERN_LEN);        // unwritten neighbour half -> empty (length 0)
   serialize_pattern(seq, buf + half * FB_PATTERN_LEN_ONE);
-  g_flash.write(uint8_t(FB_PATTERN_BASE + super), buf, FB_PATTERN_LEN);
+  g_flash.write(block, buf, FB_PATTERN_LEN);
+}
+
+// Variation 3 in poly form: its own dedicated block (poly slots only).
+inline void ReadPolyAt(PolyVoice &pv, uint8_t abs_slot) {
+  uint8_t buf[POLY_BLOB_SIZE];
+  if (g_flash.read(uint8_t(FB_POLY_BASE + abs_slot), buf, POLY_BLOB_SIZE) == POLY_BLOB_SIZE)
+    pv.deserialize(buf);
+  else
+    pv.Clear();
+}
+inline void WritePolyAt(const PolyVoice &pv, uint8_t abs_slot) {
+  uint8_t buf[POLY_BLOB_SIZE];
+  pv.serialize(buf);
+  g_flash.write(uint8_t(FB_POLY_BASE + abs_slot), buf, POLY_BLOB_SIZE);
 }

@@ -34,7 +34,7 @@ struct SuperOsMidiSettings {
   static const bool UseRunningStatus = false;
   static const bool HandleNullVelocityNoteOnAsNoteOff = true;
   static const bool Use1ByteParsing = true;
-  static const unsigned SysExMaxSize = 256;
+  static const unsigned SysExMaxSize = 288; // fits the ~264-byte poly blob set (0x26)
   static const bool UseSenderActiveSensing = false;
   static const bool UseReceiverActiveSensing = false;
   static const uint16_t SenderActiveSensingPeriodicity = 0;
@@ -172,9 +172,40 @@ static uint8_t xor_blob_pattern(const uint8_t *p) {
     x ^= p[i];
   return x;
 }
+static uint8_t xor_blob_n(const uint8_t *p, uint16_t len) {
+  uint8_t x = 0;
+  for (uint16_t i = 0; i < len; ++i) x ^= p[i];
+  return x;
+}
+
+// 7-bit packed length of a variation-3 poly blob (226 raw -> 259 packed).
+static constexpr uint16_t kPackedPolyLen = POLY_BLOB_SIZE + ((POLY_BLOB_SIZE + 6) / 7);
+
+// 0x25: variation-3 poly blob reply (device -> host). Sent in place of the mono
+// 0x11 when the requested slot's variation 3 is poly.
+static void enqueue_poly_reply(uint8_t pat, uint8_t slot) {
+  PolyVoice pv;
+  if (g_eng->poly_active_ && slot == g_eng->abs_slot(g_eng->get_patsel()))
+    pv = g_eng->poly_;                 // resident (possibly edited) copy
+  else
+    ReadPolyAt(pv, slot);
+  uint8_t raw[POLY_BLOB_SIZE];
+  pv.serialize(raw);
+  const uint8_t cx = xor_blob_n(raw, POLY_BLOB_SIZE);
+  uint8_t inner[5 + kPackedPolyLen];
+  inner[0] = 0x7D; inner[1] = 0x25; inner[2] = uint8_t(pat & 0x0F);
+  inner[3] = static_cast<uint8_t>(cx & 0x7F);
+  inner[4] = static_cast<uint8_t>((cx >> 7) & 1);
+  const uint16_t pl = pack_7bit(raw, POLY_BLOB_SIZE, inner + 5);
+  tx_push_message(inner, static_cast<uint16_t>(5 + pl));
+}
 
 static void enqueue_pattern_reply(uint8_t pat, uint8_t var = 0) {
   if (!g_eng) return;
+  if (var == 2 && GlobalSettings.var3_is_poly(g_eng->abs_slot(uint8_t(pat & 0x0F)))) {
+    enqueue_poly_reply(uint8_t(pat & 0x0F), g_eng->abs_slot(uint8_t(pat & 0x0F)));
+    return;
+  }
   uint8_t raw[PATTERN_SIZE];
   g_eng->export_pattern_blob_var(pat, var, raw);
   const uint8_t cx = xor_blob_pattern(raw);
@@ -379,6 +410,84 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
   case 0x1F: { // host → 303: set the hardware edit-target variation (0..2)
     if (n < 4 || !g_eng) return;
     g_eng->SetEditVar(p[3] & 0x03);
+    break;
+  }
+  case 0x26: { // host -> 303: set variation-3 poly blob (implies poly)
+    if (n < 5u + kPackedPolyLen) { send_ack(1); return; }
+    const uint8_t pat = p[2] & 0x0F;
+    const uint8_t cx  = static_cast<uint8_t>(p[3] | (p[4] << 7));
+    uint8_t raw[POLY_BLOB_SIZE];
+    if (!unpack_7bit(p + 5, kPackedPolyLen, raw, POLY_BLOB_SIZE)) { send_ack(1); return; }
+    if (xor_blob_n(raw, POLY_BLOB_SIZE) != cx) { send_ack(1); return; }
+    const uint8_t slot = g_eng->abs_slot(pat);
+    g_eng->drop_poly_edit(slot);              // this full blob supersedes buffered per-step edits
+    const bool was_poly = GlobalSettings.var3_is_poly(slot);
+    if (!was_poly) {                          // only flash settings when the flag CHANGES;
+      GlobalSettings.set_var3_poly(slot, true); // every chord edit hits an already-poly slot,
+      s_settings_dirty = true;                 // so this avoids a settings flash write per edit
+    }
+    if (g_eng->poly_active_ && slot == g_eng->abs_slot(g_eng->get_patsel())) {
+      g_eng->poly_.deserialize(raw);
+      g_eng->poly_stale_ = true;
+    } else {
+      PolyVoice pv; pv.deserialize(raw);
+      WritePolyAt(pv, slot);
+      if (!was_poly && !g_clk_run && pat == g_eng->get_patsel()) {
+        g_eng->persist_shadows();
+        g_eng->ReloadShadows();        // active slot just became poly -> play it
+      }
+    }
+    s_last_web_edit_ms = millis();
+    send_ack(0);
+    break;
+  }
+  case 0x27: { // host -> 303: set ONE variation-3 poly step (efficient single-step edit)
+    // Payload: <pat> <step> <n0> <n1> <n2> <n3> <time> <flags>
+    // n0..n3 = 6-bit packed voices (POLY_EMPTY = empty); flags bit0=accent bit1=slide.
+    // Avoids resending the whole 226-byte blob (a ~85ms wire stall) for each note change.
+    if (n < 10) { send_ack(1); return; }
+    const uint8_t pat  = p[2] & 0x0F;
+    const uint8_t step = p[3] & 0x3F;
+    if (step >= POLY_STEPS) { send_ack(2); return; }
+    const uint8_t slot = g_eng->abs_slot(pat);
+    if (!GlobalSettings.var3_is_poly(slot)) {
+      GlobalSettings.set_var3_poly(slot, true);
+      s_settings_dirty = true;
+    }
+    const bool resident = g_eng->poly_active_ &&
+                          slot == g_eng->abs_slot(g_eng->get_patsel());
+    if (resident) {
+      PolyVoice &pv = g_eng->poly_;
+      uint8_t *v = pv.step(step);
+      v[0] = p[4] & 0x3F; v[1] = p[5] & 0x3F; v[2] = p[6] & 0x3F; v[3] = p[7] & 0x3F;
+      pv.set_time(step, p[8] & 0x03);
+      pv.set_accent(step, p[9] & 0x01);
+      pv.set_slide(step, (p[9] >> 1) & 0x01);
+      g_eng->poly_stale_      = true;
+      g_eng->shadow_dirty_ms_ = millis(); // coalesced flush when stopped + quiet
+    } else {
+      // Non-resident: buffer the edit in RAM and defer the flash write to the idle
+      // save / next reload, so editing a non-playing chord never stalls the voice.
+      g_eng->poly_edit_step(slot, step, p[4] & 0x3F, p[5] & 0x3F, p[6] & 0x3F, p[7] & 0x3F,
+                            p[8] & 0x03, p[9] & 0x01, (p[9] >> 1) & 0x01);
+    }
+    s_last_web_edit_ms = millis();
+    send_ack(0);
+    break;
+  }
+  case 0x29: { // host -> 303: set variation-3 poly/mono flag
+    if (n < 4) return;
+    const uint8_t pat  = p[2] & 0x0F;
+    const bool    poly = (p[3] != 0);
+    const uint8_t slot = g_eng->abs_slot(pat);
+    g_eng->drop_poly_edit(slot);       // poly/mono flag change supersedes buffered edits
+    GlobalSettings.set_var3_poly(slot, poly);
+    s_settings_dirty = true;
+    if (!g_clk_run && pat == g_eng->get_patsel()) {
+      g_eng->persist_shadows();
+      g_eng->ReloadShadows();          // (de)activate poly_ for the active slot
+    }
+    send_ack(0);
     break;
   }
   case 0x20: { // request config
@@ -664,6 +773,12 @@ void midi_send_edit_variation(uint8_t pat, uint8_t var) {
   tx_push_message(inner, 4);
 }
 
+// --- Variation-3 poly/mono flag broadcast (SysEx 0x29) --------------------------
+void midi_send_poly_flag(uint8_t pat, uint8_t flag) {
+  const uint8_t inner[4] = {0x7D, 0x29, (uint8_t)(pat & 0x0F), (uint8_t)(flag ? 1 : 0)};
+  tx_push_message(inner, 4);
+}
+
 // --- Active pattern broadcast (SysEx 0x1E) ---------------------------------------
 // Used while stopped so the web editor follows hardware pat-key presses
 // without flagging the pill as "playing" (which 0x15 would do). Includes the
@@ -890,6 +1005,54 @@ void midi_seq_gate_tick(Engine &engine, uint8_t transpose) {
 static uint8_t s_shadow_note[NUM_VARIATIONS - 1]    = {0, 0};
 static bool    s_shadow_note_on[NUM_VARIATIONS - 1] = {false, false};
 
+// Variation 3 polyphonic voice MIDI. Tracks the set of notes currently on so a
+// chord change drops only the notes that left and adds only the new ones (common
+// tones are not retriggered -> legato across slides/ties).
+static uint8_t s_poly_on[POLY_VOICES];
+static uint8_t s_poly_on_count = 0;
+
+static void poly_all_off(byte och) {
+  for (uint8_t i = 0; i < s_poly_on_count; ++i)
+    MIDI.sendNoteOff(s_poly_on[i], 0, och);
+  s_poly_on_count = 0;
+}
+
+static void poly_gate_tick(Engine &engine, uint8_t transpose) {
+  const byte och = static_cast<byte>(out_ch_for_var(2)); // variation 3 channel
+  if (!engine.poly_active_) { engine.poly_emitting_ = false; poly_all_off(och); return; }
+  const int8_t half = int8_t(engine.step_period() >> 1);
+  const int8_t clk  = engine.clk_count;
+  const bool gate = !engine.poly_resting_ && (engine.poly_slide_gate_ || clk < half);
+  if (!gate) { engine.poly_emitting_ = false; poly_all_off(och); return; }
+  engine.poly_emitting_ = true;
+
+  const PolyVoice &p = engine.poly_;
+  const uint8_t st  = engine.poly_chord_step_;
+  const uint8_t *v  = p.step(st);
+  const uint8_t vel = p.accent(st) ? 127 : 80;
+
+  uint8_t want[POLY_VOICES];
+  uint8_t wn = 0;
+  for (uint8_t i = 0; i < POLY_VOICES; ++i) {
+    if (v[i] == POLY_EMPTY) continue;
+    int n = 36 + int(unpack_pitch_linear(v[i])) + transpose;
+    if (n > 127) n = 127;
+    want[wn++] = static_cast<uint8_t>(n);
+  }
+  // Drop notes no longer in the chord, then add the new ones (kept notes hold).
+  for (uint8_t i = 0; i < s_poly_on_count;) {
+    bool keep = false;
+    for (uint8_t j = 0; j < wn; ++j) if (want[j] == s_poly_on[i]) { keep = true; break; }
+    if (!keep) { MIDI.sendNoteOff(s_poly_on[i], 0, och); s_poly_on[i] = s_poly_on[--s_poly_on_count]; }
+    else ++i;
+  }
+  for (uint8_t j = 0; j < wn; ++j) {
+    bool on = false;
+    for (uint8_t i = 0; i < s_poly_on_count; ++i) if (s_poly_on[i] == want[j]) { on = true; break; }
+    if (!on) { MIDI.sendNoteOn(want[j], vel, och); s_poly_on[s_poly_on_count++] = want[j]; }
+  }
+}
+
 // Shadow voices (variations 2/3) MIDI, driven from each shadow's gate state every
 // clock tick -- same model as the main voice so var2/3 note length tracks the
 // analog gate. Engine::AdvanceShadows() (called at the 16th boundary) computes the
@@ -923,6 +1086,7 @@ void midi_shadows_gate_tick(Engine &engine, uint8_t transpose) {
     }
     // else: same note, gate still high -> hold
   }
+  poly_gate_tick(engine, transpose); // variation 3 polyphonic voice
 }
 
 void midi_shadows_all_notes_off(Engine &engine) {
@@ -933,6 +1097,7 @@ void midi_shadows_all_notes_off(Engine &engine) {
       s_shadow_note_on[i] = false;
     }
   }
+  poly_all_off(static_cast<byte>(out_ch_for_var(2)));
 }
 
 // Flush pending EEPROM writes accumulated by SysEx handlers.
@@ -950,13 +1115,20 @@ void midi_flush_pending_saves() {
 // would glitch playback audio) AND at least 2s have passed since the last
 // SysEx edit (so a burst of edits coalesces into one write per pattern).
 void midi_flush_pending_pattern_saves(Engine &engine) {
-  if (s_pat_dirty_mask == 0 && !engine.shadow_stale_) return;
+  if (s_pat_dirty_mask == 0 && !engine.shadow_stale_ && !engine.poly_stale_ &&
+      !engine.poly_edit_dirty_) return;
   if (g_clk_run) return;
   const uint32_t now = millis();
+  // Buffered non-resident poly edits (web) persist after a 2s quiet period -- the
+  // deferred write happens here, while stopped, instead of inline during playback.
+  if (engine.poly_edit_dirty_ && (now - engine.poly_edit_ms_) >= 2000) {
+    engine.flush_poly_edit();
+    return;
+  }
   // Variation 2/3 (shadow) edits -- hardware or web -- persist after a 2s quiet
   // period (own timer, refreshed on each edit) so bursts coalesce into one flash
   // write instead of stalling the LED ISR on every keypress.
-  if (engine.shadow_stale_ && (now - engine.shadow_dirty_ms_) >= 2000) {
+  if ((engine.shadow_stale_ || engine.poly_stale_) && (now - engine.shadow_dirty_ms_) >= 2000) {
     engine.persist_shadows();
     return;
   }

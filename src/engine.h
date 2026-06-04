@@ -124,6 +124,29 @@ struct Engine {
   int8_t   shadow_pp_dir_[NUM_VARIATIONS - 1]     = {1, 1}; // ping-pong/brownian walk state
   int8_t   shadow_step_dir_[NUM_VARIATIONS - 1]   = {1, 1}; // last step direction (slide lookups)
 
+  // Variation 3 polyphonic voice (active slot only, when var3_is_poly). When
+  // poly_active_ it plays in place of the mono shadow_[1]; advanced forward each
+  // 16th. Step-level accent/slide/time; up to POLY_VOICES notes per step.
+  PolyVoice poly_;
+  bool     poly_active_     = false;
+  bool     poly_stale_      = false; // poly_ edited; persist on save/reload
+  bool     poly_reset_      = true;
+  uint8_t  poly_time_pos_   = 0;
+  uint8_t  poly_chord_step_ = 0;     // step whose chord is sounding (held across ties)
+  bool     poly_resting_    = true;
+  bool     poly_slide_gate_ = false;
+  bool     poly_emitting_   = false;  // diagnostic: poly_gate_tick is sending notes this tick
+
+  // Deferred non-resident poly edits. A per-step web edit (SysEx 0x27) to a poly
+  // slot that is NOT the active voice is buffered here and written to flash on the
+  // idle save / next reload -- never inline -- so editing a non-playing chord does
+  // not stall the playing voice. One slot at a time (the editor shows one pattern);
+  // touching a different slot flushes the previous one first.
+  PolyVoice poly_edit_;
+  int16_t   poly_edit_slot_  = -1;   // absolute slot buffered, or -1 if none
+  bool      poly_edit_dirty_ = false;
+  uint32_t  poly_edit_ms_    = 0;    // millis() of last buffered edit (idle coalescing)
+
   uint32_t step_start_us_ = 0;
 
   uint8_t get_group() const { return group_; }
@@ -162,6 +185,9 @@ struct Engine {
       GlobalSettings.load_midi_from_storage();
       direction_ = DIR_FORWARD;
     } else {
+      // Signature mismatch (fresh flash or a block-map change): wipe the whole
+      // arena so no stale records from an old layout survive at reused block ids.
+      g_flash.format();
       for (uint8_t i = 0; i < NUM_PATTERNS; ++i)
         pattern[i].Clear();
       GlobalSettings.midi_channel = 1;
@@ -170,11 +196,8 @@ struct Engine {
       memcpy(GlobalSettings.signature, sig_pew, kSigEepromLen);
       GlobalSettings.Save();
       GlobalSettings.save_midi_to_storage();
-      // Clean init: write all 192 patterns (96 super-blocks) cleared.
-      Sequence blank;
-      blank.Clear();
-      for (uint8_t s = 0; s < FB_PATTERN_SUPERBLOCKS; ++s)
-        WritePatternPair(blank, blank, s);
+      // Patterns are written lazily on first edit; unwritten blocks read back as
+      // empty (ReadPatternAt clears them), so nothing to pre-write.
       stale = false;
     }
     snapshot_pattern_hashes(); // baseline dirty detection for the active group
@@ -237,6 +260,19 @@ struct Engine {
       shadow_pp_dir_[i]    = 1;
       shadow_step_dir_[i]  = 1;
     }
+    // Variation 3 (shadow_[1]) may be polyphonic for this slot.
+    poly_active_ = GlobalSettings.var3_is_poly(s);
+    if (poly_active_) {
+      ReadPolyAt(poly_, s);
+      if (!poly_.length) poly_.length = 8;
+      poly_reset_      = true;
+      poly_time_pos_   = 0;
+      poly_chord_step_ = 0;
+      poly_resting_    = true;
+      poly_slide_gate_ = false;
+      poly_stale_      = false;
+      shadow_notecount_[1] = 0; // var3 plays from poly_; silence the mono shadow
+    }
     shadow_last_p_     = p_select;
     shadow_last_group_ = group_;
   }
@@ -279,6 +315,26 @@ struct Engine {
         shadow_slide_gate_[i] = false;
       }
     }
+    if (poly_active_) AdvancePoly();
+  }
+  // Advance the poly voice one 16th (forward only in v1). Latches the sounding
+  // chord on NOTE steps and holds it across TIE steps; computes the gate window
+  // like a shadow so MIDI note length tracks the step.
+  void AdvancePoly() {
+    PolyVoice &p = poly_;
+    const uint8_t len = p.length ? p.length : 1;
+    if (poly_reset_) { poly_reset_ = false; poly_time_pos_ = 0; }
+    else             poly_time_pos_ = uint8_t((poly_time_pos_ + 1) % len);
+    const uint8_t t = p.time(poly_time_pos_);
+    poly_resting_ = (t == 0);
+    if (t == 1) poly_chord_step_ = poly_time_pos_; // NOTE latches a new chord; TIE holds it
+    if (!poly_resting_) {
+      const uint8_t np = uint8_t((poly_time_pos_ + 1) % len);
+      const uint8_t nt = p.time(np);
+      poly_slide_gate_ = (nt == 2) || (p.slide(poly_time_pos_) && nt != 0);
+    } else {
+      poly_slide_gate_ = false;
+    }
   }
   // Apply a web-editor variation 2/3 blob (raw PATTERN_SIZE bytes, import layout)
   // to the resident shadow voice in RAM -- no flash write, no playback reset, so
@@ -299,14 +355,49 @@ struct Engine {
     shadow_dirty_ms_ = millis();
     return true;
   }
+  // Apply one buffered poly step edit to a NON-resident slot (absolute). Loads the
+  // slot from flash on first touch / slot change (flushing any previous slot first),
+  // mutates RAM only. The flash write is deferred to flush_poly_edit().
+  void poly_edit_step(uint8_t slot, uint8_t step,
+                      uint8_t n0, uint8_t n1, uint8_t n2, uint8_t n3,
+                      uint8_t t, bool acc, bool sld) {
+    if (poly_edit_slot_ != int16_t(slot)) {
+      flush_poly_edit();              // persist the previously buffered slot first
+      ReadPolyAt(poly_edit_, slot);   // cheap flash read (no erase)
+      poly_edit_slot_ = int16_t(slot);
+    }
+    uint8_t *v = poly_edit_.step(step);
+    v[0] = n0; v[1] = n1; v[2] = n2; v[3] = n3;
+    poly_edit_.set_time(step, t);
+    poly_edit_.set_accent(step, acc);
+    poly_edit_.set_slide(step, sld);
+    poly_edit_dirty_ = true;
+    poly_edit_ms_    = millis();
+  }
+  // Write the buffered non-resident poly slot to flash (if dirty) and clear it.
+  void flush_poly_edit() {
+    if (poly_edit_dirty_ && poly_edit_slot_ >= 0)
+      WritePolyAt(poly_edit_, uint8_t(poly_edit_slot_));
+    poly_edit_dirty_ = false;
+  }
+  // Discard buffered edits for `slot` -- a newer full-blob write (0x26) or a poly/
+  // mono flag change supersedes them.
+  void drop_poly_edit(uint8_t slot) {
+    if (poly_edit_slot_ == int16_t(slot)) { poly_edit_slot_ = -1; poly_edit_dirty_ = false; }
+  }
   // Persist edited shadow voices to flash (called on save and before reload).
   void persist_shadows() {
-    if (!shadow_stale_) return;
+    flush_poly_edit();   // commit buffered non-resident poly edits before reload/save
+    if (!shadow_stale_ && !poly_stale_) return;
     const uint8_t s = uint8_t(shadow_last_group_ * NUM_PATTERNS
                               + (shadow_last_p_ & uint8_t(NUM_PATTERNS - 1)));
-    for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i)
-      WritePatternAt(shadow_[i], s, uint8_t(i + 1));
+    if (shadow_stale_) {
+      WritePatternAt(shadow_[0], s, 1);                  // variation 2 (always mono)
+      if (!poly_active_) WritePatternAt(shadow_[1], s, 2); // variation 3 mono
+    }
+    if (poly_active_ && poly_stale_) WritePolyAt(poly_, s); // variation 3 poly
     shadow_stale_ = false;
+    poly_stale_   = false;
   }
   // Persist one pattern (variation 1) and re-baseline its hash.
   void persist_pattern(uint8_t idx) {
@@ -1155,7 +1246,12 @@ struct Engine {
   uint8_t get_edit_var() const { return edit_var_; }
   // Playhead of the variation being edited (its shadow for var2/3), for the chase
   // LEDs so each variation's chase follows its own length, not variation 1's.
-  uint8_t get_edit_time_pos() const { return uint8_t(edit_seq_view().time_pos & (MAX_STEPS - 1)); }
+  uint8_t get_edit_time_pos() const {
+    // Poly var3 plays from poly_ (its mono shadow is frozen), so its chase must
+    // follow poly_time_pos_, not the silenced shadow_[1].
+    if (poly_active_ && edit_var_ == 2) return uint8_t(poly_time_pos_ & (MAX_STEPS - 1));
+    return uint8_t(edit_seq_view().time_pos & (MAX_STEPS - 1));
+  }
   bool SetEditVar(uint8_t v) { if (v >= NUM_VARIATIONS || v == edit_var_) return false; edit_var_ = v; return true; }
   // Advance the edit cursor: variation 1 uses the full engine advance (and the
   // playback sync when requested); a shadow just steps its own cursor forward.
