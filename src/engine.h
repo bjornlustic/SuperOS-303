@@ -104,6 +104,7 @@ struct Engine {
 
   bool slide_gate = false;
   bool stale = false;
+  uint32_t saved_hash_[NUM_PATTERNS] = {}; // per-pattern content hash at last save/load (dirty detection)
   bool resting = false;
 
   uint32_t step_start_us_ = 0;
@@ -130,6 +131,7 @@ struct Engine {
       sequence_rebuild_pitch_count(pattern[i]);
       normalize_pattern_times(pattern[i]);
     }
+    snapshot_pattern_hashes();
     stale = false;
   }
 
@@ -169,6 +171,7 @@ struct Engine {
           WritePattern(pattern[i], i, b);
       stale = false;
     }
+    snapshot_pattern_hashes(); // baseline dirty detection for the active group
     // Track storage format check: bump kTrackFormatVersion when the layout
     // changes. On mismatch, fill the TRACK_DATA region with 0xFF (the AVR
     // "fresh EEPROM" sentinel) so LoadTrack's uninit detection fires and
@@ -183,13 +186,42 @@ struct Engine {
     }
   }
 
+  // 32-bit FNV-1a over a pattern's persisted bytes (the PATTERN_SIZE-byte prefix
+  // of Sequence). Used only for change detection; collision ~1/4e9.
+  static uint32_t pattern_hash(const Sequence &s) {
+    const uint8_t *p = &s.pitch[0];
+    uint32_t h = 2166136261UL;
+    for (uint8_t i = 0; i < PATTERN_SIZE; ++i) { h ^= p[i]; h *= 16777619UL; }
+    return h;
+  }
+  // Re-baseline the dirty detector for the whole active group (after load/switch).
+  void snapshot_pattern_hashes() {
+    for (uint8_t i = 0; i < NUM_PATTERNS; ++i) saved_hash_[i] = pattern_hash(pattern[i]);
+  }
+  // Write one pattern to flash and update its saved baseline (keeps the dirty
+  // detector in sync across the RUN-stop save and the web-editor save paths).
+  void persist_pattern(uint8_t idx) {
+    idx &= uint8_t(NUM_PATTERNS - 1);
+    WritePattern(pattern[idx], idx, group_);
+    saved_hash_[idx] = pattern_hash(pattern[idx]);
+  }
+
   void Save(int pidx = -1) {
     if (!stale) return;
-    if (pidx < 0) {
-      for (uint8_t i = 0; i < NUM_PATTERNS; ++i)
-        WritePattern(pattern[i], i, group_);
-    } else
-      WritePattern(pattern[pidx], pidx, group_);
+    if (pidx >= 0) {
+      persist_pattern(uint8_t(pidx));
+    } else {
+      // Write only the patterns whose content actually changed since the last
+      // save/load, so a stop after editing one pattern writes one pattern, not
+      // all 16 (less flash wear, shorter LED-refresh stall).
+      for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
+        const uint32_t h = pattern_hash(pattern[i]);
+        if (h != saved_hash_[i]) {
+          WritePattern(pattern[i], i, group_);
+          saved_hash_[i] = h;
+        }
+      }
+    }
     stale = false;
   }
 
@@ -1163,7 +1195,7 @@ struct Engine {
     if (s.pitch_pos >= int(s.get_pitch_count()))
       s.pitch_pos = (s.get_pitch_count() > 0) ? int(s.get_pitch_count() - 1) : 0;
     if (persist_eeprom)
-      WritePattern(pattern[idx], idx, group_);
+      persist_pattern(idx);
     return true;
   }
 

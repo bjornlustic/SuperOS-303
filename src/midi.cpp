@@ -859,7 +859,7 @@ void midi_flush_pending_pattern_saves(Engine &engine) {
   for (uint8_t i = 0; i < NUM_PATTERNS; ++i) {
     const uint16_t bit = uint16_t(1u << i);
     if (s_pat_dirty_mask & bit) {
-      WritePattern(engine.pattern[i], i, engine.get_group());
+      engine.persist_pattern(i);
       s_pat_dirty_mask &= ~bit;
       return; // one per tick
     }
