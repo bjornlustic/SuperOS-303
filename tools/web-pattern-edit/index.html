@@ -904,17 +904,21 @@
   var LEN_OFF        = 91;
   var PACKED_SIZE    = 106; // 92 raw -> 13 full chunks (104 B) + 1 partial (2 B)
 
-  // Variation-3 poly blob (matches firmware poly.h). Notes pack 4x6 bits = 3
-  // bytes/step; then time/accent/slide bitmaps + dir + len. 226 raw -> 259 packed.
-  var POLY_BLOB_SIZE = 226;
+  // Variation-3 poly blob (matches firmware poly.h, chord-list model). A CHORD STREAM
+  // (notes pack 4x6 bits = 3 bytes/chord, accent/slide per chord) plus an independent
+  // per-step TIME stream; the K-th NOTE step pulls chord K. 227 raw -> 260 packed.
+  var POLY_BLOB_SIZE = 227;
   var POLY_VOICES    = 4;
   var POLY_EMPTY     = 0x3F;
-  var POLY_TIME_OFF  = 192;  // MAX_STEPS*3
-  var POLY_ACC_OFF   = 208;  // + MAX_STEPS/4
-  var POLY_SLD_OFF   = 216;  // + MAX_STEPS/8
-  var POLY_DIR_OFF   = 224;
-  var POLY_LEN_OFF   = 225;
-  var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 259
+  var POLY_DEFAULT   = 0x10;  // semi=0, oct=1 (centre C)
+  var POLY_CHORDS    = 64;    // max chords = max NOTE events
+  var POLY_TIME_OFF  = 192;   // POLY_CHORDS*3
+  var POLY_ACC_OFF   = 208;   // + MAX_STEPS/4
+  var POLY_SLD_OFF   = 216;   // + POLY_CHORDS/8
+  var POLY_CNT_OFF   = 224;   // chord_count
+  var POLY_DIR_OFF   = 225;
+  var POLY_LEN_OFF   = 226;
+  var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 260
 
   var PITCH_PACK_MASK = 0x3F;
   var PITCH_MAX       = 0x3C; // semi=12 | (oct=3 << 4)
@@ -1125,38 +1129,73 @@
   // ── Variation-3 poly blob accessors (mirror firmware poly.h) ───────────
   function makeBlankPoly() {
     var b = new Uint8Array(POLY_BLOB_SIZE);
-    for (var s = 0; s < MAX_STEPS; s++) polySetStepNotes(b, s, []); // all POLY_EMPTY
+    for (var i = 0; i < POLY_CHORDS; i++) polySetChordNotes(b, i, []); // all POLY_EMPTY
+    b[POLY_CNT_OFF] = 0;
     b[POLY_LEN_OFF] = 16;
     return b;
   }
-  // Decode the 4 packed 6-bit notes at step s (POLY_EMPTY = empty voice).
-  function polyStepNotes(blob, s) {
-    var o = s * 3, b0 = blob[o], b1 = blob[o+1], b2 = blob[o+2];
+  // ---- chord stream (indexed by CHORD list position) ----
+  // Decode the 4 packed 6-bit voices of chord `ci` (POLY_EMPTY = empty voice).
+  function polyChordNotes(blob, ci) {
+    var o = ci * 3, b0 = blob[o], b1 = blob[o+1], b2 = blob[o+2];
     return [ b0 & 0x3F,
              ((b0 >> 6) | (b1 << 2)) & 0x3F,
              ((b1 >> 4) | (b2 << 4)) & 0x3F,
              (b2 >> 2) & 0x3F ];
   }
-  function polySetStepNotes(blob, s, notes) {
+  function polySetChordNotes(blob, ci, notes) {
     var v = [POLY_EMPTY, POLY_EMPTY, POLY_EMPTY, POLY_EMPTY];
     for (var i = 0; i < notes.length && i < POLY_VOICES; i++) v[i] = notes[i] & 0x3F;
-    var o = s * 3;
+    var o = ci * 3;
     blob[o]   = (v[0] | (v[1] << 6)) & 0xFF;
     blob[o+1] = ((v[1] >> 2) | (v[2] << 4)) & 0xFF;
     blob[o+2] = ((v[2] >> 4) | (v[3] << 2)) & 0xFF;
   }
+  function polyAccent(blob, ci) { return (blob[POLY_ACC_OFF + (ci>>3)] >> (ci&7)) & 1; }
+  function polySlide(blob, ci)  { return (blob[POLY_SLD_OFF + (ci>>3)] >> (ci&7)) & 1; }
+  function polySetAccent(blob, ci, on) {
+    var i = POLY_ACC_OFF + (ci>>3), m = 1 << (ci&7);
+    blob[i] = on ? (blob[i] | m) : (blob[i] & ~m);
+  }
+  function polySetSlide(blob, ci, on) {
+    var i = POLY_SLD_OFF + (ci>>3), m = 1 << (ci&7);
+    blob[i] = on ? (blob[i] | m) : (blob[i] & ~m);
+  }
+  function polyChordCount(blob) { return blob[POLY_CNT_OFF] | 0; }
+  // ---- time stream (per step) + the two-stream mapping ----
   function polyTime(blob, s)   { return (blob[POLY_TIME_OFF + (s>>2)] >> (2*(s&3))) & 3; }
   function polySetTime(blob, s, t) {
     var i = POLY_TIME_OFF + (s>>2), sh = 2*(s&3);
     blob[i] = (blob[i] & ~(3 << sh)) | ((t & 3) << sh);
   }
-  function polyAccent(blob, s) { return (blob[POLY_ACC_OFF + (s>>3)] >> (s&7)) & 1; }
-  function polySlide(blob, s)  { return (blob[POLY_SLD_OFF + (s>>3)] >> (s&7)) & 1; }
   function polyLen(blob)       { return blob[POLY_LEN_OFF] || 16; }
-  function polyNoteCount(blob, s) {
-    var v = polyStepNotes(blob, s), n = 0;
-    for (var i = 0; i < POLY_VOICES; i++) if (v[i] !== POLY_EMPTY) n++;
+  // NOTE events strictly before step s -> the chord-stream index that step pulls.
+  function polyChordIndexForStep(blob, s) {
+    var n = 0;
+    for (var i = 0; i < s; i++) if (polyTime(blob, i) === 1) n++;
     return n;
+  }
+  function polyNoteCount(blob, len) {
+    var L = (len === undefined) ? polyLen(blob) : len, n = 0;
+    for (var i = 0; i < L; i++) if (polyTime(blob, i) === 1) n++;
+    return n;
+  }
+  // Grow the chord stream so every NOTE event has a chord; new chords default to a
+  // single centre-C note (never shrinks -- removing a NOTE keeps its chord queued).
+  function polyEnsureChords(blob, len) {
+    var nc = polyNoteCount(blob, len), cc = polyChordCount(blob);
+    while (cc < nc && cc < POLY_CHORDS) {
+      polySetChordNotes(blob, cc, [POLY_DEFAULT]);
+      polySetAccent(blob, cc, false);
+      polySetSlide(blob, cc, false);
+      cc++;
+    }
+    if (cc !== polyChordCount(blob)) blob[POLY_CNT_OFF] = cc;
+  }
+  // The 4 voices a step pulls (its chord), filtered to present voices.
+  function polyStepVoices(blob, s) {
+    return polyChordNotes(blob, polyChordIndexForStep(blob, s))
+             .filter(function(x){ return x !== POLY_EMPTY; });
   }
   // Is variation 3 of slot (g,p) poly?
   function isVar3Poly(g, p) { return varMode[g][p][2] === 'poly'; }
@@ -1783,8 +1822,16 @@
   function syncPatternToolbar() {
     var blob = activeBlob();
     var lenEl = document.getElementById('patLen');
-    lenEl.max = String(patternMaxSteps(blob));
-    lenEl.value = String(getLength(blob));
+    // Variation 3 poly has its OWN length (POLY_LEN_OFF), independent of the mono
+    // var3 blob. Show that so the editor/chase use the poly length, not the mono one.
+    if (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat)) {
+      var pb = polyStore[activeGroup][activePat];
+      lenEl.max = String(MAX_STEPS);
+      lenEl.value = String((pb && pb[POLY_LEN_OFF]) || getLength(blob) || 16);
+    } else {
+      lenEl.max = String(patternMaxSteps(blob));
+      lenEl.value = String(getLength(blob));
+    }
     var tr = document.getElementById('patTr');
     if (tr) tr.value = String(getTranspose(blob));
     var tBtn = document.getElementById('btnTriplet');
@@ -1915,7 +1962,10 @@
 
   function currentPatLen() {
     var blob = activeBlob();
-    return Math.min(patternMaxSteps(blob), Math.max(1, Number(document.getElementById('patLen').value) | 0));
+    var v = Math.max(1, Number(document.getElementById('patLen').value) | 0);
+    // Poly var3 has no triplet mode: cap at MAX_STEPS, not the mono blob's triplet cap.
+    if (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat)) return Math.min(MAX_STEPS, v);
+    return Math.min(patternMaxSteps(blob), v);
   }
 
   function updateDisplayLabels(blob, s, len, nameEl) {
@@ -2206,39 +2256,53 @@
     if (!polyStore[g][p]) { polyStore[g][p] = makeBlankPoly(); polyStore[g][p][POLY_LEN_OFF] = currentPatLen(); }
     return polyStore[g][p];
   }
-  function polyStepArr(blob, s) {
-    return polyStepNotes(blob, s).filter(function(x){ return x !== POLY_EMPTY; });
-  }
   // Per-step device push: send just the edited step (12-byte SysEx 0x27) instead of
-  // the whole 226-byte blob (~85ms on the wire), so editing a chord note no longer
-  // stalls the running sequencer. Full-blob 0x26 (sendPoly) is reserved for the
-  // mode toggle and bulk sync.
+  // the whole blob (~85ms on the wire), so editing a chord note no longer stalls the
+  // running sequencer. The wire is step-indexed; the firmware stores into the chord
+  // stream at the step's note-index. Full-blob 0x26 (sendPoly) is for mode toggle/sync.
   function polyEdited(s) {
     var g = activeGroup, p = activePat;
     varMode[g][p][2] = 'poly';
+    polyEnsureChords(curPolyBlob(), currentPatLen());
     saveGroupsToLS();
     sendPolyStep(g, p, s);
     renderGrid();
   }
+  // Add a voice to the chord this NOTE step pulls. On a REST, promote it to a NOTE
+  // first (which inserts a chord into the list). TIE steps hold the prior chord.
   function addPolyNote(s) {
-    var blob = curPolyBlob(), arr = polyStepArr(blob, s);
+    var blob = curPolyBlob();
+    if (polyTime(blob, s) === 0) { polySetTime(blob, s, 1); polyEnsureChords(blob, currentPatLen()); }
+    if (polyTime(blob, s) !== 1) return;
+    var ci = polyChordIndexForStep(blob, s);
+    var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
     if (arr.length >= POLY_VOICES) return;
     var lin = 12; // default centre C; bump to the next pitch not already present
     while (arr.indexOf(linearToPacked(lin)) !== -1 && lin < 48) lin++;
     arr.push(linearToPacked(lin));
-    polySetStepNotes(blob, s, arr);
-    if (polyTime(blob, s) === 0) polySetTime(blob, s, 1); // adding to a rest promotes it to NOTE
+    polySetChordNotes(blob, ci, arr);
     polyEdited(s);
   }
   function removePolyNote(s, packed) {
     var blob = curPolyBlob();
-    var arr = polyStepArr(blob, s).filter(function(x){ return x !== packed; });
-    polySetStepNotes(blob, s, arr);                       // time unchanged: voices and R/T/N are independent
+    if (polyTime(blob, s) !== 1) return;
+    var ci = polyChordIndexForStep(blob, s);
+    var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY && x !== packed; });
+    polySetChordNotes(blob, ci, arr);
     polyEdited(s);
   }
-  function togglePolyBit(off, s) {
+  function togglePolyAccent(s) {
     var blob = curPolyBlob();
-    blob[off + (s >> 3)] ^= (1 << (s & 7));
+    if (polyTime(blob, s) !== 1) return;
+    var ci = polyChordIndexForStep(blob, s);
+    polySetAccent(blob, ci, !polyAccent(blob, ci));
+    polyEdited(s);
+  }
+  function togglePolySlide(s) {
+    var blob = curPolyBlob();
+    if (polyTime(blob, s) !== 1) return;
+    var ci = polyChordIndexForStep(blob, s);
+    polySetSlide(blob, ci, !polySlide(blob, ci));
     polyEdited(s);
   }
   // Save + push the edited step without a full re-render (DOM already updated live
@@ -2285,13 +2349,15 @@
     var dragging = false;
     function apply(clientY) {
       var blob = curPolyBlob();
-      var arr = polyStepArr(blob, s);
+      if (polyTime(blob, s) !== 1) return;
+      var ci = polyChordIndexForStep(blob, s);
+      var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
       if (vi >= arr.length) return;
       var v = valueFromY(clientY);
       var np = linearToPacked(v);
       for (var i = 0; i < arr.length; i++) if (i !== vi && arr[i] === np) return; // collision -> clamp
       arr[vi] = np;
-      polySetStepNotes(blob, s, arr);
+      polySetChordNotes(blob, ci, arr);
       polyKnobPosition(fill, thumb, v);
       nameEl.textContent = noteNameFromLinear(v);
     }
@@ -2307,8 +2373,32 @@
     var nxt = (s + 1) % L, prv = (s + L - 1) % L;
     if (t === 0 && polyTime(blob, nxt) === 2) { showErrorToast('Cannot put rest before a tie.'); return; }
     if (t === 2 && polyTime(blob, prv) === 0) { showErrorToast('Cannot put tie after a rest.'); return; }
-    polySetTime(blob, s, t); // chord is kept: rest just silences it (same as mono)
+    polySetTime(blob, s, t);   // shifts which chord each later NOTE pulls; ensure covers new NOTEs
+    polyEnsureChords(blob, L);
     polyEdited(s);
+  }
+  // Chord clipboard: copy a step's chord (notes + accent + slide) and paste it onto
+  // another step. Paste promotes a rest to a NOTE so you can stamp a chord anywhere.
+  var polyChordClip = null; // { notes:[4 voices], accent, slide } or null
+  function copyPolyChord(s) {
+    var blob = curPolyBlob();
+    if (polyTime(blob, s) !== 1) return;            // only NOTE steps hold a chord
+    var ci = polyChordIndexForStep(blob, s);
+    polyChordClip = { notes: polyChordNotes(blob, ci),
+                      accent: !!polyAccent(blob, ci),
+                      slide:  !!polySlide(blob, ci) };
+    renderGrid();                                   // arm the paste buttons
+  }
+  function pastePolyChord(s) {
+    if (!polyChordClip) { showErrorToast('Copy a chord first'); return; }
+    var blob = curPolyBlob();
+    if (polyTime(blob, s) === 2) return;            // a tie holds the prior chord
+    if (polyTime(blob, s) === 0) { polySetTime(blob, s, 1); polyEnsureChords(blob, currentPatLen()); }
+    var ci = polyChordIndexForStep(blob, s);
+    polySetChordNotes(blob, ci, polyChordClip.notes);
+    polySetAccent(blob, ci, polyChordClip.accent);
+    polySetSlide(blob, ci, polyChordClip.slide);
+    polyEdited(s);                                  // saves + pushes the step (0x27) + re-renders
   }
   function buildPolyCard(blob, s) {
     var t = polyTime(blob, s);
@@ -2341,30 +2431,58 @@
       return card;
     }
 
-    var present = polyStepArr(blob, s); // a rest step keeps its (silent) chord, editable
     var notes = document.createElement('div'); notes.className = 'poly-notes';
-    present.forEach(function(packed, vi){ notes.appendChild(buildPolyNoteRow(s, vi, packed)); });
-    if (present.length < POLY_VOICES) {
-      var add = document.createElement('button'); add.className = 'poly-add';
-      add.textContent = '+ note'; add.addEventListener('click', function(){ addPolyNote(s); });
-      notes.appendChild(add);
+    if (t === 1) {
+      // NOTE: show the chord this step pulls from the list (chord K for the K-th NOTE).
+      var ci = polyChordIndexForStep(blob, s);
+      var present = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
+      present.forEach(function(packed, vi){ notes.appendChild(buildPolyNoteRow(s, vi, packed)); });
+      if (present.length < POLY_VOICES) {
+        var add = document.createElement('button'); add.className = 'poly-add';
+        add.textContent = '+ note'; add.addEventListener('click', function(){ addPolyNote(s); });
+        notes.appendChild(add);
+      }
+    } else {
+      // REST: silent, pulls no chord. Offer to make it a NOTE (which inserts a chord).
+      var addr = document.createElement('button'); addr.className = 'poly-add';
+      addr.textContent = '+ note'; addr.addEventListener('click', function(){ addPolyNote(s); });
+      notes.appendChild(addr);
     }
     card.appendChild(notes);
 
-    var flags = document.createElement('div'); flags.className = 'poly-flags';
-    var acc = document.createElement('button');
-    acc.className = 't-btn' + (polyAccent(blob, s) ? ' is-on' : ''); acc.textContent = 'Acc';
-    acc.addEventListener('click', function(){ togglePolyBit(POLY_ACC_OFF, s); });
-    var sld = document.createElement('button');
-    sld.className = 't-btn' + (polySlide(blob, s) ? ' is-on' : ''); sld.textContent = 'Sld';
-    sld.addEventListener('click', function(){ togglePolyBit(POLY_SLD_OFF, s); });
-    flags.appendChild(acc); flags.appendChild(sld);
-    card.appendChild(flags);
+    if (t === 1) { // accent/slide ride with the chord; only meaningful on a NOTE
+      var ci2 = polyChordIndexForStep(blob, s);
+      var flags = document.createElement('div'); flags.className = 'poly-flags';
+      var acc = document.createElement('button');
+      acc.className = 't-btn' + (polyAccent(blob, ci2) ? ' is-on' : ''); acc.textContent = 'Acc';
+      acc.addEventListener('click', function(){ togglePolyAccent(s); });
+      var sld = document.createElement('button');
+      sld.className = 't-btn' + (polySlide(blob, ci2) ? ' is-on' : ''); sld.textContent = 'Sld';
+      sld.addEventListener('click', function(){ togglePolySlide(s); });
+      flags.appendChild(acc); flags.appendChild(sld);
+      card.appendChild(flags);
+    }
+
+    // Copy this step's chord / paste a copied chord here (paste makes a rest a NOTE).
+    var clip = document.createElement('div'); clip.className = 'poly-flags';
+    if (t === 1) {
+      var cp = document.createElement('button'); cp.className = 't-btn';
+      cp.textContent = 'Copy'; cp.title = 'Copy this chord';
+      cp.addEventListener('click', function(){ copyPolyChord(s); });
+      clip.appendChild(cp);
+    }
+    var pst = document.createElement('button'); pst.className = 't-btn';
+    pst.textContent = 'Paste'; pst.title = 'Paste the copied chord onto this step';
+    if (!polyChordClip) pst.style.opacity = '0.4';   // dimmed until a chord is copied
+    pst.addEventListener('click', function(){ pastePolyChord(s); });
+    clip.appendChild(pst);
+    card.appendChild(clip);
     return card;
   }
   function renderPolyEditor(grid, len) {
     var blob = curPolyBlob();
     blob[POLY_LEN_OFF] = len;
+    polyEnsureChords(blob, len);
     grid.className = 'seq-grid';
     for (var s = 0; s < len; s++) grid.appendChild(buildPolyCard(blob, s));
   }
@@ -2696,18 +2814,20 @@
     sendSysex(msg);
   }
   function sendPolyFlag(p, poly) { sendSysex(new Uint8Array([0x7d, 0x29, p & 15, poly ? 1 : 0])); }
-  // Push ONE poly step (12-byte SysEx 0x27) instead of the whole 226-byte blob, so
-  // editing a chord note doesn't stall the running sequencer. Voices ride raw 6-bit
-  // (POLY_EMPTY = 0x3f for an empty voice); flags bit0=accent bit1=slide.
+  // Push ONE poly step (12-byte SysEx 0x27) instead of the whole blob, so editing a
+  // chord note doesn't stall the running sequencer. Wire is step-indexed and carries
+  // the chord this step pulls; the firmware stores it at the step's note-index. Voices
+  // ride raw 6-bit (POLY_EMPTY = 0x3f for empty); flags bit0=accent bit1=slide.
   function sendPolyStep(g, p, s) {
     if (g !== hwGroup) return;
     var blob = polyStore[g][p];
     if (!blob) return;
-    var v = polyStepNotes(blob, s);
+    var ci = polyChordIndexForStep(blob, s);
+    var v  = polyChordNotes(blob, ci);
     sendSysex(new Uint8Array([0x7d, 0x27, p & 15, s & 0x3f,
       v[0] & 0x3f, v[1] & 0x3f, v[2] & 0x3f, v[3] & 0x3f,
       polyTime(blob, s) & 3,
-      (polyAccent(blob, s) ? 1 : 0) | (polySlide(blob, s) ? 2 : 0)]));
+      (polyAccent(blob, ci) ? 1 : 0) | (polySlide(blob, ci) ? 2 : 0)]));
   }
   function sendPattern(pat, blob, varIdx) {
     var raw = buildWireFromBlob(blob);
@@ -2778,15 +2898,17 @@
     sendCfgWrite(ch, clk | (thru << 1), currentDirection, bri, hwVar2Channel, hwVar3Channel);
   }
 
-  function sendStepUpdate(pat, step, pitchByte, timeNibble) {
-    sendSysex(new Uint8Array([
+  function sendStepUpdate(pat, step, pitchByte, timeNibble, varIdx) {
+    var inner = [
       0x7d, 0x16,
       pat & 0x0f,
       step & 0x3f,
       pitchByte & 0x7f,
       (pitchByte >> 7) & 0x01,
       timeNibble & 0x0f
-    ]));
+    ];
+    if (varIdx) inner.push(varIdx & 0x03); // var2/var3 shadow target (omitted = var1)
+    sendSysex(new Uint8Array(inner));
   }
   function sendLengthUpdate(pat, len) {
     sendSysex(new Uint8Array([0x7d, 0x18, pat & 0x0f, len & 0x7f]));
@@ -2802,14 +2924,15 @@
    *    0x16 step=S, pitchByte=new, timeNib=NOTE.
    * Length and ratchets ride along after.
    */
-  function sendDelta(pat, blob) {
+  function sendDelta(pat, blob, varIdx) {
+    varIdx = varIdx || 0;
     var len = getLength(blob);
     var prevTime = lastSentBlob;
     // 1) time changes
     for (var i = 0; i < len; i++) {
       var tnow = getTime(blob, i);
       var tprev = prevTime ? getTime(prevTime, i) : -1;
-      if (tnow !== tprev) sendStepUpdate(pat, i, PITCH_EMPTY, tnow);
+      if (tnow !== tprev) sendStepUpdate(pat, i, PITCH_EMPTY, tnow, varIdx);
     }
     // 2) pitch stream slot changes — map slot back to its owning NOTE step
     var nc = noteCount(blob, len);
@@ -2824,16 +2947,20 @@
             count++;
           }
         }
-        if (step >= 0 && pcur !== PITCH_EMPTY) sendStepUpdate(pat, step, pcur, 1);
+        if (step >= 0 && pcur !== PITCH_EMPTY) sendStepUpdate(pat, step, pcur, 1, varIdx);
       }
     }
-    // 3) ratchets
-    for (var rj = 0; rj < len; rj++) {
-      var curRat  = getRatchet(blob, rj);
-      var prevRat = prevTime ? getRatchet(prevTime, rj) : 0;
-      if (curRat !== prevRat) sendRatchetUpdate(pat, rj, curRat);
+    // 3) ratchets + length: variation 1 only (shadow voices have neither per-step
+    //    ratchets nor a per-step length SysEx; the caller only deltas when the
+    //    shadow length is unchanged, else it sends the full blob).
+    if (varIdx === 0) {
+      for (var rj = 0; rj < len; rj++) {
+        var curRat  = getRatchet(blob, rj);
+        var prevRat = prevTime ? getRatchet(prevTime, rj) : 0;
+        if (curRat !== prevRat) sendRatchetUpdate(pat, rj, curRat);
+      }
+      if (!prevTime || len !== getLength(prevTime)) sendLengthUpdate(pat, len);
     }
-    if (!prevTime || len !== getLength(prevTime)) sendLengthUpdate(pat, len);
     lastSentBlob = new Uint8Array(blob);
     lastSentPat  = pat;
   }
@@ -2874,9 +3001,27 @@
       // Variations 2/3 are full-pushed to that variation (device writes its flash
       // half and reloads the shadow voice). Variation 1 uses the delta path below.
       if (curVar !== VAR_303) {
-        sendPattern(pat, blob, curVar);
-        lastSentBlob = new Uint8Array(blob);
-        lastSentPat  = pat;
+        // A poly variation-3 slot must push the chord blob (0x26), never a mono var3
+        // blob (0x12 var=2) -- that would re-arm the mono shadow and double the voice.
+        if (curVar === 2 && isVar3Poly(activeGroup, activePat)) {
+          sendPoly(activeGroup, activePat);
+          return;
+        }
+        // var2 / var3-mono: when editing the LIVE resident slot with only time/pitch
+        // changed, send per-step deltas (0x16 + variation byte) instead of the heavy
+        // full-blob 0x12 -- the full blob is what lags the other variations. Length/
+        // meta change, or a non-resident/stopped slot, still uses the full blob.
+        var residentLive = (activeGroup === hwGroup && activePat === playingPat && clkRunning);
+        var have = !!lastSentBlob && lastSentPat === pat;
+        var lenSame  = have && (getLength(blob) === getLength(lastSentBlob));
+        var metaSame = have && (blob[RES0_OFF] === lastSentBlob[RES0_OFF]);
+        if (residentLive && have && lenSame && metaSame) {
+          sendDelta(pat, blob, curVar);  // per-step; updates lastSentBlob/lastSentPat
+        } else {
+          sendPattern(pat, blob, curVar);
+          lastSentBlob = new Uint8Array(blob);
+          lastSentPat  = pat;
+        }
         return;
       }
       var haveBaseline = !!lastSentBlob && lastSentPat === pat;
@@ -3037,6 +3182,31 @@
         switchToPat(activePat);
       }
       if (expectDump === 0) sendCfgRead();
+      return;
+    }
+
+    if (cmd === 0x27 && bytes.length >= 10) { // variation-3 poly step from hardware (mirror panel edit)
+      var qg = (hwGroup >= 0) ? hwGroup : activeGroup;
+      var qpat = bytes[2] & 0x0f;
+      var qstep = bytes[3] & 0x3f;
+      var qt = bytes[8] & 3;
+      if (!polyStore[qg][qpat]) { polyStore[qg][qpat] = makeBlankPoly(); }
+      varMode[qg][qpat][2] = 'poly';
+      var qblob = polyStore[qg][qpat];
+      polySetTime(qblob, qstep, qt);
+      polyEnsureChords(qblob, polyLen(qblob));
+      if (qt === 1) { // NOTE: write the chord this step pulls from the list
+        var qci = polyChordIndexForStep(qblob, qstep);
+        polySetChordNotes(qblob, qci, [bytes[4]&0x3f, bytes[5]&0x3f, bytes[6]&0x3f, bytes[7]&0x3f]);
+        polySetAccent(qblob, qci, (bytes[9] & 1) !== 0);
+        polySetSlide(qblob, qci, (bytes[9] & 2) !== 0);
+      }
+      saveGroupsToLS();
+      if (qg === activeGroup && qpat === activePat &&
+          slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat)) {
+        renderGrid();
+      }
+      log('Poly step ' + (qstep+1) + ' <- hardware', 'log-syx');
       return;
     }
 

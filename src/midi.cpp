@@ -31,7 +31,10 @@
 #include "midi_api.h"
 
 struct SuperOsMidiSettings {
-  static const bool UseRunningStatus = false;
+  // Running status compresses back-to-back same-channel messages (e.g. the variation-3
+  // poly chord: 4 note-ons on one channel -> status byte only on the first), tightening
+  // onset spread. Standard MIDI; set false if a receiver mishandles it.
+  static const bool UseRunningStatus = true;
   static const bool HandleNullVelocityNoteOnAsNoteOff = true;
   static const bool Use1ByteParsing = true;
   static const unsigned SysExMaxSize = 288; // fits the ~264-byte poly blob set (0x26)
@@ -332,13 +335,26 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     s_dump_active = true;
     dump_try_advance();
     break;
-  case 0x16: { // host → 303: set single step (pitch + time)
+  case 0x16: { // host → 303: set single step (pitch + time); optional trailing <var>
     if (n < 7 || !g_eng) return;
     const uint8_t pat  = p[2] & 0x0F;
     const uint8_t step = p[3] & 0x3F;
     const uint8_t pitchByte = static_cast<uint8_t>((p[4] & 0x7F) | ((p[5] & 0x01) << 7));
     const uint8_t timeNib   = p[6] & 0x0F;
-    Sequence &seq = g_eng->pattern[pat];
+    const uint8_t var = (n >= 8) ? (p[7] & 0x03) : 0; // 0=var1, 1/2=var2/var3 shadow
+    // Variations 2/3 are MIDI-only shadow voices. Per-step edits apply only to the
+    // RESIDENT (active-slot) shadow in RAM -- no flash, no full-blob stall -- which is
+    // what fixes the var2 note/rest lag. The web only sends a per-step var>0 message
+    // for the live resident slot; anything else still goes via the full 0x12 blob.
+    Sequence *seqp;
+    if (var == 0) {
+      seqp = &g_eng->pattern[pat];
+    } else if (var < NUM_VARIATIONS && (pat & uint8_t(NUM_PATTERNS - 1)) == g_eng->get_patsel()) {
+      seqp = &g_eng->shadow_[var - 1];
+    } else {
+      return; // non-resident shadow per-step not supported (web sends the full blob)
+    }
+    Sequence &seq = *seqp;
     if (step >= seq.length) return;
     sequence_write_time_with_pitch_sync(seq, step, timeNib);
     // pitchByte == PITCH_EMPTY (0xFF) is the editor's "time-only edit"
@@ -348,8 +364,14 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
       if (slot < seq.get_pitch_count())
         seq.pitch[slot] = pitchByte;
     }
-    g_eng->stale = true;
-    mark_pat_dirty(pat);
+    if (var == 0) {
+      g_eng->stale = true;
+      mark_pat_dirty(pat);
+    } else {
+      g_eng->shadow_notecount_[var - 1] = seq.note_count(); // keep the gate-follow in sync
+      g_eng->shadow_stale_ = true;
+      g_eng->shadow_dirty_ms_ = millis();
+    }
     break;
   }
   case 0x18: { // host → 303: set pattern length
@@ -428,6 +450,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     }
     if (g_eng->poly_active_ && slot == g_eng->abs_slot(g_eng->get_patsel())) {
       g_eng->poly_.deserialize(raw);
+      g_eng->poly_.ensure_chords_for_notes();
       g_eng->poly_stale_ = true;
     } else {
       PolyVoice pv; pv.deserialize(raw);
@@ -444,7 +467,9 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
   case 0x27: { // host -> 303: set ONE variation-3 poly step (efficient single-step edit)
     // Payload: <pat> <step> <n0> <n1> <n2> <n3> <time> <flags>
     // n0..n3 = 6-bit packed voices (POLY_EMPTY = empty); flags bit0=accent bit1=slide.
-    // Avoids resending the whole 226-byte blob (a ~85ms wire stall) for each note change.
+    // Wire is STEP-indexed; the firmware stores into the chord stream at the step's
+    // note-index (set_step), so chords pull from a list like var1/2. Avoids resending
+    // the whole 227-byte blob (a ~85ms wire stall) for each note change.
     if (n < 10) { send_ack(1); return; }
     const uint8_t pat  = p[2] & 0x0F;
     const uint8_t step = p[3] & 0x3F;
@@ -457,12 +482,8 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const bool resident = g_eng->poly_active_ &&
                           slot == g_eng->abs_slot(g_eng->get_patsel());
     if (resident) {
-      PolyVoice &pv = g_eng->poly_;
-      uint8_t *v = pv.step(step);
-      v[0] = p[4] & 0x3F; v[1] = p[5] & 0x3F; v[2] = p[6] & 0x3F; v[3] = p[7] & 0x3F;
-      pv.set_time(step, p[8] & 0x03);
-      pv.set_accent(step, p[9] & 0x01);
-      pv.set_slide(step, (p[9] >> 1) & 0x01);
+      g_eng->poly_.set_step(step, p[4] & 0x3F, p[5] & 0x3F, p[6] & 0x3F, p[7] & 0x3F,
+                            p[8] & 0x03, p[9] & 0x01, (p[9] >> 1) & 0x01);
       g_eng->poly_stale_      = true;
       g_eng->shadow_dirty_ms_ = millis(); // coalesced flush when stopped + quiet
     } else {
@@ -779,6 +800,23 @@ void midi_send_poly_flag(uint8_t pat, uint8_t flag) {
   tx_push_message(inner, 4);
 }
 
+// Broadcast ONE variation-3 poly step (device -> host) after a hardware chord edit,
+// so the web editor mirrors panel edits live. Same 0x27 wire as the host->device edit;
+// the device only sends this on hardware edits and never echoes a received 0x27, so
+// there is no feedback loop (mirrors the mono 0x16 model).
+void midi_send_poly_step(uint8_t pat, uint8_t step) {
+  if (!g_eng) return;
+  const PolyVoice &p = g_eng->poly_;
+  const uint8_t ci = p.chord_index_for_step(step);
+  const uint8_t *v = p.chord(ci);
+  const uint8_t flags = uint8_t((p.accent(ci) ? 1 : 0) | (p.slide(ci) ? 2 : 0));
+  const uint8_t inner[10] = {0x7D, 0x27, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F),
+                             (uint8_t)(v[0] & 0x3F), (uint8_t)(v[1] & 0x3F),
+                             (uint8_t)(v[2] & 0x3F), (uint8_t)(v[3] & 0x3F),
+                             (uint8_t)(p.time(step) & 0x03), flags};
+  tx_push_message(inner, 10);
+}
+
 // --- Active pattern broadcast (SysEx 0x1E) ---------------------------------------
 // Used while stopped so the web editor follows hardware pat-key presses
 // without flagging the pill as "playing" (which 0x15 would do). Includes the
@@ -908,14 +946,21 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
   while (MIDI.read()) {
     const midi::MidiType t = MIDI.getType();
     switch (t) {
+    // When following incoming MIDI clock, echo clock + transport to MIDI OUT so the
+    // web editor (and any downstream gear) can chase the playhead -- mirroring what
+    // DIN-sync mode already does (it generates the clock on OUT). Forwarded 1:1 here
+    // so piled-up pulses aren't under-sent. (DIN sync uses a separate clock pin.)
     case midi::MidiType::Clock:
-      if (s_midi_clock_rx) ++midi_clock_pulses;
+      if (s_midi_clock_rx) { ++midi_clock_pulses; MIDI.sendClock(); }
       break;
     case midi::MidiType::Start:
-      if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); }
+      if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); MIDI.sendStart(); }
+      break;
+    case midi::MidiType::Continue:
+      if (s_midi_clock_rx) { midi_clk = true; MIDI.sendContinue(); } // resume (no reset)
       break;
     case midi::MidiType::Stop:
-      if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); }
+      if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); MIDI.sendStop(); }
       break;
     case midi::MidiType::ControlChange:
       if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel) {
@@ -957,6 +1002,22 @@ void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave
 static int s_silence_step = -1;
 void midi_set_silence_step(int step) { s_silence_step = step; }
 
+// Note-off coalescing. Gate-tick note-offs are queued and flushed (midi_flush_note_offs)
+// only AFTER all three voices have sent their note-ONs for the tick, so a new step's
+// onsets across var1/var2/var3 leave the port as one tight cluster (running status
+// then compresses same-channel runs) instead of being spread by interleaved offs.
+// Stop paths (midi_shadows_all_notes_off, transport stop) close notes immediately and
+// never use this queue, so nothing is left stranded when the gate-ticks stop running.
+static uint8_t s_off_note[12], s_off_ch[12], s_off_n = 0;
+static void queue_off(byte note, byte ch) {
+  if (s_off_n < 12) { s_off_note[s_off_n] = note; s_off_ch[s_off_n] = ch; ++s_off_n; }
+  else MIDI.sendNoteOff(note, 0, ch); // overflow safety
+}
+void midi_flush_note_offs() {
+  for (uint8_t i = 0; i < s_off_n; ++i) MIDI.sendNoteOff(s_off_note[i], 0, s_off_ch[i]);
+  s_off_n = 0;
+}
+
 // Main voice (variation 1) MIDI, driven from the analog gate every clock tick so
 // the MIDI note length tracks the 303 hardware gate exactly: a note sounds only
 // while get_gate() is high (half-step for plain notes, extended by ties/slides,
@@ -967,7 +1028,7 @@ void midi_seq_gate_tick(Engine &engine, uint8_t transpose) {
 
   // Output channel moved: close the open note on its old channel first.
   if (s_seq_note_on && och != s_seq_note_ch) {
-    MIDI.sendNoteOff(s_seq_note, 0, s_seq_note_ch);
+    queue_off(s_seq_note, s_seq_note_ch);
     s_seq_note_on = false;
   }
 
@@ -977,7 +1038,7 @@ void midi_seq_gate_tick(Engine &engine, uint8_t transpose) {
     gate = false;
 
   if (!gate) {
-    if (s_seq_note_on) { MIDI.sendNoteOff(s_seq_note, 0, och); s_seq_note_on = false; }
+    if (s_seq_note_on) { queue_off(s_seq_note, och); s_seq_note_on = false; }
     return;
   }
 
@@ -992,7 +1053,7 @@ void midi_seq_gate_tick(Engine &engine, uint8_t transpose) {
     s_seq_note_ch = och;
   } else if (s_seq_note != static_cast<uint8_t>(n)) {
     MIDI.sendNoteOn(static_cast<byte>(n), vel, och);   // slide: new on before old off
-    MIDI.sendNoteOff(s_seq_note, 0, och);
+    queue_off(s_seq_note, och);
     s_seq_note = static_cast<uint8_t>(n);
     s_seq_note_ch = och;
   }
@@ -1019,17 +1080,16 @@ static void poly_all_off(byte och) {
 
 static void poly_gate_tick(Engine &engine, uint8_t transpose) {
   const byte och = static_cast<byte>(out_ch_for_var(2)); // variation 3 channel
-  if (!engine.poly_active_) { engine.poly_emitting_ = false; poly_all_off(och); return; }
+  if (!engine.poly_active_) { poly_all_off(och); return; }
   const int8_t half = int8_t(engine.step_period() >> 1);
   const int8_t clk  = engine.clk_count;
   const bool gate = !engine.poly_resting_ && (engine.poly_slide_gate_ || clk < half);
-  if (!gate) { engine.poly_emitting_ = false; poly_all_off(och); return; }
-  engine.poly_emitting_ = true;
+  if (!gate) { poly_all_off(och); return; }
 
   const PolyVoice &p = engine.poly_;
-  const uint8_t st  = engine.poly_chord_step_;
-  const uint8_t *v  = p.step(st);
-  const uint8_t vel = p.accent(st) ? 127 : 80;
+  const uint8_t ci  = engine.poly_chord_pos_;   // chord-stream index now sounding
+  const uint8_t *v  = p.chord(ci);
+  const uint8_t vel = p.accent(ci) ? 127 : 80;
 
   uint8_t want[POLY_VOICES];
   uint8_t wn = 0;
@@ -1043,7 +1103,7 @@ static void poly_gate_tick(Engine &engine, uint8_t transpose) {
   for (uint8_t i = 0; i < s_poly_on_count;) {
     bool keep = false;
     for (uint8_t j = 0; j < wn; ++j) if (want[j] == s_poly_on[i]) { keep = true; break; }
-    if (!keep) { MIDI.sendNoteOff(s_poly_on[i], 0, och); s_poly_on[i] = s_poly_on[--s_poly_on_count]; }
+    if (!keep) { queue_off(s_poly_on[i], och); s_poly_on[i] = s_poly_on[--s_poly_on_count]; }
     else ++i;
   }
   for (uint8_t j = 0; j < wn; ++j) {
@@ -1062,11 +1122,14 @@ void midi_shadows_gate_tick(Engine &engine, uint8_t transpose) {
   const int8_t clk  = engine.clk_count;
   for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
     const byte och = static_cast<byte>(out_ch_for_var(engine.shadow_var_[i]));
+    // Variation 3 (i==1) plays from the poly voice when poly is active -- mute the
+    // mono shadow so the two can't sound at once.
     const bool gate = engine.shadow_notecount_[i] && !engine.shadow_resting_[i] &&
+                      !(i == 1 && engine.poly_active_) &&
                       (engine.shadow_slide_gate_[i] || clk < half);
     if (!gate) {
       if (s_shadow_note_on[i]) {
-        MIDI.sendNoteOff(s_shadow_note[i], 0, och);
+        queue_off(s_shadow_note[i], och);
         s_shadow_note_on[i] = false;
       }
       continue;
@@ -1081,7 +1144,7 @@ void midi_shadows_gate_tick(Engine &engine, uint8_t transpose) {
       s_shadow_note_on[i] = true;
     } else if (s_shadow_note[i] != static_cast<uint8_t>(n)) {
       MIDI.sendNoteOn(static_cast<byte>(n), vel, och);   // slide: new on before old off
-      MIDI.sendNoteOff(s_shadow_note[i], 0, och);
+      queue_off(s_shadow_note[i], och);
       s_shadow_note[i] = static_cast<uint8_t>(n);
     }
     // else: same note, gate still high -> hold

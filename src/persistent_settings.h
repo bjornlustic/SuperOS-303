@@ -18,10 +18,10 @@ static_assert(POLY_BLOB_SIZE <= FE_MAX_PAYLOAD, "poly blob must fit one flash re
 static_assert(FB_SETTINGS_LEN <= FE_MAX_PAYLOAD, "settings block must fit one record");
 
 // Sig is prefix-matched: anything starting with sig_compat_prefix passes.
-// Prefix bumped to "superOS-pol2" because the flash block map changed (mono var3
-// now packs two slots per block; only poly var3 is dedicated); wipe to relayout.
-const char *const sig_pew = "superOS-pol2-v1";
-const char *const sig_compat_prefix = "superOS-pol2";
+// Prefix bumped to "superOS-pol3" because the variation-3 poly blob format changed
+// from flat-per-step chords to a chord-list (two-stream) layout; wipe to relayout.
+const char *const sig_pew = "superOS-pol3-v1";
+const char *const sig_compat_prefix = "superOS-pol3";
 static constexpr int kSigCompatPrefixLen = 12;
 static constexpr int kSigEepromLen = 16;
 

@@ -23,6 +23,9 @@ void midi_set_silence_step(int step);
 /// Shadow voices (variations 2/3) MIDI: call EVERY clock tick while running, after
 /// Engine::AdvanceShadows() ran at the 16th boundary. Gate-follows like the main voice.
 void midi_shadows_gate_tick(Engine &engine, uint8_t transpose);
+/// Flush note-offs queued by the gate-ticks this tick. Call once per clock tick AFTER
+/// midi_seq_gate_tick + midi_shadows_gate_tick so all voices' note-ONs cluster first.
+void midi_flush_note_offs();
 /// Send Note Off for any open shadow-voice notes (transport stop / pattern switch).
 void midi_shadows_all_notes_off(Engine &engine);
 /// Set MIDI output channels (1-16) for multitimbral variations 2 and 3.
@@ -85,6 +88,9 @@ void midi_send_edit_variation(uint8_t pat, uint8_t var);
 /// Bidirectional: host sends the same format to set the flag.
 /// Format: F0 7D 29 <pat:0-15> <flag:0|1> F7
 void midi_send_poly_flag(uint8_t pat, uint8_t flag);
+/// Broadcast one variation-3 poly step (device->host, SysEx 0x27) after a hardware
+/// chord edit so the web editor mirrors panel edits live.
+void midi_send_poly_step(uint8_t pat, uint8_t step);
 
 /// Broadcast active pattern selection while stopped (SysEx 0x1E).
 /// Used so the web editor follows hardware pat-key presses without showing

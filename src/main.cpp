@@ -662,48 +662,72 @@ void ProcessEditVarPicker(bool clk_run) {
 // (Moving a note across octaves = toggle it off at one octave, on at another.)
 // ---------------------------------------------------------------------------
 static uint8_t s_poly_step = 0;
+// Latched octave for entering chord notes: tap UP/DOWN to set it (tap UP twice for
+// the double-up octave); it stays until changed -- no need to hold UP/DOWN.
+static uint8_t s_poly_view_oct = 1; // 0=down 1=centre 2=up 3=double-up
 void ProcessPolyEdit() {
   PolyVoice &p = engine.poly_;
   const uint8_t len = p.length ? p.length : 1;
   if (s_poly_step >= len) s_poly_step = 0;
+  p.ensure_chords_for_notes();   // keep the chord stream covering every NOTE event
 
   if (inputs[TAP_NEXT].rising()) s_poly_step = uint8_t((s_poly_step + 1) % len);
   if (inputs[BACK_KEY].rising())  s_poly_step = uint8_t((s_poly_step + len - 1) % len);
 
-  const uint8_t view_oct = resolve_octave();
+  // Latched octave: a single UP/DOWN tap sets the octave new notes land in (tap UP
+  // twice for double-up). No holding required; it stays until changed.
+  if (inputs[UP_KEY].rising()   && s_poly_view_oct < 3) ++s_poly_view_oct;
+  if (inputs[DOWN_KEY].rising() && s_poly_view_oct > 0) --s_poly_view_oct;
+  const uint8_t view_oct = s_poly_view_oct;
   bool changed = false;
 
+  // Pitch keys edit the chord this NOTE step pulls from the stream. On a REST the
+  // first pitch press promotes it to a NOTE (which inserts a chord into the list).
   for (uint8_t k = 0; k < ARRAY_SIZE(pitched_keys); ++k) {
     if (!inputs[pitched_keys[k]].rising()) continue;
-    const uint8_t packed = pack_pitch(k, view_oct);
-    if (p.has_note(s_poly_step, packed)) {
-      p.remove_note(s_poly_step, packed);                       // time unchanged (decoupled, like mono)
-    } else if (p.add_note(s_poly_step, packed)) {
-      if (p.time(s_poly_step) == 0) p.set_time(s_poly_step, 1); // adding to a rest promotes it to NOTE
+    if (p.time(s_poly_step) == 0) {
+      const uint8_t cc0 = p.get_chord_count();     // promote REST -> NOTE
+      p.set_time(s_poly_step, 1);
+      p.ensure_chords_for_notes();
+      const uint8_t cin = p.chord_index_for_step(s_poly_step);
+      if (cin == cc0) { uint8_t *vn = p.chord(cin); vn[0]=vn[1]=vn[2]=vn[3]=POLY_EMPTY; } // start the fresh chord empty so only pressed notes land (no phantom default C)
     }
+    if (p.time(s_poly_step) != 1) { changed = true; continue; } // TIE: holds prior chord, not editable
+    const uint8_t ci = p.chord_index_for_step(s_poly_step);
+    const uint8_t packed = pack_pitch(k, view_oct);
+    if (p.has_note(ci, packed)) p.remove_note(ci, packed);
+    else                        p.add_note(ci, packed);
     changed = true;
   }
-  if (inputs[ACCENT_KEY].rising()) { p.toggle_accent(s_poly_step); changed = true; }
-  if (inputs[SLIDE_KEY].rising())  { p.toggle_slide(s_poly_step);  changed = true; }
-  if (inputs[TIME_KEY].rising()) { // cycle this step's time NOTE -> TIE -> REST (chord is kept)
+  const bool is_note = (p.time(s_poly_step) == 1);
+  const uint8_t ci = p.chord_index_for_step(s_poly_step);
+  if (is_note && inputs[ACCENT_KEY].rising()) { p.toggle_accent(ci); changed = true; }
+  if (is_note && inputs[SLIDE_KEY].rising())  { p.toggle_slide(ci);  changed = true; }
+  if (inputs[TIME_KEY].rising()) { // cycle this step's time NOTE -> TIE -> REST (shifts the list)
     const uint8_t prv = uint8_t((s_poly_step + len - 1) % len);
     const uint8_t cur = p.time(s_poly_step);
     uint8_t nt = (cur == 1) ? 2 : (cur == 2) ? 0 : 1; // note -> tie -> rest -> note
     if (nt == 2 && p.time(prv) == 0) nt = 0;          // no tie after a rest -> skip to rest
     p.set_time(s_poly_step, nt);
+    p.ensure_chords_for_notes();
     changed = true;
   }
-  if (changed) { engine.poly_stale_ = true; engine.shadow_dirty_ms_ = millis(); }
+  if (changed) {
+    engine.poly_stale_ = true; engine.shadow_dirty_ms_ = millis();
+    midi_send_poly_step(engine.get_patsel(), s_poly_step); // mirror the panel chord edit to the web
+  }
 
-  // ---- LEDs ----
-  const uint8_t *v = p.step(s_poly_step);
-  for (uint8_t i = 0; i < POLY_VOICES; ++i)
-    if (v[i] != POLY_EMPTY && ((v[i] >> 4) & 0x03) == view_oct)
-      Leds::Set(pitch_leds[v[i] & 0x0F], true);
+  // ---- LEDs ---- (show the chord only on NOTE steps; TIE holds, REST is silent)
+  if (is_note) {
+    const uint8_t *v = p.chord(ci);
+    for (uint8_t i = 0; i < POLY_VOICES; ++i)
+      if (v[i] != POLY_EMPTY && ((v[i] >> 4) & 0x03) == view_oct)
+        Leds::Set(pitch_leds[v[i] & 0x0F], true);
+  }
   Leds::Set(DOWN_KEY_LED, view_oct == 0 || view_oct == 3);
   Leds::Set(UP_KEY_LED,   view_oct == 2 || view_oct == 3);
-  Leds::Set(ACCENT_KEY_LED, p.accent(s_poly_step));
-  Leds::Set(SLIDE_KEY_LED,  p.slide(s_poly_step));
+  Leds::Set(ACCENT_KEY_LED, is_note && p.accent(ci));
+  Leds::Set(SLIDE_KEY_LED,  is_note && p.slide(ci));
   Leds::Set(TIME_MODE_LED,  p.time(s_poly_step) == 2);                              // tie indicator
   Leds::Set(OutputIndex(s_poly_step & 0x07), bool((millis() >> 7) & 1));            // step pat-LED (blink)
   Leds::Set(OutputIndex(CSHARP_KEY_LED + ((s_poly_step & 31) >> 3)), true);          // 8-step bank
@@ -998,12 +1022,12 @@ void loop() {
     for (uint8_t st = 0; st < engine.poly_.length; ++st) {
       const uint8_t t = engine.poly_.time(st);
       if (t == 1) ++noteSteps; else if (t == 2) ++ties;
-      notes += engine.poly_.note_count(st);
+      notes += engine.poly_.voice_count(st);
     }
     Serial.printf("POLY slot=%u flag=%u active=%u len=%u noteSteps=%u ties=%u notes=%u tpos=%u rest=%u chord=%u evar=%u mode=%u\n",
                   s, GlobalSettings.var3_is_poly(s), engine.poly_active_, engine.poly_.length,
                   noteSteps, ties, notes, engine.poly_time_pos_, engine.poly_resting_,
-                  engine.poly_chord_step_, engine.edit_var_, engine.get_mode());
+                  engine.poly_chord_pos_, engine.edit_var_, engine.get_mode());
   }
 #endif
 
@@ -1452,8 +1476,14 @@ void loop() {
       Sequence &seq = (view_pat_idx == engine.get_patsel())
                           ? engine.get_edit_sequence()
                           : engine.pattern[view_pat_idx];
-      const uint8_t blen = seq.length;
       const bool playing_matches_view = (engine.get_patsel() == view_pat_idx);
+      // Variation 3 poly: this slot's var3 plays from the chord-list voice, not the
+      // (silent) mono shadow `seq`. Read the picker's steps/length and edit chords
+      // from poly_ so the display shows the real steps instead of stale shadow data.
+      const bool poly_sel = playing_matches_view && engine.get_edit_var() == 2 && engine.poly_active_;
+      PolyVoice &pv = engine.poly_;
+      const uint8_t blen = poly_sel ? uint8_t(pv.length ? pv.length : 1) : seq.length;
+      #define SEL_TIME(i) (poly_sel ? pv.time(uint8_t(i)) : seq.time(uint8_t(i)))
 
       // Sub-mode switching (outside detail editor to avoid accidental mode changes).
       if (!s_step_sel_edit) {
@@ -1487,7 +1517,7 @@ void loop() {
             const uint8_t cand = uint8_t(s_step_sel_base + wi);
             if (cand < blen) {
               // Pitch sub-mode: only NOTE steps. Time sub-mode: any step.
-              if (s_step_sel_time || seq.time(cand) == 1)
+              if (s_step_sel_time || SEL_TIME(cand) == 1)
                 s_step_sel = int(cand);
             }
           }
@@ -1496,7 +1526,7 @@ void loop() {
         for (uint8_t wi = 0; wi < 8; ++wi) {
           const uint8_t idx = uint8_t(s_step_sel_base + wi);
           if (idx >= blen) break;
-          const uint8_t tn = seq.time(idx);
+          const uint8_t tn = SEL_TIME(idx);
           if (tn == 1) Leds::Set(OutputIndex(wi), true);
           else if (tn == 2) Leds::SetDim(OutputIndex(wi), true);
         }
@@ -1505,7 +1535,8 @@ void loop() {
         // Read the playhead from the edited variation (seq), not variation 1,
         // so the chase follows the right length when editing variation 2/3.
         if (clk_run && playing_matches_view) {
-          const uint8_t tp = uint8_t(seq.time_pos & (MAX_STEPS - 1));
+          const uint8_t tp = poly_sel ? uint8_t(engine.poly_time_pos_ & (MAX_STEPS - 1))
+                                       : uint8_t(seq.time_pos & (MAX_STEPS - 1));
           if ((tp & ~uint8_t(7)) == s_step_sel_base)
             Leds::Set(OutputIndex(tp & 0x7), bool(clk_count & 4));
         }
@@ -1547,7 +1578,21 @@ void loop() {
           // visible as a read-only viewer (LED feedback shows current state).
           if (s_step_sel >= 0) {
             const uint8_t si = uint8_t(s_step_sel);
-            if (dial_pattern_write) {
+            if (dial_pattern_write && poly_sel) {
+              // Poly var3: edit the chord-list voice's time stream (shifts chords).
+              bool tchanged = false;
+              if (inputs[DOWN_KEY].rising()) { pv.set_time(si, 1); tchanged = true; }
+              if (inputs[UP_KEY].rising()) {
+                const uint8_t prev_t = (si > 0) ? pv.time(uint8_t(si - 1)) : 0;
+                if (prev_t != 0) { pv.set_time(si, 2); tchanged = true; }
+              }
+              if (inputs[ACCENT_KEY].rising()) { pv.set_time(si, 0); tchanged = true; }
+              if (tchanged) {
+                pv.ensure_chords_for_notes();
+                engine.poly_stale_ = true; engine.shadow_dirty_ms_ = millis();
+                midi_send_poly_step(engine.get_patsel(), si); // mirror to the web
+              }
+            } else if (dial_pattern_write) {
               bool tchanged = false;
               uint8_t before_pt[MAX_STEPS];
               sequence_pack_per_time(seq, before_pt);
@@ -1579,7 +1624,7 @@ void loop() {
               }
             }
             // Show time info for the selected step (always, even in Play)
-            const uint8_t st = seq.time(si);
+            const uint8_t st = SEL_TIME(si);
             Leds::Set(DOWN_KEY_LED,   st == 1);
             Leds::Set(UP_KEY_LED,     st == 2);
             Leds::Set(ACCENT_KEY_LED, st == 0);
@@ -1614,6 +1659,39 @@ void loop() {
         // shows LED feedback and audition but no pitch/flag writes occur.
         if (s_step_sel < 0) {
           s_step_sel_edit = false;
+        } else if (poly_sel) {
+          // ── Poly chord detail editor: edit the chord this NOTE step pulls ──
+          const uint8_t ci = pv.chord_index_for_step(uint8_t(s_step_sel));
+          // Latched octave (tap UP/DOWN; tap UP twice for double-up) -- no holding.
+          if (inputs[UP_KEY].rising()   && s_poly_view_oct < 3) ++s_poly_view_oct;
+          if (inputs[DOWN_KEY].rising() && s_poly_view_oct > 0) --s_poly_view_oct;
+          const uint8_t view_oct = s_poly_view_oct;
+          bool pchanged = false;
+          if (dial_pattern_write) {
+            for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
+              if (!inputs[pitched_keys[pi]].rising()) continue;
+              const uint8_t packed = pack_pitch(pi, view_oct);
+              if (pv.has_note(ci, packed)) pv.remove_note(ci, packed);
+              else                         pv.add_note(ci, packed);
+              pchanged = true;
+            }
+            if (inputs[ACCENT_KEY].rising()) { pv.toggle_accent(ci); pchanged = true; }
+            if (inputs[SLIDE_KEY].rising())  { pv.toggle_slide(ci);  pchanged = true; }
+          }
+          if (pchanged) {
+            engine.poly_stale_ = true; engine.shadow_dirty_ms_ = millis();
+            midi_send_poly_step(engine.get_patsel(), uint8_t(s_step_sel)); // mirror to the web
+          }
+          if (inputs[BACK_KEY].rising()) s_step_sel_edit = false;
+          // LEDs: show the chord at the current view octave (like ProcessPolyEdit).
+          const uint8_t *v = pv.chord(ci);
+          for (uint8_t i = 0; i < POLY_VOICES; ++i)
+            if (v[i] != POLY_EMPTY && ((v[i] >> 4) & 0x03) == view_oct)
+              Leds::Set(pitch_leds[v[i] & 0x0F], true);
+          Leds::Set(DOWN_KEY_LED, view_oct == 0 || view_oct == 3);
+          Leds::Set(UP_KEY_LED,   view_oct == 2 || view_oct == 3);
+          Leds::Set(ACCENT_KEY_LED, pv.accent(ci));
+          Leds::Set(SLIDE_KEY_LED,  pv.slide(ci));
         } else {
           // Pin pitch_pos to the SELECTED step's pitch slot for the duration
           // of the edit so SetPitchSemitone / NudgeOctave / Toggle ops target
@@ -1689,6 +1767,7 @@ void loop() {
           !inputs[ACCENT_KEY].held() && !inputs[TAP_NEXT].held()) {
         s_tap_pitch_preview_gate = false;
       }
+      #undef SEL_TIME
     } else if (s_keyboard_mode && (dial == DialMode::PatternPlay)) {
       // Keyboard play: pitched keys play notes via the audition CV path; no
       // pattern writes. Octave selected by DOWN / UP (same encoding as
@@ -2216,6 +2295,7 @@ void loop() {
       // so MIDI sustain matches the 303 hardware gate exactly.
       midi_seq_gate_tick(engine, total_transpose);
       midi_shadows_gate_tick(engine, total_transpose);
+      midi_flush_note_offs(); // send all variations' note-ONs first, then the queued offs
     }
   }
 
@@ -2538,15 +2618,6 @@ void loop() {
   }
 
   ++ticks;
-  // --- TEMP poly diagnostic (no USB): while running, FUNCTION_MODE_LED solid =
-  //     variation 3 poly is active; PITCH_MODE_LED flashes = poly is sending MIDI
-  //     notes. FUNCTION off => not active; FUNCTION on + PITCH never flashes =>
-  //     active but no note steps (empty/all-rest); both => MIDI is going out. ---
-  if (clk_run) {
-    Leds::Set(FUNCTION_MODE_LED, engine.poly_active_);
-    Leds::Set(PITCH_MODE_LED,    engine.poly_emitting_);
-  }
-
   // DAC::Send latches the buffered CV values to the hardware ports and pulses
   // the slide line for ~10us. Calling it every loop iteration (1000+/sec)
   // wastes CPU on hardware I/O and creates a high-frequency pulse train on

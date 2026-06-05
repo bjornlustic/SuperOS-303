@@ -500,14 +500,14 @@ struct Sequence {
       break;
     }
     case DIR_RANDOM:
-      time_pos = int(random(length));
+      time_pos = int(fast_rand(uint8_t(length)));
       break;
     case DIR_HALF_RAND:
-      if (random(2)) time_pos = int(random(length));
+      if (fast_rand(2)) time_pos = int(fast_rand(uint8_t(length)));
       else { ++time_pos %= length; }
       break;
     case DIR_BROWNIAN: {
-      int8_t bdir = random(2) ? 1 : -1;
+      int8_t bdir = fast_rand(2) ? 1 : -1;
       pp_dir = bdir;
       time_pos = int((unsigned(length) + unsigned(time_pos) + unsigned(bdir)) % unsigned(length));
       break;

@@ -132,10 +132,9 @@ struct Engine {
   bool     poly_stale_      = false; // poly_ edited; persist on save/reload
   bool     poly_reset_      = true;
   uint8_t  poly_time_pos_   = 0;
-  uint8_t  poly_chord_step_ = 0;     // step whose chord is sounding (held across ties)
+  uint8_t  poly_chord_pos_  = 0;     // chord-stream index sounding (held across ties)
   bool     poly_resting_    = true;
   bool     poly_slide_gate_ = false;
-  bool     poly_emitting_   = false;  // diagnostic: poly_gate_tick is sending notes this tick
 
   // Deferred non-resident poly edits. A per-step web edit (SysEx 0x27) to a poly
   // slot that is NOT the active voice is buffered here and written to flash on the
@@ -265,9 +264,10 @@ struct Engine {
     if (poly_active_) {
       ReadPolyAt(poly_, s);
       if (!poly_.length) poly_.length = 8;
+      poly_.ensure_chords_for_notes();   // guarantee a chord for every NOTE event
       poly_reset_      = true;
       poly_time_pos_   = 0;
-      poly_chord_step_ = 0;
+      poly_chord_pos_  = 0;
       poly_resting_    = true;
       poly_slide_gate_ = false;
       poly_stale_      = false;
@@ -327,11 +327,12 @@ struct Engine {
     else             poly_time_pos_ = uint8_t((poly_time_pos_ + 1) % len);
     const uint8_t t = p.time(poly_time_pos_);
     poly_resting_ = (t == 0);
-    if (t == 1) poly_chord_step_ = poly_time_pos_; // NOTE latches a new chord; TIE holds it
+    // NOTE pulls the next chord from the stream (K-th NOTE -> chord K); TIE holds it.
+    if (t == 1) poly_chord_pos_ = p.chord_index_for_step(poly_time_pos_);
     if (!poly_resting_) {
       const uint8_t np = uint8_t((poly_time_pos_ + 1) % len);
       const uint8_t nt = p.time(np);
-      poly_slide_gate_ = (nt == 2) || (p.slide(poly_time_pos_) && nt != 0);
+      poly_slide_gate_ = (nt == 2) || (p.slide(poly_chord_pos_) && nt != 0);
     } else {
       poly_slide_gate_ = false;
     }
@@ -351,6 +352,9 @@ struct Engine {
     normalize_pattern_times(sh);
     if (sh.time_pos >= sh.length) sh.time_pos = 0;
     shadow_notecount_[var - 1] = sh.note_count();
+    // Variation 3 plays from the poly voice when poly is active: never let an
+    // incoming mono var3 blob re-arm the mono shadow (would double the voice).
+    if (var == 2 && poly_active_) shadow_notecount_[1] = 0;
     shadow_stale_ = true;
     shadow_dirty_ms_ = millis();
     return true;
@@ -364,13 +368,10 @@ struct Engine {
     if (poly_edit_slot_ != int16_t(slot)) {
       flush_poly_edit();              // persist the previously buffered slot first
       ReadPolyAt(poly_edit_, slot);   // cheap flash read (no erase)
+      poly_edit_.ensure_chords_for_notes();
       poly_edit_slot_ = int16_t(slot);
     }
-    uint8_t *v = poly_edit_.step(step);
-    v[0] = n0; v[1] = n1; v[2] = n2; v[3] = n3;
-    poly_edit_.set_time(step, t);
-    poly_edit_.set_accent(step, acc);
-    poly_edit_.set_slide(step, sld);
+    poly_edit_.set_step(step, n0, n1, n2, n3, t, acc, sld);
     poly_edit_dirty_ = true;
     poly_edit_ms_    = millis();
   }
@@ -678,6 +679,13 @@ struct Engine {
       shadow_pp_dir_[i] = 1;
       shadow_step_dir_[i] = 1;
     }
+    // Restart the poly voice at step 0 too, so it lands on the downbeat with var1/2
+    // instead of continuing from a stale position when the transport starts.
+    poly_reset_      = true;
+    poly_time_pos_   = 0;
+    poly_chord_pos_  = 0;
+    poly_resting_    = true;
+    poly_slide_gate_ = false;
     clk_count = -1;
     slide_gate = false;
     resting = true;
