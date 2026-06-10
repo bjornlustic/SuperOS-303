@@ -399,18 +399,6 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     // step_lock is RAM-only in the OS-303 layout: do not mark stale.
     break;
   }
-  case 0x1B: { // host → 303: set step ratchet value
-    if (n < 5 || !g_eng) return;
-    const uint8_t pat  = p[2] & 0x0F;
-    const uint8_t step = p[3] & 0x3F;
-    const uint8_t val  = p[4] & 0x03;
-    Sequence &seq = g_eng->pattern[pat];
-    if (step >= MAX_STEPS) return;
-    seq.set_ratchet_val(step, val);
-    g_eng->stale = true;
-    mark_pat_dirty(pat);
-    break;
-  }
   case 0x1A: { // set chain state from host
     if (n < 12) return;
     s_rx_chain_active_len = p[2] & 0x07;
@@ -733,6 +721,33 @@ void midi_audition_note_off() {
   }
 }
 
+// --- Audition chord (variation-3 poly edit: sound the whole chord, MIDI only) ----
+// Plays every voice of a chord on variation 3's channel so the user hears the full
+// chord while navigating poly steps. Same voice->note mapping as poly_gate_tick.
+static uint8_t s_aud_chord[POLY_VOICES];
+static uint8_t s_aud_chord_n  = 0;
+static uint8_t s_aud_chord_ch = 0;
+
+void midi_audition_chord_off() {
+  for (uint8_t i = 0; i < s_aud_chord_n; ++i)
+    MIDI.sendNoteOff(s_aud_chord[i], 0, s_aud_chord_ch);
+  s_aud_chord_n = 0;
+}
+
+void midi_audition_chord_on(const uint8_t *voices, bool accent, uint8_t transpose) {
+  midi_audition_chord_off();                              // close any open audition chord
+  const byte ch = static_cast<byte>(out_ch_for_var(2));   // variation 3 channel
+  const uint8_t vel = accent ? 127 : 80;
+  for (uint8_t i = 0; i < POLY_VOICES; ++i) {
+    if (voices[i] == POLY_EMPTY) continue;
+    int n = 36 + int(unpack_pitch_linear(voices[i])) + int(transpose);
+    if (n > 127) n = 127;
+    MIDI.sendNoteOn(static_cast<byte>(n), vel, ch);
+    s_aud_chord[s_aud_chord_n++] = static_cast<uint8_t>(n);
+  }
+  s_aud_chord_ch = ch;
+}
+
 // --- Step position broadcast (SysEx 0x15) ---------------------------------------
 // Wrap-only anchor: callers must send this only at pattern wrap (time_pos -> 0)
 // or other low-rate events. Per-16th sends produced an audible click because the
@@ -873,19 +888,6 @@ void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked) {
   tx_push_message(inner, 5);
 }
 
-// --- Ratchet broadcast (SysEx 0x1B) ---------------------------------------------
-// Same format as host-to-device 0x1B. Web editor listens symmetrically.
-void midi_send_ratchet_update(uint8_t pat, uint8_t step, uint8_t val, uint8_t var) {
-  const uint8_t inner[6] = {
-    0x7D, 0x1B,
-    static_cast<uint8_t>(pat & 0x0F),
-    static_cast<uint8_t>(step & 0x3F),
-    static_cast<uint8_t>(val & 0x03),
-    static_cast<uint8_t>(var & 0x03)
-  };
-  tx_push_message(inner, 6);
-}
-
 // --- Step edit broadcast (SysEx 0x16) -------------------------------------------
 // Trailing <var> tags which variation the edit belongs to (0=var1, 1/2=var2/3).
 void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble,
@@ -1020,9 +1022,9 @@ void midi_flush_note_offs() {
 
 // Main voice (variation 1) MIDI, driven from the analog gate every clock tick so
 // the MIDI note length tracks the 303 hardware gate exactly: a note sounds only
-// while get_gate() is high (half-step for plain notes, extended by ties/slides,
-// pulsed by ratchets). Pitch changing while the gate stays high = a slide, so the
-// new note is sent before the old note-off (legato overlap).
+// while get_gate() is high (half-step for plain notes, extended by ties/slides).
+// Pitch changing while the gate stays high = a slide, so the new note is sent
+// before the old note-off (legato overlap).
 void midi_seq_gate_tick(Engine &engine, uint8_t transpose) {
   const byte och = static_cast<byte>(out_ch());
 

@@ -65,10 +65,6 @@ static bool s_metro_gate_pulse                  = false;
 static bool s_metro_is_downbeat                 = false;  // downbeat accent flag (every 8 steps)
 static uint8_t s_metro_pitch_cv                 = 0;      // final DAC pitch for metronome click
 static elapsedMillis s_metro_gate_timer;
-// Ratchet gate reset: force CV gate LOW for one loop iteration so the 303 envelope
-// re-triggers on the subsequent LOW→HIGH edge (needed when get_gate() stays HIGH across
-// a ratchet boundary, e.g. 4x clocks 0→1 and 3→4 which have no natural gate-off).
-static bool s_ratchet_gate_reset = false;
 
 // Direction mode (FN + TIME_KEY)
 static bool s_dir_mode = false;
@@ -551,9 +547,6 @@ void ProcessDirectionMode(bool persist) {
 //   falling → gate/audition off (handled in main loop TAP_NEXT.falling section)
 // ---------------------------------------------------------------------------
 void ProcessEdit(const bool &write_mode, const bool clk_run) {
-  // TIME_MODE edit + TIME_KEY held = ratchet view: DOWN/UP/ACCENT show & set ratchet 0/1/2.
-  // Released → revert to normal time display. PITCH_MODE no longer has a nudge/ratchet sub-mode.
-  const bool ratchet_mod = inputs[TIME_KEY].held();
   switch (engine.get_mode()) {
   case PITCH_MODE: {
     if (write_mode) {
@@ -576,23 +569,8 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
   }
   case TIME_MODE:
     if (write_mode) {
-      if (ratchet_mod) {
-        // Ratchet view: DOWN = 1x (off), UP = 2x (ratchet on). 1-bit storage
-        // since Phase 3, so 3x is no longer available. LED shows current state.
-        const uint8_t tp = uint8_t(engine.edit_seq_view().time_pos & (MAX_STEPS - 1));
-        if (inputs[DOWN_KEY].rising()) { engine.SetRatchetAtCurrent(0); midi_send_ratchet_update(engine.get_patsel(), tp, 0, engine.get_edit_var()); }
-        if (inputs[UP_KEY].rising())   { engine.SetRatchetAtCurrent(1); midi_send_ratchet_update(engine.get_patsel(), tp, 1, engine.get_edit_var()); }
-        const uint8_t r = engine.edit_seq_view().get_ratchet_val(tp);
-        Leds::Set(DOWN_KEY_LED, r == 0);
-        Leds::Set(UP_KEY_LED,   r == 1);
-        Leds::Set(ACCENT_KEY_LED, false);
-      } else {
-        // SLIDE_KEY in TIME_MODE used to toggle step-lock; that UI is gone
-        // (step_lock is RAM-only with the OS-303 layout). SLIDE_KEY now
-        // unbound here.
-        input_time(true, clk_run);
-        PrintTime();
-      }
+      input_time(true, clk_run);
+      PrintTime();
     }
     break;
   case NORMAL_MODE:
@@ -671,8 +649,11 @@ void ProcessPolyEdit() {
   if (s_poly_step >= len) s_poly_step = 0;
   p.ensure_chords_for_notes();   // keep the chord stream covering every NOTE event
 
-  if (inputs[TAP_NEXT].rising()) s_poly_step = uint8_t((s_poly_step + 1) % len);
-  if (inputs[BACK_KEY].rising())  s_poly_step = uint8_t((s_poly_step + len - 1) % len);
+  // TAP_NEXT advances (wraps); BACK steps back but CLAMPS at step 0 so re-listening
+  // never loops around to the end. Either one auditions the landing chord below.
+  bool nav = false;
+  if (inputs[TAP_NEXT].rising()) { s_poly_step = uint8_t((s_poly_step + 1) % len); nav = true; }
+  if (inputs[BACK_KEY].rising())  { if (s_poly_step) --s_poly_step; nav = true; }
 
   // Latched octave: a single UP/DOWN tap sets the octave new notes land in (tap UP
   // twice for double-up). No holding required; it stays until changed.
@@ -716,6 +697,14 @@ void ProcessPolyEdit() {
     engine.poly_stale_ = true; engine.shadow_dirty_ms_ = millis();
     midi_send_poly_step(engine.get_patsel(), s_poly_step); // mirror the panel chord edit to the web
   }
+
+  // Audition the full chord (MIDI only, var3 channel) when navigating to a step;
+  // close it on release. The 303 CV is suppressed for non-CV variations at the DAC.
+  if (nav) {
+    if (is_note) midi_audition_chord_on(p.chord(ci), p.accent(ci), total_transpose);
+    else         midi_audition_chord_off();
+  }
+  if (inputs[TAP_NEXT].falling() || inputs[BACK_KEY].falling()) midi_audition_chord_off();
 
   // ---- LEDs ---- (show the chord only on NOTE steps; TIE holds, REST is silent)
   if (is_note) {
@@ -2104,9 +2093,9 @@ void loop() {
     // copy/paste -- gated to Pattern Write only.
     if (clear_mod && !fn_mod && dial_pattern_write) {
       bool pat_changed = false;
-      // CLEAR + ACCENT rising: randomize pattern but keep ratchets.
+      // CLEAR + ACCENT rising: randomize the whole pattern.
       if (inputs[ACCENT_KEY].rising()) {
-        engine.RandomizeFullPatternKeepRatchets();
+        engine.RandomizeFullPattern();
         pat_changed = true;
       }
       // CLEAR + DOWN rising: rotate time data one step LEFT within length.
@@ -2155,8 +2144,7 @@ void loop() {
       }
       // Individual-attribute randomize (CLEAR + PITCH_KEY held + white key rising):
       //   C = semitones, D = octaves, E = accents, F = slides,
-      //   G = full pitch data (sem+oct+acc+slide), A = time data,
-      //   B = randomize ratchets, C2 = reset all ratchets to 1x
+      //   G = full pitch data (sem+oct+acc+slide), A = time data
       if (pitch_mod && !time_mod) {
         if (inputs[C_KEY].rising())     { engine.RandomizeSemitones();   pat_changed = true; }
         if (inputs[D_KEY].rising())     { engine.RandomizeOctaves();     pat_changed = true; }
@@ -2164,8 +2152,6 @@ void loop() {
         if (inputs[F_KEY].rising())     { engine.RandomizeSlideData();   pat_changed = true; }
         if (inputs[G_KEY].rising())     { engine.RandomizePitchData();   pat_changed = true; }
         if (inputs[A_KEY].rising())     { engine.RandomizeTimeData();    pat_changed = true; }
-        if (inputs[B_KEY].rising())     { engine.RandomizeRatchetData(); pat_changed = true; }
-        if (inputs[C_KEY2].rising())    { engine.ClearRatchetsOnly();    pat_changed = true; }
       }
       if (pat_changed) {
         // Incremental sync drains 2 steps per loop iteration so rapid
@@ -2288,8 +2274,6 @@ void loop() {
             midi_metronome_stop();
           }
         }
-      } else if (engine.is_ratchet_retrigger()) {
-        s_ratchet_gate_reset = true; // DAC: force a gate low edge to retrigger the envelope
       }
       // Every clock tick: MIDI note on/off follows the analog gate (all 3 voices),
       // so MIDI sustain matches the 303 hardware gate exactly.
@@ -2362,7 +2346,7 @@ void loop() {
       midi_send_length_update(engine.get_patsel(), engine.edit_seq_view().length, engine.get_edit_var());
     }
 
-    if (inputs[TAP_NEXT].rising() && !fn_mod) {
+    if (inputs[TAP_NEXT].rising() && !fn_mod && !engine.in_poly_pitch_edit()) {
       if (write_mode && !clk_run) {
         if (engine.get_mode() == PITCH_MODE) {
           engine.get_edit_sequence().ensure_pitch_write_entry();
@@ -2410,7 +2394,7 @@ void loop() {
         s.first_step = true;
       }
     }
-    if (inputs[TAP_NEXT].falling()) {
+    if (inputs[TAP_NEXT].falling() && !engine.in_poly_pitch_edit()) {
       s_tap_pitch_preview_gate = false;
       midi_audition_note_off(); // close any open audition note
       // PITCH_MODE write: advance to the next NOTE step (skipping REST/TIE) on release,
@@ -2432,7 +2416,7 @@ void loop() {
   // keys select a direction instead of writing notes into the active pattern.
   // Also suppressed in step-select mode (FN + PITCH held) so its inputs don't leak into writes.
   if (s_cfg_menu == CfgMenu::Off && !edit_mode && write_mode && !track_mode && !s_dir_mode
-      && !s_step_sel_mode) {
+      && !s_step_sel_mode && !engine.in_poly_pitch_edit()) {
 
     if (engine.get_mode() == TIME_MODE) {
       // SLIDE_KEY step-lock toggle removed (RAM-only after OS-303 migration).
@@ -2544,19 +2528,22 @@ void loop() {
     const bool gate_running = force_slide_live
         ? !engine.resting
         : engine.get_gate();
-    DAC::SetGate(s_ratchet_gate_reset ? false : (gate_running || s_metro_gate_pulse));
-    s_ratchet_gate_reset = false;
+    DAC::SetGate(gate_running || s_metro_gate_pulse);
   } else {
     uint8_t pitch_cv = uint8_t(engine.get_pitch() + total_transpose);
     bool gate = midi_live_gate();
-    if (s_tap_pitch_preview_gate) {
+    // Auditioning a non-CV variation (var2/var3) is MIDI-only: the 303 analog voice
+    // must stay silent. Only variation-1 edits open the audition CV/gate; the MIDI
+    // audition (sent on the variation's channel) is unaffected.
+    const bool audition_cv = (engine.get_edit_var() == 0);
+    if (audition_cv && s_tap_pitch_preview_gate) {
       pitch_cv = s_tap_pitch_preview_cv;
       gate = true;
       if (s_tap_pitch_preview_retrig) { gate = false; --s_tap_pitch_preview_retrig; }
-    } else if (s_back_pitch_preview_gate) {
+    } else if (audition_cv && s_back_pitch_preview_gate) {
       pitch_cv = s_back_pitch_preview_cv;
       gate = true;
-    } else if (write_mode && !track_mode && s_cfg_menu == CfgMenu::Off && !edit_mode &&
+    } else if (audition_cv && write_mode && !track_mode && s_cfg_menu == CfgMenu::Off && !edit_mode &&
                engine.get_mode() == PITCH_MODE && check_pitch_inputs()) {
       gate = true;
     }
@@ -2623,8 +2610,12 @@ void loop() {
   // wastes CPU on hardware I/O and creates a high-frequency pulse train on
   // the slide line. OS-303 throttles to ~555 Hz when running and lets it
   // free-run when stopped (for responsive live audition). Same approach here.
+  // On clock-tick iterations force an immediate latch (bypass the throttle):
+  // MIDI note on/offs are emitted unthrottled in the clock-tick loop above, so
+  // without this the analog gate latches up to ~1.8ms after the MIDI already
+  // went out -- audible as MIDI-driven voices triggering before the 303.
   static elapsedMicros dac_timer;
-  if (!clk_run || dac_timer > 1800) {
+  if (!clk_run || clocked || dac_timer > 1800) {
     DAC::Send();
     dac_timer = 0;
   }

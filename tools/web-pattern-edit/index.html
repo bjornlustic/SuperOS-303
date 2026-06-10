@@ -429,17 +429,6 @@
     .is-rest .step-oct-row { display: none !important; }
     .is-rest .step-flags .f-btn:not(.f-lock) { display: none !important; }
 
-    .step-ratchet { display: flex; gap: 0; margin-top: 2px; }
-    .is-rest .step-ratchet,
-    .is-tie  .step-ratchet { display: none !important; }
-    .r-btn { flex: 1; min-width: 0; height: 18px; border: var(--rule-sm); margin-right: -1px; background: transparent; color: var(--gray-3); font-size: 7px; font-weight: 900; letter-spacing: 0; cursor: pointer; font-family: var(--font); border-radius: 0; transition: all 0.08s; }
-    .r-btn:last-child { margin-right: 0; }
-    .r-btn:disabled { opacity: 0.2; cursor: default; }
-    .r-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
-    .r-btn.is-on { background: var(--black); border-color: var(--black); color: var(--white); z-index: 1; }
-    .is-note .r-btn { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.45); }
-    .is-note .r-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
-    .is-note .r-btn.is-on { background: var(--white); border-color: var(--white); color: var(--black); }
 
     #copyStatus { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; color: var(--red); padding-left: 8px; white-space: nowrap; }
 
@@ -651,8 +640,6 @@
         <button class="btn" id="btnNudgeAccentR">Acc &#8594;</button>
         <button class="btn" id="btnNudgeSlideL">&#8592; Slide</button>
         <button class="btn" id="btnNudgeSlideR">Slide &#8594;</button>
-        <button class="btn" id="btnNudgeRatchetL">&#8592; Rtch</button>
-        <button class="btn" id="btnNudgeRatchetR">Rtch &#8594;</button>
         <button class="btn" id="btnNudgeTimeL">&#8592; Time</button>
         <button class="btn" id="btnNudgeTimeR">Time &#8594;</button>
         <button class="btn" id="btnNudgeAllL">&#8592; All</button>
@@ -671,7 +658,6 @@
         <button class="btn" id="btnRandTime">Time</button>
         <button class="btn" id="btnRandAccent">Accent</button>
         <button class="btn" id="btnRandSlide">Slide</button>
-        <button class="btn" id="btnRandRatchet">Ratchet</button>
         <button class="btn" id="btnRandAll">All</button>
         <button class="btn" id="btnRandBrownian">Brownian</button>
       </div>
@@ -882,7 +868,7 @@
   //                              (slot K = pitch for the K-th NOTE event in time order)
   //   bytes 64..79  time_data[16] 2-bit cells, 4 steps/byte (0=REST, 1=NOTE, 2=TIE)
   //   byte  80      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
-  //   bytes 81..88  reserved[1..8] ratchet bitmap (1 bit/step, 64 bits)
+  //   bytes 81..88  reserved[1..8] unused padding
   //   byte  89      transpose
   //   byte  90      engine_select (round-tripped untouched)
   //   byte  91      length (1..64 normal, 1..48 triplet)
@@ -898,7 +884,7 @@
   var TIME_OFF       = 64;
   var TIME_BYTES     = 16;  // MAX_STEPS / 4 (2-bit cells, 4 steps/byte)
   var RES0_OFF       = 80;
-  var RAT_OFF        = 81;
+  var RES1_OFF       = 81;  // reserved[1..8], unused padding
   var TRANSPOSE_OFF  = 89;
   var ENGINE_OFF     = 90;
   var LEN_OFF        = 91;
@@ -1237,19 +1223,6 @@
     ensurePitchStream(blob);
   }
 
-  // Ratchet: 1 bit per step at bytes RAT_OFF..RAT_OFF+3 (= reserved[1..4]).
-  // 0 = 1× (no ratchet), 1 = 2× ratchet. Only meaningful on NOTE steps without slide.
-  function getRatchet(blob, s) {
-    var idx = s & (MAX_STEPS - 1);
-    return (blob[RAT_OFF + (idx >> 3)] >> (idx & 7)) & 0x01;
-  }
-  function setRatchet(blob, s, val) {
-    var idx = s & (MAX_STEPS - 1);
-    var b = RAT_OFF + (idx >> 3);
-    var bit = 1 << (idx & 7);
-    blob[b] = (val & 1) ? (blob[b] | bit) : (blob[b] & ~bit);
-  }
-
   // reserved[0]: bits[2:0]=direction (0..5), bit[3]=triplet flag.
   function getDirection(blob) { return blob[RES0_OFF] & DIR_MASK; }
   function setDirection(blob, d) {
@@ -1416,7 +1389,7 @@
     for (var i = 0; i < MAX_STEPS; i++) b[i] = PITCH_EMPTY;
     for (var t = 0; t < TIME_BYTES; t++) b[TIME_OFF + t] = 0;
     b[RES0_OFF] = 0;
-    b[RAT_OFF] = b[RAT_OFF+1] = b[RAT_OFF+2] = b[RAT_OFF+3] = 0;
+    b[RES1_OFF] = b[RES1_OFF+1] = b[RES1_OFF+2] = b[RES1_OFF+3] = 0;
     b[TRANSPOSE_OFF] = 0;
     b[ENGINE_OFF] = 0;
     b[LEN_OFF] = 16;
@@ -1427,7 +1400,7 @@
     for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
     for (var p = 0; p < MAX_STEPS; p++) blob[p] = PITCH_EMPTY;
     blob[RES0_OFF] &= TRIPLET_FLAG;
-    blob[RAT_OFF] = blob[RAT_OFF+1] = blob[RAT_OFF+2] = blob[RAT_OFF+3] = 0;
+    blob[RES1_OFF] = blob[RES1_OFF+1] = blob[RES1_OFF+2] = blob[RES1_OFF+3] = 0;
     blob[LEN_OFF] = 1;
   }
   function cloneU8(u) { var x = new Uint8Array(u.length); x.set(u); return x; }
@@ -2204,7 +2177,6 @@
           var k = noteIdx(blob2, si);
           if (blob2[k] === PITCH_EMPTY) blob2[k] = PITCH_DEFAULT;
           blob2[k] ^= 0x80;
-          if (!!(blob2[k] & 0x80)) setRatchet(blob2, si, 0);
           pushHistory(activeGroup, activePat);
           saveGroupsToLS();
           renderGrid();
@@ -2216,35 +2188,6 @@
       flagRow.appendChild(aBtn);
       flagRow.appendChild(sBtn);
       card.appendChild(flagRow);
-
-      // Ratchet — single 2× toggle, only active on NOTE steps without slide
-      var ratchetRow = document.createElement('div');
-      ratchetRow.className = 'step-ratchet';
-      var curRatchet = getRatchet(blob, s);
-      var isSlideTarget = noteStep && prevNoteHasSlide(blob, s, len);
-      var ratchetDisabled = !noteStep || sl || isSlideTarget;
-      var rb = document.createElement('button');
-      rb.type = 'button';
-      rb.className = 'r-btn' + (curRatchet ? ' is-on' : '');
-      rb.textContent = curRatchet ? '2×' : '1×';
-      rb.disabled = ratchetDisabled;
-      rb.title = '2× ratchet' + (!noteStep ? ' (note steps only)' : sl ? ' (disabled on slide source)' : isSlideTarget ? ' (disabled on slide destination)' : '');
-      rb.addEventListener('click', (function(si) {
-        return function() {
-          var blob2 = activeBlob();
-          if (getTime(blob2, si) !== 1) return;
-          var slk = noteIdx(blob2, si);
-          if (blob2[slk] !== PITCH_EMPTY && !!(blob2[slk] & 0x80)) return;
-          setRatchet(blob2, si, getRatchet(blob2, si) ? 0 : 1);
-          pushHistory(activeGroup, activePat);
-          saveGroupsToLS();
-          renderGrid();
-          recomputeDirty();
-          scheduleLiveSend();
-        };
-      })(s));
-      ratchetRow.appendChild(rb);
-      card.appendChild(ratchetRow);
 
       gridEl.appendChild(card);
     }
@@ -2913,16 +2856,13 @@
   function sendLengthUpdate(pat, len) {
     sendSysex(new Uint8Array([0x7d, 0x18, pat & 0x0f, len & 0x7f]));
   }
-  function sendRatchetUpdate(pat, step, val) {
-    sendSysex(new Uint8Array([0x7d, 0x1b, pat & 0x0f, step & 0x3f, val & 0x01]));
-  }
 
   /** Send per-step deltas to the 303 by diffing current blob against lastSentBlob.
    * Stream-slot model:
    *  - Time nibble change for step S → 0x16 step=S, pitchByte=PITCH_EMPTY (sentinel: time only).
    *  - Pitch stream slot change → find the NOTE step S that owns that slot, send
    *    0x16 step=S, pitchByte=new, timeNib=NOTE.
-   * Length and ratchets ride along after.
+   * Length rides along after.
    */
   function sendDelta(pat, blob, varIdx) {
     varIdx = varIdx || 0;
@@ -2950,15 +2890,10 @@
         if (step >= 0 && pcur !== PITCH_EMPTY) sendStepUpdate(pat, step, pcur, 1, varIdx);
       }
     }
-    // 3) ratchets + length: variation 1 only (shadow voices have neither per-step
-    //    ratchets nor a per-step length SysEx; the caller only deltas when the
-    //    shadow length is unchanged, else it sends the full blob).
+    // 3) length: variation 1 only (shadow voices have no per-step length SysEx;
+    //    the caller only deltas when the shadow length is unchanged, else it
+    //    sends the full blob).
     if (varIdx === 0) {
-      for (var rj = 0; rj < len; rj++) {
-        var curRat  = getRatchet(blob, rj);
-        var prevRat = prevTime ? getRatchet(prevTime, rj) : 0;
-        if (curRat !== prevRat) sendRatchetUpdate(pat, rj, curRat);
-      }
       if (!prevTime || len !== getLength(prevTime)) sendLengthUpdate(pat, len);
     }
     lastSentBlob = new Uint8Array(blob);
@@ -3030,7 +2965,6 @@
       if (haveBaseline) {
         for (var d = 0; d < len; d++) {
           if (getTime(blob, d) !== getTime(lastSentBlob, d)) diffCount++;
-          if (getRatchet(blob, d) !== getRatchet(lastSentBlob, d)) diffCount++;
         }
         for (var ds = 0; ds < MAX_STEPS; ds++) {
           if (blob[ds] !== lastSentBlob[ds]) diffCount++;
@@ -3365,23 +3299,6 @@
       return;
     }
 
-    if (cmd === 0x1b && bytes.length >= 5) {
-      if (!reflect303Enabled) return;
-      var rPat  = bytes[2] & 0x0f;
-      var rStep = bytes[3] & 0x3f;
-      var rVal  = bytes[4] & 0x01;
-      var rVar  = (bytes.length >= 6) ? (bytes[5] & 0x03) : 0;
-      if (rVar > 2 || hwGroup < 0) return;
-      var rBlob = varStore[hwGroup][rPat][rVar];
-      var shown = (rVar === slotVar[hwGroup][rPat]);
-      setRatchet(rBlob, rStep, rVal);
-      if (shown && lastSentBlob && lastSentPat === rPat) setRatchet(lastSentBlob, rStep, rVal);
-      saveGroupsToLS();
-      if (activeGroup === hwGroup && rPat === activePat && shown) renderGrid();
-      recomputeDirty();
-      return;
-    }
-
     if (cmd === 0x17 && bytes.length >= 3) {
       var newDir = bytes[2] & DIR_MASK;
       var dVar = (bytes.length >= 4) ? (bytes[3] & 0x03) : 0;
@@ -3712,7 +3629,7 @@
     var len = getLength(blob);
     var times = [];
     for (var s = 0; s < len; s++) {
-      times.push({ time: getTime(blob, s), ratchet: !!getRatchet(blob, s) });
+      times.push({ time: getTime(blob, s) });
     }
     var pitches = [];
     var nc = noteCount(blob, len);
@@ -3781,7 +3698,6 @@
   function validateTime(rec, idx) {
     if (typeof rec !== 'object' || rec === null) throw new Error('Time ' + idx + ': not an object');
     if (![0,1,2].includes(rec.time)) throw new Error('Time ' + idx + ': invalid time ' + rec.time);
-    if (typeof rec.ratchet !== 'boolean') throw new Error('Time ' + idx + ': ratchet must be boolean');
   }
   function validatePitch(rec, idx) {
     if (typeof rec !== 'object' || rec === null) throw new Error('Pitch ' + idx + ': not an object');
@@ -3824,7 +3740,6 @@
     for (var s = 0; s < len; s++) {
       var trec = pd.times[s];
       setTime(blob, s, trec.time);
-      setRatchet(blob, s, trec.ratchet ? 1 : 0);
     }
     for (var k = 0; k < pd.pitches.length; k++) {
       var prec = pd.pitches[k];
@@ -3977,7 +3892,6 @@
       if (s === 0 || prev === 0) tv = (r < 0.60) ? 1 : 0;
       else                       tv = (r < 0.60) ? 1 : (r < 0.85) ? 0 : 2;
       setTime(blob, s, tv);
-      if (tv !== 1) setRatchet(blob, s, 0);
       prev = tv;
     }
     normalizePatternTimes(blob, len);
@@ -3992,19 +3906,6 @@
       blob[k] = flags | (semi & 0x0F) | (pickWeightedOctave() << 4);
     }
   }
-  /** Random 2× ratchets, ~25% probability, only on NOTE steps without slide. */
-  function applyRandomRatchets(blob, len) {
-    for (var s = 0; s < len; s++) {
-      var slide = false;
-      if (getTime(blob, s) === 1) {
-        var k = noteIdx(blob, s);
-        slide = blob[k] !== PITCH_EMPTY && !!(blob[k] & 0x80);
-      }
-      if (getTime(blob, s) === 1 && !slide && Math.random() < 0.25) setRatchet(blob, s, 1);
-      else setRatchet(blob, s, 0);
-    }
-  }
-
   /** Random accent flag (~30% on / 70% off) on every stream slot. */
   function applyRandomAccent(blob, len) {
     var nc = noteCount(blob, len);
@@ -4014,9 +3915,7 @@
     }
   }
 
-  /** Random slide flag (~20% on / 80% off) on every stream slot. Matches
-   *  firmware RandomizeSlideData: each NOTE step that rolls slide also
-   *  clears its ratchet (slide source can't ratchet). */
+  /** Random slide flag (~20% on / 80% off) on every stream slot. */
   function applyRandomSlide(blob, len) {
     var k = 0;
     for (var s = 0; s < len; s++) {
@@ -4024,7 +3923,6 @@
       if (blob[k] === PITCH_EMPTY) blob[k] = PITCH_DEFAULT;
       var slide = Math.random() < 0.20;
       blob[k] = (blob[k] & 0x7F) | (slide ? 0x80 : 0);
-      if (slide) setRatchet(blob, s, 0);
       k++;
     }
   }
@@ -4074,13 +3972,6 @@
     pushFullPatternNow();
     log('Randomized slide', 'log-ack');
   };
-  document.getElementById('btnRandRatchet').onclick = function() {
-    var blob = activeBlob(), len = currentPatLen();
-    applyRandomRatchets(blob, len);
-    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
-    pushFullPatternNow();
-    log('Randomized ratchets', 'log-ack');
-  };
   document.getElementById('btnRandAll').onclick = function() {
     var blob = activeBlob(), len = currentPatLen();
     applyRandomTime(blob, len);
@@ -4088,8 +3979,6 @@
     applyRandomOctave(blob, len);
     applyRandomAccent(blob, len);
     applyRandomSlide(blob, len);
-    // Reset all ratchets to 1x; use the Ratchet button explicitly for random ratchets.
-    for (var s = 0; s < len; s++) setRatchet(blob, s, 0);
     syncScaleSnapAndApply(activeGroup, activePat, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
     pushFullPatternNow();
@@ -4385,14 +4274,14 @@
   // ── Nudge ──────────────────────────────────────────────────────────
   /**
    * Nudge the pattern by one step.
-   * mode: 'pitch' | 'octave' | 'accent' | 'slide' | 'ratchet' | 'time' | 'all'
+   * mode: 'pitch' | 'octave' | 'accent' | 'slide' | 'time' | 'all'
    * direction: +1 = forward (content shifts right, last step wraps to first)
    *            -1 = backward (content shifts left, first step wraps to last)
    * Locked steps are fixed anchors; unlocked steps rotate among themselves.
    *
-   * NOTE-step modes (pitch/octave/accent/slide/ratchet): operate only on unlocked NOTE steps.
-   * time:  rotates time values + ratchets among all unlocked steps; pitches reflow.
-   * all:   rotates every attribute (time + pitch byte + ratchet) as a unit.
+   * NOTE-step modes (pitch/octave/accent/slide): operate only on unlocked NOTE steps.
+   * time:  rotates time values among all unlocked steps; pitches reflow.
+   * all:   rotates every attribute (time + pitch byte) as a unit.
    */
   function nudgePattern(blob, len, mode, direction) {
     if (len < 2) return;
@@ -4430,35 +4319,18 @@
       rotate(sls);
       for (var ks2 = 0; ks2 < nc; ks2++) blob[ks2] = (blob[ks2] & 0x7F) | (sls[ks2] << 7);
 
-    } else if (mode === 'ratchet') {
-      // Ratchets are per time step but only meaningful on NOTE steps.
-      var noteStepsArr = [];
-      for (var s = 0; s < len; s++) if (getTime(blob, s) === 1) noteStepsArr.push(s);
-      if (noteStepsArr.length < 2) return;
-      var rats = noteStepsArr.map(function(s) { return getRatchet(blob, s); });
-      rotate(rats);
-      for (var ir = 0; ir < noteStepsArr.length; ir++) setRatchet(blob, noteStepsArr[ir], rats[ir]);
-
     } else if (mode === 'time') {
       var times = []; for (var st = 0; st < len; st++) times.push(getTime(blob, st));
-      var rats2 = []; for (var st2 = 0; st2 < len; st2++) rats2.push(getRatchet(blob, st2));
-      rotate(times); rotate(rats2);
-      for (var iz = 0; iz < len; iz++) {
-        setTime(blob, iz, times[iz]);
-        setRatchet(blob, iz, rats2[iz]);
-      }
+      rotate(times);
+      for (var iz = 0; iz < len; iz++) setTime(blob, iz, times[iz]);
       normalizePatternTimes(blob, len);
 
     } else { // 'all' — rotate stream pitches AND time_data together
       var times3 = []; for (var sb = 0; sb < len; sb++) times3.push(getTime(blob, sb));
-      var rats3  = []; for (var sb2 = 0; sb2 < len; sb2++) rats3.push(getRatchet(blob, sb2));
       var pitch3 = []; for (var kp = 0; kp < nc; kp++) pitch3.push(blob[kp]);
-      rotate(times3); rotate(rats3);
+      rotate(times3);
       if (pitch3.length >= 2) rotate(pitch3);
-      for (var iz2 = 0; iz2 < len; iz2++) {
-        setTime(blob, iz2, times3[iz2]);
-        setRatchet(blob, iz2, rats3[iz2]);
-      }
+      for (var iz2 = 0; iz2 < len; iz2++) setTime(blob, iz2, times3[iz2]);
       for (var ip = 0; ip < pitch3.length; ip++) blob[ip] = pitch3[ip];
       normalizePatternTimes(blob, len);
     }
@@ -4484,8 +4356,6 @@
   document.getElementById('btnNudgeAccentR').onclick  = function() { doNudge('accent',  +1); };
   document.getElementById('btnNudgeSlideL').onclick   = function() { doNudge('slide',   -1); };
   document.getElementById('btnNudgeSlideR').onclick   = function() { doNudge('slide',   +1); };
-  document.getElementById('btnNudgeRatchetL').onclick = function() { doNudge('ratchet', -1); };
-  document.getElementById('btnNudgeRatchetR').onclick = function() { doNudge('ratchet', +1); };
   document.getElementById('btnNudgeTimeL').onclick    = function() { doNudge('time',    -1); };
   document.getElementById('btnNudgeTimeR').onclick    = function() { doNudge('time',    +1); };
   document.getElementById('btnNudgeAllL').onclick     = function() { doNudge('all',     -1); };
@@ -4816,7 +4686,6 @@
     for (var s = 0; s < len; s++) {
       var trec = pd.times[s];
       setTime(blob, s, trec.time);
-      setRatchet(blob, s, trec.ratchet ? 1 : 0);
     }
     var pStream = pd.pitches || [];
     for (var k = 0; k < pStream.length; k++) {

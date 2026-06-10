@@ -87,12 +87,20 @@ public:
 
   // Wipe and re-initialize the arena (start clean).
   bool format() {
+    // Pick a generation strictly greater than anything already on flash. format()
+    // does NOT erase the record pages, so stale records from a previous epoch
+    // survive; a fresh generation makes mount()/read() reject them by gen. Reusing
+    // gen 1 would let old gen-1 records with higher seq numbers win on the next
+    // mount, resurrecting wiped data (settings/patterns) on every power cycle.
+    // mount() always runs before format() and sets active_gen_ to the existing
+    // generation (0 only for a truly blank arena), so +1 is strictly newer.
+    const uint32_t new_gen = active_gen_ + 1;
     active_bank_ = 0;
-    active_gen_  = 1;
+    active_gen_  = new_gen;
     seq_         = 0;
     append_      = 1;
     memset(index_, 0, sizeof(index_));
-    if (!write_bank_header(0, 1)) return false;
+    if (!write_bank_header(0, new_gen)) return false;
     invalidate_bank_header(1);                  // ensure bank 1 not chosen
     return true;
   }

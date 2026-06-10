@@ -14,8 +14,9 @@
 //                          4 steps packed per byte.
 //   reserved[5]          -- bytes that OS-303 round-trips untouched.
 //                            reserved[0] = direction (0..5)
-//                            reserved[1..4] = ratchet bitmap, 1 bit/step,
-//                                             32 bits = 32 steps. Bit set = 2x.
+//                            reserved[1..8] = unused padding (was the ratchet
+//                                             bitmap; kept reserved so the stored
+//                                             format is unchanged).
 //   transpose            -- per-pattern transpose (semitones).
 //   engine_select        -- OS-303's multi-engine selector (we leave at 0).
 //   length               -- 1..32.
@@ -50,7 +51,7 @@ static constexpr int NUM_GROUPS = NUM_BANKS; // back-compat alias
 // CV/gate plays. 64 slots x 3 = 192 patterns total.
 static constexpr int NUM_VARIATIONS = 3;
 static constexpr int NUM_SLOTS = NUM_PATTERNS * NUM_BANKS; // 64
-// reserved[9] (direction + 64-bit ratchet bitmap) + transpose + engine_select + length
+// reserved[9] (direction + unused padding) + transpose + engine_select + length
 static constexpr int METADATA_SIZE = 12;
 
 enum SequencerMode {
@@ -103,7 +104,7 @@ struct Sequence {
   // ----- EEPROM-persisted layout (56 bytes, must match OS-303 byte-for-byte) -----
   uint8_t pitch[MAX_STEPS];           // 32 bytes
   uint8_t time_data[MAX_STEPS / 4];   // 8 bytes (2-bit cells, 4 steps/byte)
-  uint8_t reserved[METADATA_SIZE - 3]; // 9 bytes (reserved[0]=direction, [1..8]=64-bit ratchet bitmap)
+  uint8_t reserved[METADATA_SIZE - 3]; // 9 bytes (reserved[0]=direction, [1..8]=unused padding)
   uint8_t transpose     = 0;
   uint8_t engine_select = 0;
   uint8_t length        = 16;
@@ -134,18 +135,6 @@ struct Sequence {
   uint8_t get_pitch_count() const { return pitch_count_runtime; }
   void    set_pitch_count(uint8_t n) {
     pitch_count_runtime = (n <= MAX_STEPS) ? n : MAX_STEPS;
-  }
-
-  // Ratchet: 1 bit/step in reserved[1..8]. 0 = 1x (normal), 1 = 2x.
-  uint8_t get_ratchet_val(uint8_t step) const {
-    const uint8_t idx = step & (MAX_STEPS - 1);
-    return (reserved[1 + (idx >> 3)] >> (idx & 7)) & 0x01;
-  }
-  void set_ratchet_val(uint8_t step, uint8_t val) {
-    const uint8_t idx = step & (MAX_STEPS - 1);
-    const uint8_t mask = uint8_t(1u << (idx & 7));
-    if (val & 0x01) reserved[1 + (idx >> 3)] |=  mask;
-    else            reserved[1 + (idx >> 3)] &= ~mask;
   }
 
   // Step lock (RAM-only)
@@ -656,4 +645,3 @@ static inline uint8_t fast_rand_time_weighted(uint8_t prev_t, bool is_first) {
 }
 static inline uint8_t fast_rand_accent_weighted()  { return (fast_rand(10) < 3) ? 0x40 : 0; }
 static inline uint8_t fast_rand_slide_weighted()   { return (fast_rand(10) < 2) ? 0x80 : 0; }
-static inline uint8_t fast_rand_ratchet_weighted() { return (fast_rand(4) == 0) ? 1 : 0; }

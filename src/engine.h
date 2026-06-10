@@ -695,8 +695,6 @@ struct Engine {
     last_step_dir_ = 1;
   }
 
-  static uint8_t random_ratchet_val() { return fast_rand_ratchet_weighted(); }
-
   // ---------------------------------------------------------------------------
   // Bulk ops on the joint (time, pitch) representation.
   // Each captures per-time-step pitch via sequence_pack_per_time, mutates the
@@ -705,7 +703,6 @@ struct Engine {
   // ---------------------------------------------------------------------------
 
   /// Randomize entire pattern: random time + random pitches in stream order.
-  /// Ratchets cleared.
   void RandomizeFullPattern() {
     Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
@@ -714,7 +711,6 @@ struct Engine {
     for (uint8_t i = 0; i < len; i++) {
       const uint8_t t = fast_rand_time_weighted(prev, i == 0);
       sequence_set_time_at(s, i, t);
-      s.set_ratchet_val(i, 0);
       prev = t;
     }
     normalize_pattern_times_only(s);
@@ -726,15 +722,6 @@ struct Engine {
     }
     for (uint8_t k = nc; k < MAX_STEPS; ++k) s.pitch[k] = PITCH_EMPTY;
     s.set_pitch_count(nc);
-    stale = true;
-  }
-
-  void RandomizeFullPatternKeepRatchets() {
-    Sequence &s = get_edit_sequence();
-    uint8_t saved[MAX_STEPS / 8];
-    for (uint8_t i = 0; i < (MAX_STEPS / 8); ++i) saved[i] = s.reserved[1 + i];
-    RandomizeFullPattern();
-    for (uint8_t i = 0; i < (MAX_STEPS / 8); ++i) s.reserved[1 + i] = saved[i];
     stale = true;
   }
 
@@ -776,15 +763,6 @@ struct Engine {
                    | fast_rand_accent_weighted()
                    | fast_rand_slide_weighted();
     }
-    // Slide steps cannot ratchet - clear ratchets for any NOTE step that
-    // gained slide. Ratchet storage is per-time-step.
-    uint8_t k = 0;
-    for (uint8_t i = 0; i < s.length; ++i) {
-      if (s.time(i) == 1) {
-        if (k < pc && (s.pitch[k] & 0x80)) s.set_ratchet_val(i, 0);
-        ++k;
-      }
-    }
     stale = true;
   }
 
@@ -798,39 +776,10 @@ struct Engine {
     for (uint8_t i = 0; i < len; i++) {
       const uint8_t t = fast_rand_time_weighted(prev, i == 0);
       sequence_set_time_at(s, i, t);
-      if (t != 1) s.set_ratchet_val(i, 0);
       prev = t;
     }
     normalize_pattern_times_only(s);
     sequence_ensure_pitch_for_notes(s);
-    stale = true;
-  }
-
-  void ClearRatchetsOnly() {
-    Sequence &s = get_edit_sequence();
-    const uint8_t len = s.length;
-    for (uint8_t i = 0; i < len; i++) s.set_ratchet_val(i, 0);
-    stale = true;
-  }
-
-  void RandomizeRatchetData() {
-    Sequence &s = get_edit_sequence();
-    const uint8_t len = s.length;
-    fast_rand_seed();
-    uint8_t k = 0;
-    const uint8_t pc = s.get_pitch_count();
-    for (uint8_t i = 0; i < len; i++) {
-      if (s.time(i) == 1) {
-        const uint8_t pb = (k < pc) ? s.pitch[k] : PITCH_EMPTY;
-        ++k;
-        if (pb != PITCH_EMPTY && !(pb & 0x80))
-          s.set_ratchet_val(i, random_ratchet_val());
-        else
-          s.set_ratchet_val(i, 0);
-      } else {
-        s.set_ratchet_val(i, 0);
-      }
-    }
     stale = true;
   }
 
@@ -856,7 +805,6 @@ struct Engine {
         if (k < pc && s.pitch[k] != PITCH_EMPTY) {
           const uint8_t sl = fast_rand_slide_weighted();
           s.pitch[k] = (s.pitch[k] & ~uint8_t(0x80)) | sl;
-          if (sl) s.set_ratchet_val(i, 0);
         }
         ++k;
       }
@@ -897,10 +845,8 @@ struct Engine {
         case 2: {
           if (t_i == 1) {
             const uint8_t slot = s.pitch_index_for_note(i);
-            if (slot < s.get_pitch_count() && s.pitch[slot] != PITCH_EMPTY) {
+            if (slot < s.get_pitch_count() && s.pitch[slot] != PITCH_EMPTY)
               s.pitch[slot] ^= 0x80;
-              if (s.pitch[slot] & 0x80) s.set_ratchet_val(i, 0);
-            }
           }
           break;
         }
@@ -908,7 +854,6 @@ struct Engine {
           // Flip rest <-> note (avoid creating rest->tie issues at this step).
           const uint8_t nt = (t_i == 0) ? 1 : (t_i == 1) ? 0 : 1;
           sequence_write_time_with_pitch_sync(s, i, nt);
-          if (nt != 1) s.set_ratchet_val(i, 0);
           break;
         }
         case 4: {
@@ -934,7 +879,7 @@ struct Engine {
   }
 
   /// Insert a REST time-step at the current time_pos, shifting later time nibbles
-  /// and ratchets right. Pitch stream is left untouched.
+  /// right. Pitch stream is left untouched.
   void InsertTimeStep() {
     Sequence &s = get_edit_sequence();
     const uint8_t gmax = MAX_STEPS;
@@ -942,10 +887,7 @@ struct Engine {
     const uint8_t at = uint8_t(s.time_pos & (MAX_STEPS - 1));
     for (int i = int(s.length); i > int(at); --i)
       sequence_set_time_at(s, uint8_t(i), s.time(uint8_t(i - 1)));
-    for (int i = int(s.length); i > int(at); --i)
-      s.set_ratchet_val(uint8_t(i), s.get_ratchet_val(uint8_t(i - 1)));
     sequence_set_time_at(s, at, 0);
-    s.set_ratchet_val(at, 0);
     s.length = uint8_t(s.length + 1);
     normalize_pattern_times(s);
     stale = true;
@@ -959,20 +901,17 @@ struct Engine {
     if (s.length <= 1) return;
     const uint8_t at = uint8_t(s.time_pos & (MAX_STEPS - 1));
     if (at >= s.length) return;
-    for (uint8_t i = at; i < s.length - 1; ++i) {
+    for (uint8_t i = at; i < s.length - 1; ++i)
       sequence_set_time_at(s, i, s.time(uint8_t(i + 1)));
-      s.set_ratchet_val(i, s.get_ratchet_val(uint8_t(i + 1)));
-    }
     const uint8_t last = uint8_t(s.length - 1);
     sequence_set_time_at(s, last, 0);
-    s.set_ratchet_val(last, 0);
     s.length = uint8_t(s.length - 1);
     if (s.time_pos >= s.length) s.time_pos = 0;
     normalize_pattern_times(s);
     stale = true;
   }
 
-  /// Shift entire pattern (pitch + time + ratchets) one step LEFT within length.
+  /// Shift entire pattern (pitch + time) one step LEFT within length.
   void ShiftPatternLeft() {
     Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
@@ -981,15 +920,12 @@ struct Engine {
     sequence_pack_per_time(s, per_time);
     const uint8_t ft = s.time(0);
     const uint8_t fp = per_time[0];
-    const uint8_t fr = s.get_ratchet_val(0);
     for (uint8_t i = 0; i < len - 1; ++i) {
       sequence_set_time_at(s, i, s.time(uint8_t(i + 1)));
       per_time[i] = per_time[i + 1];
-      s.set_ratchet_val(i, s.get_ratchet_val(uint8_t(i + 1)));
     }
     sequence_set_time_at(s, uint8_t(len - 1), ft);
     per_time[len - 1] = fp;
-    s.set_ratchet_val(uint8_t(len - 1), fr);
     normalize_pattern_times_only(s);
     sequence_unpack_per_time(s, per_time);
     stale = true;
@@ -1003,15 +939,12 @@ struct Engine {
     sequence_pack_per_time(s, per_time);
     const uint8_t lt = s.time(uint8_t(len - 1));
     const uint8_t lp = per_time[len - 1];
-    const uint8_t lr = s.get_ratchet_val(uint8_t(len - 1));
     for (int i = int(len - 1); i > 0; --i) {
       sequence_set_time_at(s, uint8_t(i), s.time(uint8_t(i - 1)));
       per_time[i] = per_time[i - 1];
-      s.set_ratchet_val(uint8_t(i), s.get_ratchet_val(uint8_t(i - 1)));
     }
     sequence_set_time_at(s, 0, lt);
     per_time[0] = lp;
-    s.set_ratchet_val(0, lr);
     normalize_pattern_times_only(s);
     sequence_unpack_per_time(s, per_time);
     stale = true;
@@ -1037,7 +970,7 @@ struct Engine {
     stale = true;
   }
 
-  /// Reverse the entire pattern (pitch + time + ratchets) within length.
+  /// Reverse the entire pattern (pitch + time) within length.
   void ReversePattern() {
     Sequence &s = get_edit_sequence();
     const uint8_t len = s.length;
@@ -1052,10 +985,6 @@ struct Engine {
       const uint8_t pti = per_time[i];
       per_time[i] = per_time[j];
       per_time[j] = pti;
-      const uint8_t ri = s.get_ratchet_val(i);
-      const uint8_t rj = s.get_ratchet_val(j);
-      s.set_ratchet_val(i, rj);
-      s.set_ratchet_val(j, ri);
     }
     normalize_pattern_times_only(s);
     sequence_unpack_per_time(s, per_time);
@@ -1109,14 +1038,13 @@ struct Engine {
       if (!(s.pitch[k] & 0x80)) all_set = false;
     }
     if (valid_count == 0) return;
-    // Walk pitch slots and clear ratchet on the matching time-step for any NOTE
-    // that gains slide. Need a slot->time mapping: walk time_data in order.
+    // Walk pitch slots: set/clear slide on each NOTE's pitch byte.
     uint8_t k = 0;
     for (uint8_t i = 0; i < s.length && k < pc; ++i) {
       if (s.time(i) == 1) {
         if (s.pitch[k] != PITCH_EMPTY) {
           if (all_set) s.pitch[k] &= ~0x80;
-          else       { s.pitch[k] |=  0x80; s.set_ratchet_val(i, 0); }
+          else         s.pitch[k] |=  0x80;
         }
         ++k;
       }
@@ -1175,31 +1103,6 @@ struct Engine {
     stale = true;
   }
 
-  void NudgeRatchet(int dir) {
-    Sequence &s = get_edit_sequence();
-    const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
-    if (s.time(tp) != 1) return;
-    const uint8_t slot = s.pitch_index_for_note(tp);
-    if (slot < s.get_pitch_count() && s.pitch[slot] != PITCH_EMPTY && (s.pitch[slot] & 0x80))
-      return;
-    int r = int(s.get_ratchet_val(tp)) + dir;
-    if (r < 0) r = 0;
-    if (r > 2) r = 2;
-    s.set_ratchet_val(tp, uint8_t(r));
-    stale = true;
-  }
-
-  void SetRatchetAtCurrent(uint8_t val) {
-    Sequence &s = get_edit_sequence();
-    const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
-    if (s.time(tp) != 1) return;
-    const uint8_t slot = s.pitch_index_for_note(tp);
-    if (slot < s.get_pitch_count() && s.pitch[slot] != PITCH_EMPTY && (s.pitch[slot] & 0x80))
-      return;
-    if (val > 2) val = 2;
-    s.set_ratchet_val(tp, val);
-    stale = true;
-  }
 
   // ---------------------------------------------------------------------------
   // Direction
@@ -1233,6 +1136,9 @@ struct Engine {
   // Getters
   // ---------------------------------------------------------------------------
   SequencerMode get_mode() const { return mode_; }
+  // True while the panel is editing variation 3's polyphonic chord voice. The mono
+  // pitch-write/audition paths defer to ProcessPolyEdit in this state.
+  bool in_poly_pitch_edit() const { return mode_ == PITCH_MODE && edit_var_ == 2 && poly_active_; }
 
   Sequence &get_sequence() { return pattern[p_select]; }
   const Sequence &get_sequence() const { return pattern[p_select]; }
@@ -1270,35 +1176,15 @@ struct Engine {
   }
 
   // Gate window: 50% of the step period in 16ths (clk_count < 3 of 6) and in
-  // triplets (clk_count < 4 of 8). With 1-bit ratchet (Phase 3): r=0 normal,
-  // r=1 = 2x ratchet (two gate pulses, retriggered at the half-step boundary).
+  // triplets (clk_count < 4 of 8).
   bool get_gate() const {
     if (resting) return false;
-    const uint8_t period = step_period();
-    const uint8_t half = uint8_t(period >> 1);
-    const int8_t  last = int8_t(period - 1);
+    const uint8_t half = uint8_t(step_period() >> 1);
     if (get_slide_dac()) return slide_gate ? true : (clk_count < int8_t(half));
-    const uint8_t r = get_sequence().get_ratchet_val(uint8_t(get_sequence().time_pos));
-    if (slide_gate && r == 0) return true;
-    if (r) {
-      // 2x ratchet: short gate pulses at clk=0 and clk=half (preserves the
-      // legacy hi-hat-style pattern; ratchet_retrigger forces a low edge
-      // between the pulses to retrigger the analog envelope).
-      return (uint8_t(clk_count) % half) == 0u || (slide_gate && clk_count == last);
-    }
+    if (slide_gate) return true;
     return clk_count < int8_t(half);
   }
 
-  bool is_ratchet_retrigger() const {
-    if (resting) return false;
-    if (get_slide_dac()) return false;
-    const uint8_t r = get_sequence().get_ratchet_val(uint8_t(get_sequence().time_pos));
-    if (r) {
-      const uint8_t half = uint8_t(step_period() >> 1);
-      return uint8_t(clk_count) == half;
-    }
-    return false;
-  }
   bool get_accent() const {
     return !resting && get_sequence().get_accent();
   }
