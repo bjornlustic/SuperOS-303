@@ -16,13 +16,13 @@ uint8_t midi_sequencer_out_channel();
 void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses);
 /// Main voice (variation 1) MIDI: call EVERY clock tick while running. Drives Note
 /// On/Off from engine.get_gate() so MIDI note length tracks the analog gate exactly.
-void midi_seq_gate_tick(Engine &engine, uint8_t transpose);
+void midi_seq_gate_tick(Engine &engine, int16_t transpose);
 /// Mute the sequencer's MIDI Note On for a specific step index. -1 = no muted step.
 /// Used by the step-select detail editor so the edited step doesn't repeat audibly.
 void midi_set_silence_step(int step);
 /// Shadow voices (variations 2/3) MIDI: call EVERY clock tick while running, after
 /// Engine::AdvanceShadows() ran at the 16th boundary. Gate-follows like the main voice.
-void midi_shadows_gate_tick(Engine &engine, uint8_t transpose);
+void midi_shadows_gate_tick(Engine &engine, int16_t transpose);
 /// Flush note-offs queued by the gate-ticks this tick. Call once per clock tick AFTER
 /// midi_seq_gate_tick + midi_shadows_gate_tick so all voices' note-ONs cluster first.
 void midi_flush_note_offs();
@@ -48,7 +48,7 @@ void midi_audition_note_on(uint8_t note, uint8_t vel);
 void midi_audition_note_off();
 /// Audition a full variation-3 poly chord during edit: Note On per voice on the
 /// var3 channel (MIDI only, no 303 CV). Closes any open audition chord first.
-void midi_audition_chord_on(const uint8_t *voices, bool accent, uint8_t transpose);
+void midi_audition_chord_on(const uint8_t *voices, bool accent, int16_t transpose);
 /// Close the currently-open audition chord (poly TAP_NEXT / BACK_KEY navigation).
 void midi_audition_chord_off();
 

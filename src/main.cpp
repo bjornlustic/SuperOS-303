@@ -22,8 +22,13 @@ PersistentSettings GlobalSettings;
 // =============================================================================
 static uint8_t ticks = 0;
 static uint8_t clk_count = 0;
-static uint8_t transpose = 12; // range is 0 to 47; 0 = no transpose
-static uint8_t total_transpose = 12;
+static uint8_t transpose = 12; // global performance transpose, 0..47 (12 = no transpose)
+// Effective transpose = global performance + per-pattern transpose (-24..+24) + track
+// step. Signed so per-pattern down-transpose can pull the note below the baseline.
+static int16_t total_transpose = 12;
+// Clamp a transposed 6-bit CV value to the DAC range so a down-transpose floors at 0
+// instead of wrapping to the top of the range.
+static inline uint8_t clamp_cv(int v) { return uint8_t(v < 0 ? 0 : (v > 63 ? 63 : v)); }
 
 static PinState inputs[INPUT_COUNT];
 
@@ -558,7 +563,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
         const Sequence &es = engine.edit_seq_view();
         const bool acc = es.get_accent();
         const uint8_t vel = acc ? 127 : 80;
-        s_tap_pitch_preview_cv = uint8_t(es.get_pitch() + total_transpose);
+        s_tap_pitch_preview_cv = clamp_cv(int(es.get_pitch()) + total_transpose);
         s_tap_pitch_preview_accent = acc;
         s_tap_pitch_preview_slide = es.get_slide();
         midi_audition_note_on(uint8_t(mn), vel);
@@ -586,7 +591,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       if (mn > 127) mn = 127;
       const bool acc = es.get_accent();
       const uint8_t vel = acc ? 127 : 80;
-      s_back_pitch_preview_cv = uint8_t(es.get_pitch() + total_transpose);
+      s_back_pitch_preview_cv = clamp_cv(int(es.get_pitch()) + total_transpose);
       s_tap_pitch_preview_accent = acc;
       s_tap_pitch_preview_slide = es.get_slide();
       s_back_pitch_preview_gate = true;
@@ -1048,14 +1053,14 @@ void loop() {
   const bool dial_track_play    = (dial == DialMode::TrackPlay);
   const bool dial_track_mode    = dial_track_write || dial_track_play;
 
-  total_transpose = uint8_t(transpose + engine.get_pattern_transpose());
+  total_transpose = int16_t(int(transpose) + int(engine.get_pattern_transpose()));
   // In Track mode, also add the per-chain-step transpose for the slot the
   // chain cursor is currently on. Encoding: TRACK_TRANSPOSE_ZERO (=12) means
   // "no transpose", so we subtract that offset before adding.
   if (engine.track_active && engine.track_has_chain()) {
     const int8_t step_off = int8_t(engine.TrackGetTranspose(engine.get_chain_pos()))
                           - int8_t(TRACK_TRANSPOSE_ZERO);
-    total_transpose = uint8_t(int(total_transpose) + int(step_off));
+    total_transpose = int16_t(int(total_transpose) + int(step_off));
   }
 
   // Read track index from the 3-bit dial (TRACK_BIT0..2). Tracks 0..7 select
@@ -1632,7 +1637,7 @@ void loop() {
                 const uint8_t linear = unpack_pitch_linear(pb & 0x3f);
                 const bool acc = (pb & (1 << 6)) != 0;
                 if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
-                s_tap_pitch_preview_cv = uint8_t(linear + total_transpose);
+                s_tap_pitch_preview_cv = clamp_cv(int(linear) + total_transpose);
                 s_tap_pitch_preview_accent = acc;
                 s_tap_pitch_preview_slide = (pb & (1 << 7)) != 0;
                 s_tap_pitch_preview_gate = true;
@@ -1729,7 +1734,7 @@ void loop() {
               const uint8_t lin = unpack_pitch_linear(ab & 0x3f);
               const bool acc = (ab & (1 << 6)) != 0;
               if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
-              s_tap_pitch_preview_cv = uint8_t(lin + total_transpose);
+              s_tap_pitch_preview_cv = clamp_cv(int(lin) + total_transpose);
               s_tap_pitch_preview_accent = acc;
               s_tap_pitch_preview_slide = (ab & (1 << 7)) != 0;
               s_tap_pitch_preview_gate = true;
@@ -1793,7 +1798,7 @@ void loop() {
         const uint8_t oct    = resolve_octave();
         const uint8_t packed = pack_pitch(pi, oct);
         const uint8_t linear = unpack_pitch_linear(packed);
-        const uint8_t cv     = uint8_t(linear + total_transpose);
+        const uint8_t cv     = clamp_cv(int(linear) + total_transpose);
         const bool    legato = (s_kb_stack_depth > 0);
         const bool    acc    = inputs[ACCENT_KEY].held();
         const bool    sld    = inputs[SLIDE_KEY].held() || legato;
@@ -2361,7 +2366,7 @@ void loop() {
             if (mn > 127) mn = 127;
             const bool acc = auds.get_accent();
             const uint8_t vel = acc ? 127 : 80;
-            s_tap_pitch_preview_cv = uint8_t(auds.get_pitch() + total_transpose);
+            s_tap_pitch_preview_cv = clamp_cv(int(auds.get_pitch()) + total_transpose);
             s_tap_pitch_preview_accent = acc;
             s_tap_pitch_preview_slide = auds.get_slide();
             s_tap_pitch_preview_gate = true;
@@ -2441,7 +2446,7 @@ void loop() {
           uint16_t mn = uint16_t(written_note) + total_transpose;
           if (mn > 127) mn = 127;
           const uint8_t vel = inputs[ACCENT_KEY].held() ? 127 : 80;
-          s_tap_pitch_preview_cv  = uint8_t(written_note - 36 + total_transpose);
+          s_tap_pitch_preview_cv  = clamp_cv(int(written_note) - 36 + total_transpose);
           // New-note write: audition reflects the user's modifier state at
           // write time, never stored flags. Without this, the OR with
           // seq.get_slide() below would read the post-advance pitch_pos's
@@ -2516,7 +2521,7 @@ void loop() {
     // Metronome click: override pitch with fixed CV (no transpose); accent on downbeat
     const uint8_t pitch_cv = s_metro_gate_pulse
         ? s_metro_pitch_cv
-        : uint8_t(engine.get_pitch() + total_transpose);
+        : clamp_cv(int(engine.get_pitch()) + total_transpose);
     DAC::SetPitch(pitch_cv);
     DAC::SetSlide(engine.get_slide_dac() || force_slide_live);
     DAC::SetAccent(engine.get_accent() || force_accent_live || (s_metro_gate_pulse && s_metro_is_downbeat));
@@ -2530,7 +2535,7 @@ void loop() {
         : engine.get_gate();
     DAC::SetGate(gate_running || s_metro_gate_pulse);
   } else {
-    uint8_t pitch_cv = uint8_t(engine.get_pitch() + total_transpose);
+    uint8_t pitch_cv = clamp_cv(int(engine.get_pitch()) + total_transpose);
     bool gate = midi_live_gate();
     // Auditioning a non-CV variation (var2/var3) is MIDI-only: the 303 analog voice
     // must stay silent. Only variation-1 edits open the audition CV/gate; the MIDI

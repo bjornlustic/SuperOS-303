@@ -734,7 +734,7 @@ void midi_audition_chord_off() {
   s_aud_chord_n = 0;
 }
 
-void midi_audition_chord_on(const uint8_t *voices, bool accent, uint8_t transpose) {
+void midi_audition_chord_on(const uint8_t *voices, bool accent, int16_t transpose) {
   midi_audition_chord_off();                              // close any open audition chord
   const byte ch = static_cast<byte>(out_ch_for_var(2));   // variation 3 channel
   const uint8_t vel = accent ? 127 : 80;
@@ -742,6 +742,7 @@ void midi_audition_chord_on(const uint8_t *voices, bool accent, uint8_t transpos
     if (voices[i] == POLY_EMPTY) continue;
     int n = 36 + int(unpack_pitch_linear(voices[i])) + int(transpose);
     if (n > 127) n = 127;
+    if (n < 0)   n = 0;
     MIDI.sendNoteOn(static_cast<byte>(n), vel, ch);
     s_aud_chord[s_aud_chord_n++] = static_cast<uint8_t>(n);
   }
@@ -1025,7 +1026,7 @@ void midi_flush_note_offs() {
 // while get_gate() is high (half-step for plain notes, extended by ties/slides).
 // Pitch changing while the gate stays high = a slide, so the new note is sent
 // before the old note-off (legato overlap).
-void midi_seq_gate_tick(Engine &engine, uint8_t transpose) {
+void midi_seq_gate_tick(Engine &engine, int16_t transpose) {
   const byte och = static_cast<byte>(out_ch());
 
   // Output channel moved: close the open note on its old channel first.
@@ -1044,8 +1045,9 @@ void midi_seq_gate_tick(Engine &engine, uint8_t transpose) {
     return;
   }
 
-  uint16_t n = static_cast<uint16_t>(engine.get_midi_note()) + transpose;
+  int n = int(engine.get_midi_note()) + transpose;
   if (n > 127) n = 127;
+  if (n < 0)   n = 0;
   const uint8_t vel = engine.get_accent() ? 127 : 80;
 
   if (!s_seq_note_on) {
@@ -1080,7 +1082,7 @@ static void poly_all_off(byte och) {
   s_poly_on_count = 0;
 }
 
-static void poly_gate_tick(Engine &engine, uint8_t transpose) {
+static void poly_gate_tick(Engine &engine, int16_t transpose) {
   const byte och = static_cast<byte>(out_ch_for_var(2)); // variation 3 channel
   if (!engine.poly_active_) { poly_all_off(och); return; }
   const int8_t half = int8_t(engine.step_period() >> 1);
@@ -1099,6 +1101,7 @@ static void poly_gate_tick(Engine &engine, uint8_t transpose) {
     if (v[i] == POLY_EMPTY) continue;
     int n = 36 + int(unpack_pitch_linear(v[i])) + transpose;
     if (n > 127) n = 127;
+    if (n < 0)   n = 0;
     want[wn++] = static_cast<uint8_t>(n);
   }
   // Drop notes no longer in the chord, then add the new ones (kept notes hold).
@@ -1119,9 +1122,13 @@ static void poly_gate_tick(Engine &engine, uint8_t transpose) {
 // clock tick -- same model as the main voice so var2/3 note length tracks the
 // analog gate. Engine::AdvanceShadows() (called at the 16th boundary) computes the
 // per-shadow resting/slide_gate; here we sample the gate window with clk_count.
-void midi_shadows_gate_tick(Engine &engine, uint8_t transpose) {
+void midi_shadows_gate_tick(Engine &engine, int16_t transpose) {
   const int8_t half = int8_t(engine.step_period() >> 1);
   const int8_t clk  = engine.clk_count;
+  // `transpose` is variation 1's effective transpose (global performance +
+  // var1 pattern transpose + track step). Strip var1's pattern transpose so each
+  // shadow adds its OWN pattern transpose -> per-variation transpose.
+  const int base = int(transpose) - int(engine.get_pattern_transpose());
   for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
     const byte och = static_cast<byte>(out_ch_for_var(engine.shadow_var_[i]));
     // Variation 3 (i==1) plays from the poly voice when poly is active -- mute the
@@ -1137,8 +1144,9 @@ void midi_shadows_gate_tick(Engine &engine, uint8_t transpose) {
       continue;
     }
     Sequence &sq = engine.shadow_[i];
-    uint16_t n = static_cast<uint16_t>(36 + sq.get_pitch()) + transpose;
+    int n = 36 + int(sq.get_pitch()) + base + int(int8_t(sq.transpose));
     if (n > 127) n = 127;
+    if (n < 0)   n = 0;
     const uint8_t vel = sq.get_accent() ? 127 : 80;
     if (!s_shadow_note_on[i]) {
       MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
@@ -1151,7 +1159,8 @@ void midi_shadows_gate_tick(Engine &engine, uint8_t transpose) {
     }
     // else: same note, gate still high -> hold
   }
-  poly_gate_tick(engine, transpose); // variation 3 polyphonic voice
+  // Variation 3 polyphonic voice uses variation 3's own pattern transpose.
+  poly_gate_tick(engine, static_cast<int16_t>(base + int(int8_t(engine.shadow_[1].transpose))));
 }
 
 void midi_shadows_all_notes_off(Engine &engine) {

@@ -494,6 +494,23 @@
     .lib-item-label { flex: 1; font-size: 11px; font-family: var(--mono); color: var(--black); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .lib-empty { padding: 8px; font-size: 10px; color: var(--gray-3); text-align: center; }
 
+    /* ── MIDI Loader ── */
+    .ml-count { font-size: 10px; font-weight: 700; color: var(--gray-3); letter-spacing: 0.04em; margin-left: auto; font-family: var(--mono); }
+    .ml-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+    .ml-field { display: flex; flex-direction: column; gap: 4px; }
+    .ml-field label { font-size: 9px; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray-4); }
+    .ml-field input[type=number] { width: 70px; height: 30px; padding: 0 6px; border: var(--rule-sm); font-family: var(--font); font-size: 12px; font-weight: 700; border-radius: 0; }
+    .ml-startbox { flex: 1 1 240px; min-width: 200px; }
+    .ml-startbox input[type=range] { width: 100%; }
+    .ml-hint { font-size: 10px; color: var(--gray-3); line-height: 1.5; flex: 1 1 100%; }
+    .ml-steps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; max-height: 320px; overflow-y: auto; border: var(--rule-sm); padding: 6px; }
+    .ml-step { display: flex; flex-direction: column; gap: 2px; width: 64px; border: 1px solid var(--gray-1); padding: 4px; }
+    .ml-step-num { font-size: 9px; font-weight: 900; color: var(--gray-3); font-family: var(--mono); }
+    .ml-step input[type=range] { width: 100%; margin: 0; writing-mode: vertical-lr; direction: rtl; height: 70px; }
+    .ml-step-note { font-size: 12px; font-weight: 900; color: var(--black); text-align: center; }
+    .ml-step-src { font-size: 9px; color: var(--gray-3); font-family: var(--mono); text-align: center; }
+    .ml-empty { padding: 10px; font-size: 10px; color: var(--gray-3); text-align: center; flex: 1 1 100%; }
+
     /* ── Error toast ── */
     #errorToast { position: fixed; right: 16px; bottom: 16px; background: #c80000; color: #fff; border: 2px solid #800; padding: 10px 14px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; border-radius: 2px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 9999; display: none; }
     #errorToast.visible { display: block; }
@@ -662,6 +679,13 @@
         <button class="btn" id="btnRandBrownian">Brownian</button>
       </div>
     </div>
+    <div class="group">
+      <span class="lbl">Octave</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnOctCenter" title="Set every note to the centre octave">Center all</button>
+        <button class="btn" id="btnOctNo2x" title="Drop double-up (2x) notes to the up octave">Remove 2x</button>
+      </div>
+    </div>
   </div>
 
   <!-- Scale Lock -->
@@ -730,7 +754,7 @@
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
         <span class="seq-toolbar-lbl" style="margin-right:4px">Transpose</span>
         <button class="len-adj-btn" id="patTrDec" title="Transpose down">−</button>
-        <input type="number" id="patTr" class="seq-pat-len" min="0" max="47" value="0" />
+        <input type="number" id="patTr" class="seq-pat-len" min="-24" max="24" value="0" />
         <button class="len-adj-btn" id="patTrInc" title="Transpose up">+</button>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center">
@@ -748,6 +772,49 @@
     </div>
     <div class="seq-grid-wrap">
       <div class="seq-grid" id="seqGrid"></div>
+    </div>
+  </div>
+
+  <!-- MIDI Loader -->
+  <div class="config-panel">
+    <div class="config-bar" id="midiLoadBar">
+      <span class="config-bar-arrow">&#9658;</span>
+      <span class="config-bar-label">MIDI Loader</span>
+      <span class="ml-count" id="midiLoadCount">No file</span>
+    </div>
+    <div class="config-body" id="midiLoadBody">
+      <div class="config-inner" style="flex-direction:column;align-items:stretch;gap:10px">
+        <div class="ml-row">
+          <div class="ml-field">
+            <label>MIDI File</label>
+            <button class="btn btn-primary" id="btnMidiFile">Choose .mid file</button>
+            <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi,audio/x-midi" style="display:none" />
+          </div>
+          <div class="ml-field">
+            <label>Steps (max 64)</label>
+            <input type="number" id="midiLoadSteps" min="1" max="64" value="16" disabled />
+          </div>
+          <div class="ml-field ml-startbox">
+            <label id="midiLoadStartLbl">Start at note &mdash;</label>
+            <input type="range" id="midiLoadStart" min="0" max="0" value="0" disabled />
+          </div>
+          <div class="ml-field ml-startbox">
+            <label id="midiLoadRangeLbl">Section size &mdash;</label>
+            <input type="range" id="midiLoadRange" min="1" max="1" value="1" disabled />
+          </div>
+        </div>
+        <div class="ml-row">
+          <button class="btn" id="btnMidiSeq" disabled>Sequential from start</button>
+          <button class="btn" id="btnMidiRandAll" disabled>Randomize (whole file)</button>
+          <button class="btn" id="btnMidiRandRange" disabled>Randomize in section</button>
+          <button class="btn" id="btnMidiShuffle" disabled>Shuffle current</button>
+          <button class="btn btn-primary" id="btnMidiApply" disabled>Load into pitch data</button>
+          <span class="ml-hint">Notes play in file order; chords are split into separate steps low&#8594;high. <b>Start</b> + <b>Section size</b> define a window of the file around the start note. <b>Sequential</b> takes that window in order; <b>Randomize in section</b> picks randomly inside it; <b>Randomize (whole file)</b> ignores the section; <b>Shuffle current</b> reorders the notes already chosen. Each step's vertical slider scrubs its source note. "Load into pitch data" writes them to the active variation.</span>
+        </div>
+        <div class="ml-steps" id="midiStepList">
+          <div class="ml-empty">Load a MIDI file to build a pattern from its notes.</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1235,9 +1302,12 @@
     if (on && getLength(blob) > TRIPLET_MAX_STEPS) blob[LEN_OFF] = TRIPLET_MAX_STEPS;
   }
 
-  function getTranspose(blob) { return blob[TRANSPOSE_OFF] | 0; }
+  // Pattern transpose is a SIGNED semitone offset (-24..+24, 0 = none), stored as
+  // an int8 in byte 89. 0 still means "no transpose", so old patterns are unchanged.
+  function getTranspose(blob) { var b = blob[TRANSPOSE_OFF] | 0; return b > 127 ? b - 256 : b; }
   function setTranspose(blob, t) {
-    blob[TRANSPOSE_OFF] = Math.max(0, Math.min(47, t | 0));
+    t = Math.max(-24, Math.min(24, t | 0));
+    blob[TRANSPOSE_OFF] = t & 0xFF; // two's-complement int8
   }
 
   function snapshotTimes(blob, len) {
@@ -1382,7 +1452,7 @@
   var scaleLockRoot      = 0;
   var scaleLockName      = 'Major';
   var scaleLockIntervals = SCALES['Major'].slice(); // intervals relative to root (0–11)
-  var scaleLockSnaps     = [];  // [NUM_GROUPS][PATS_PER_GROUP] Uint8Array(MAX_STEPS) | null
+  var scaleLockSnaps     = [];  // [NUM_GROUPS][PATS_PER_GROUP][NUM_VARIATIONS] Uint8Array(MAX_STEPS) | null
 
   function makeBlankPat() {
     var b = new Uint8Array(PATTERN_SIZE);
@@ -1815,7 +1885,7 @@
   function switchGroup(g) {
     syncBlob();
     activeGroup = g;
-    if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat); applySnapToBlob(activeGroup, activePat); }
+    if (scaleLockEnabled) { var sgv = slotVar[activeGroup][activePat]; ensureScaleSnap(activeGroup, activePat, sgv); applySnapToBlob(activeGroup, activePat, sgv); }
     var tabs = tabsEl.querySelectorAll('.group-tab');
     for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('is-active', i === g);
     syncPatternToolbar();
@@ -1827,7 +1897,7 @@
   function switchToPat(p) {
     syncBlob();
     activePat = p & 15;
-    if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat); applySnapToBlob(activeGroup, activePat); }
+    if (scaleLockEnabled) { var spv = slotVar[activeGroup][activePat]; ensureScaleSnap(activeGroup, activePat, spv); applySnapToBlob(activeGroup, activePat, spv); }
     syncPatternToolbar();
     syncVariationUI();
     // Refresh delta baseline so the first live edit on this pattern diffs
@@ -2583,9 +2653,9 @@
         wrap.dataset.key = String(v);
       }
       if (scaleLockEnabled) {
-        if (scaleLockSnaps[activeGroup] && scaleLockSnaps[activeGroup][activePat]) {
-          scaleLockSnaps[activeGroup][activePat][k] = (existing !== PITCH_EMPTY) ? (pk | flags) : pk;
-        }
+        var skv = slotVar[activeGroup][activePat];
+        var sk = scaleLockSnaps[activeGroup] && scaleLockSnaps[activeGroup][activePat] && scaleLockSnaps[activeGroup][activePat][skv];
+        if (sk) sk[k] = (existing !== PITCH_EMPTY) ? (pk | flags) : pk;
         pk = linearToPacked(snapLinToScale(unpackLinear(pk & PITCH_PACK_MASK)));
       }
       blob2[k] = pk | flags;
@@ -2904,17 +2974,22 @@
    * Used by actions that mutate every step (Random*, Clear, Paste, Brownian)
    * so a missed diff or cancelled debounce timer cannot swallow the write. */
   function pushFullPatternNow() {
-    if (!midiOut) { log('Push skipped: no MIDI output', 'log-err'); return; }
+    if (!midiOut) { log('Push skipped: connect MIDI output to sync to the 303', 'log-err'); return; }
     if (hwGroup >= 0 && activeGroup !== hwGroup) {
-      log('Push skipped: activeGroup ' + (activeGroup+1) + ' != hwGroup ' + (hwGroup+1), 'log-err');
+      log('Push skipped: editor group ' + (activeGroup+1) + ' != device group ' + (hwGroup+1) +
+          ' (switch the editor to the device’s group)', 'log-err');
       return;
     }
     if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
     syncBlob();
-    var pat  = activePat & 15;
+    var pat    = activePat & 15;
+    var curVar = slotVar[activeGroup][activePat];
+    // A poly variation-3 slot carries its data in the chord blob (0x26), not the
+    // mono blob -- pushing the mono blob (0x12 var=2) would double the voice.
+    if (curVar === 2 && isVar3Poly(activeGroup, activePat)) { sendPoly(activeGroup, activePat); return; }
     var blob = activeBlob();
-    log('Push pattern ' + (pat + 1) + ' to 303 (' + getLength(blob) + ' steps)', 'log-syx');
-    sendPattern(pat, blob);
+    log('Push pattern ' + (pat + 1) + ' (variation ' + (curVar + 1) + ', ' + getLength(blob) + ' steps) to 303', 'log-syx');
+    sendPattern(pat, blob, curVar);
     lastSentBlob = new Uint8Array(blob);
     lastSentPat  = pat;
   }
@@ -2949,7 +3024,11 @@
         var residentLive = (activeGroup === hwGroup && activePat === playingPat && clkRunning);
         var have = !!lastSentBlob && lastSentPat === pat;
         var lenSame  = have && (getLength(blob) === getLength(lastSentBlob));
-        var metaSame = have && (blob[RES0_OFF] === lastSentBlob[RES0_OFF]);
+        // transpose / engine_select have no per-field SysEx, so a change there
+        // must force the full-blob push (the delta path carries neither).
+        var metaSame = have && (blob[RES0_OFF] === lastSentBlob[RES0_OFF]) &&
+                               (blob[TRANSPOSE_OFF] === lastSentBlob[TRANSPOSE_OFF]) &&
+                               (blob[ENGINE_OFF] === lastSentBlob[ENGINE_OFF]);
         if (residentLive && have && lenSame && metaSame) {
           sendDelta(pat, blob, curVar);  // per-step; updates lastSentBlob/lastSentPat
         } else {
@@ -3929,10 +4008,11 @@
 
   function syncScaleSnapAndApply(g, p, _len) {
     if (!scaleLockEnabled) return;
-    ensureScaleSnap(g, p);
-    var blob = groups[g][p], snap = scaleLockSnaps[g][p];
+    var v = slotVar[g][p];
+    ensureScaleSnap(g, p, v);
+    var blob = varStore[g][p][v], snap = scaleLockSnaps[g][p][v];
     for (var k = 0; k < MAX_STEPS; k++) snap[k] = blob[k];
-    applySnapToBlob(g, p);
+    applySnapToBlob(g, p, v);
   }
 
   document.getElementById('btnRandPitch').onclick = function() {
@@ -4012,6 +4092,36 @@
     log('Brownian pitches applied', 'log-ack');
   };
 
+  // ── Octave set / clamp ─────────────────────────────────────────────
+  // Rewrite the octave button (bits 5:4) on every NOTE pitch, keeping semitone
+  // and accent/slide flags. mode 'center' -> octave 1; 'no2x' -> drop octave 3 to 2.
+  function setOctaveButtons(blob, len, mode) {
+    var nc = noteCount(blob, len);
+    for (var k = 0; k < nc; k++) {
+      if (blob[k] === PITCH_EMPTY) blob[k] = PITCH_DEFAULT;
+      var oct = (blob[k] >> 4) & 0x03;
+      if (mode === 'center') oct = 1;
+      else if (mode === 'no2x' && oct === 3) oct = 2;
+      blob[k] = (blob[k] & 0xCF) | (oct << 4);
+    }
+  }
+  document.getElementById('btnOctCenter').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    setOctaveButtons(blob, len, 'center');
+    syncScaleSnapAndApply(activeGroup, activePat, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    pushFullPatternNow();
+    log('Centered all notes', 'log-ack');
+  };
+  document.getElementById('btnOctNo2x').onclick = function() {
+    var blob = activeBlob(), len = currentPatLen();
+    setOctaveButtons(blob, len, 'no2x');
+    syncScaleSnapAndApply(activeGroup, activePat, len);
+    pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
+    pushFullPatternNow();
+    log('Removed double-up octave', 'log-ack');
+  };
+
   // ── Scale Lock ─────────────────────────────────────────────────────
   function scaleNoteClasses() {
     return scaleLockIntervals.map(function(i) { return (scaleLockRoot + i) % 12; });
@@ -4037,22 +4147,21 @@
     return linearToPacked(snapLinToScale(unpackLinear(raw & PITCH_PACK_MASK))) | (raw & 0xC0);
   }
 
-  function ensureScaleSnap(g, p) {
-    if (scaleLockSnaps[g][p] === null) {
-      var src = groups[g][p], snap = new Uint8Array(MAX_STEPS);
-      for (var i = 0; i < MAX_STEPS; i++) snap[i] = src[i];
-      scaleLockSnaps[g][p] = snap;
-    }
+  // Snaps are per-variation: each operates on varStore[g][p][v] (== groups[g][p]
+  // when v is that slot's active variation), so locking one variation never
+  // rewrites the others.
+  function ensureScaleSnap(g, p, v) {
+    if (scaleLockSnaps[g][p][v] === null) takeFreshSnap(g, p, v);
   }
 
-  function takeFreshSnap(g, p) {
-    var src = groups[g][p], snap = new Uint8Array(MAX_STEPS);
+  function takeFreshSnap(g, p, v) {
+    var src = varStore[g][p][v], snap = new Uint8Array(MAX_STEPS);
     for (var i = 0; i < MAX_STEPS; i++) snap[i] = src[i];
-    scaleLockSnaps[g][p] = snap;
+    scaleLockSnaps[g][p][v] = snap;
   }
 
-  function applySnapToBlob(g, p) {
-    var blob = groups[g][p], snap = scaleLockSnaps[g][p];
+  function applySnapToBlob(g, p, v) {
+    var blob = varStore[g][p][v], snap = scaleLockSnaps[g][p][v];
     if (!snap) return;
     var nc = noteCount(blob);
     for (var k = 0; k < nc; k++) {
@@ -4062,10 +4171,10 @@
     }
   }
 
-  function restoreSnapForBlob(g, p) {
-    var snap = scaleLockSnaps[g][p];
+  function restoreSnapForBlob(g, p, v) {
+    var snap = scaleLockSnaps[g][p][v];
     if (!snap) return;
-    var blob = groups[g][p];
+    var blob = varStore[g][p][v];
     for (var i = 0; i < MAX_STEPS; i++) {
       if (snap[i] === PITCH_EMPTY || blob[i] === PITCH_EMPTY) {
         blob[i] = snap[i];
@@ -4073,25 +4182,27 @@
         blob[i] = (snap[i] & PITCH_PACK_MASK) | (blob[i] & 0xC0);
       }
     }
-    scaleLockSnaps[g][p] = null;
+    scaleLockSnaps[g][p][v] = null;
   }
 
   function initScaleLockSnaps() {
     scaleLockSnaps = [];
     for (var g = 0; g < NUM_GROUPS; g++) {
       scaleLockSnaps[g] = [];
-      for (var p = 0; p < PATS_PER_GROUP; p++) scaleLockSnaps[g][p] = null;
+      for (var p = 0; p < PATS_PER_GROUP; p++) scaleLockSnaps[g][p] = [null, null, null];
     }
   }
 
   // Patterns the scale lock should affect: the full chain when one is active,
-  // otherwise just the displayed pattern.
+  // otherwise just the displayed pattern. Each carries the variation to lock —
+  // the slot's currently-selected variation, never the others.
   function scaleLockAffectedPats() {
     var pats = [];
     if (patChain.length > 1) {
-      for (var i = 0; i < patChain.length; i++) pats.push({ g: activeGroup, p: patChain[i] });
+      for (var i = 0; i < patChain.length; i++)
+        pats.push({ g: activeGroup, p: patChain[i], v: slotVar[activeGroup][patChain[i]] });
     } else {
-      pats.push({ g: activeGroup, p: activePat });
+      pats.push({ g: activeGroup, p: activePat, v: slotVar[activeGroup][activePat] });
     }
     return pats;
   }
@@ -4103,9 +4214,11 @@
     for (var i = 0; i < pats.length; i++) {
       var x = pats[i];
       if (hwGroup >= 0 && x.g !== hwGroup) continue;
-      sendPattern(x.p, groups[x.g][x.p]);
-      if (x.g === activeGroup && x.p === apat) {
-        lastSentBlob = new Uint8Array(groups[x.g][x.p]);
+      var v = (x.v === undefined) ? slotVar[x.g][x.p] : x.v;
+      if (v === 2 && isVar3Poly(x.g, x.p)) { sendPoly(x.g, x.p); continue; }
+      sendPattern(x.p, varStore[x.g][x.p][v], v);
+      if (x.g === activeGroup && x.p === apat && v === slotVar[x.g][x.p]) {
+        lastSentBlob = new Uint8Array(varStore[x.g][x.p][v]);
         lastSentPat  = apat;
       }
     }
@@ -4117,8 +4230,8 @@
     for (var i = 0; i < pats.length; i++) {
       // Force a fresh snap from the current blob so the immediate apply is
       // always against the user's current pitches, not a leftover snap.
-      takeFreshSnap(pats[i].g, pats[i].p);
-      applySnapToBlob(pats[i].g, pats[i].p);
+      takeFreshSnap(pats[i].g, pats[i].p, pats[i].v);
+      applySnapToBlob(pats[i].g, pats[i].p, pats[i].v);
       pushHistory(pats[i].g, pats[i].p);
     }
     updateScaleLockUI();
@@ -4131,17 +4244,18 @@
 
   function disableScaleLock() {
     scaleLockEnabled = false;
-    // Restore every blob that has a snap (covers leftovers from prior chains)
-    // and collect them so the firmware sees the un-snap on every snapped pat.
+    // Restore every snapped variation (covers leftovers from prior chains/variations)
+    // and collect them so the firmware sees the un-snap on every snapped slot+variation.
     var snapped = [];
     for (var g = 0; g < NUM_GROUPS; g++)
-      for (var p = 0; p < PATS_PER_GROUP; p++) {
-        if (scaleLockSnaps[g][p] !== null) {
-          restoreSnapForBlob(g, p);
-          snapped.push({ g: g, p: p });
-          pushHistory(g, p);
+      for (var p = 0; p < PATS_PER_GROUP; p++)
+        for (var v = 0; v < NUM_VARIATIONS; v++) {
+          if (scaleLockSnaps[g][p][v] !== null) {
+            restoreSnapForBlob(g, p, v);
+            snapped.push({ g: g, p: p, v: v });
+            pushHistory(g, p);
+          }
         }
-      }
     updateScaleLockUI();
     saveScaleLockToLS();
     saveGroupsToLS(); renderGrid(); recomputeDirty();
@@ -4155,8 +4269,8 @@
     var pats = scaleLockAffectedPats();
     // Make sure any pat newly added to the chain since lock-on gets a snap.
     for (var i = 0; i < pats.length; i++) {
-      ensureScaleSnap(pats[i].g, pats[i].p);
-      applySnapToBlob(pats[i].g, pats[i].p);
+      ensureScaleSnap(pats[i].g, pats[i].p, pats[i].v);
+      applySnapToBlob(pats[i].g, pats[i].p, pats[i].v);
     }
     saveGroupsToLS(); renderGrid(); recomputeDirty();
     sendScaleLockPats(pats);
@@ -4802,6 +4916,256 @@
   libLoadFromLS();
   libRender();
 
+  // ── MIDI Loader ─────────────────────────────────────────────────────
+  // Parse a Standard MIDI File, flatten every note-on into a play-ordered
+  // pool, then map pool notes onto pattern steps (1 note per step, chords
+  // split low->high). Each step picks its pool index via a vertical slider.
+  var MIDI_MAX_POOL = 4096;
+  var midiPool    = [];   // [{ midi, lin, name }]
+  var midiName    = '';
+  var midiStepSrc = [];   // per-step pool index
+
+  /** Fold a MIDI note number into the device's linear 0..48 range (MIDI 36 = lin 0). */
+  function midiToLinear(m) {
+    var lin = (m | 0) - 36;
+    while (lin < 0)  lin += 12;
+    while (lin > 48) lin -= 12;
+    return lin;
+  }
+
+  /** Standard MIDI File -> array of note numbers in play order (tie at same tick: low->high). */
+  function parseMidiNotes(buf) {
+    var b = new Uint8Array(buf);
+    if (b.length < 14 || b[0] !== 0x4d || b[1] !== 0x54 || b[2] !== 0x68 || b[3] !== 0x64)
+      throw new Error('Not a Standard MIDI File (no MThd header)');
+    var headerLen = (b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7];
+    var ntrks = (b[10] << 8) | b[11];
+    var pos = 8 + headerLen;
+    var events = [], seq = 0;
+    for (var tr = 0; tr < ntrks && pos + 8 <= b.length; tr++) {
+      var chunkLen = (b[pos+4] << 24) | (b[pos+5] << 16) | (b[pos+6] << 8) | b[pos+7];
+      if (!(b[pos] === 0x4d && b[pos+1] === 0x54 && b[pos+2] === 0x72 && b[pos+3] === 0x6b)) {
+        pos += 8 + chunkLen; continue; // skip non-MTrk chunk
+      }
+      pos += 8;
+      var end = Math.min(pos + chunkLen, b.length), tick = 0, status = 0, c;
+      while (pos < end) {
+        var dt = 0;
+        do { c = b[pos++]; dt = (dt << 7) | (c & 0x7f); } while ((c & 0x80) && pos < end);
+        tick += dt;
+        if (pos >= end) break;
+        if (b[pos] & 0x80) status = b[pos++];   // new status; else running status
+        var hi = status & 0xf0;
+        if (status === 0xff) {                   // meta
+          pos++; var ml = 0;
+          do { c = b[pos++]; ml = (ml << 7) | (c & 0x7f); } while ((c & 0x80) && pos < end);
+          pos += ml;
+        } else if (status === 0xf0 || status === 0xf7) { // sysex
+          var sl = 0;
+          do { c = b[pos++]; sl = (sl << 7) | (c & 0x7f); } while ((c & 0x80) && pos < end);
+          pos += sl;
+        } else if (hi === 0x90) {                // note on
+          var note = b[pos++], vel = b[pos++];
+          if (vel > 0) events.push({ tick: tick, note: note, seq: seq++ });
+        } else if (hi === 0x80 || hi === 0xa0 || hi === 0xb0 || hi === 0xe0) {
+          pos += 2;
+        } else if (hi === 0xc0 || hi === 0xd0) {
+          pos += 1;
+        } else break;                            // garbage: abandon track
+      }
+      pos = end;
+    }
+    events.sort(function(a, b) { return a.tick - b.tick || a.note - b.note || a.seq - b.seq; });
+    return events.map(function(e) { return e.note; });
+  }
+
+  function midiSteps() {
+    var n = Number(document.getElementById('midiLoadSteps').value) | 0;
+    return Math.max(1, Math.min(MAX_STEPS, n));
+  }
+  function midiStart() {
+    var s = Number(document.getElementById('midiLoadStart').value) | 0;
+    return Math.max(0, Math.min(Math.max(0, midiPool.length - 1), s));
+  }
+  function midiRange() {
+    var r = Number(document.getElementById('midiLoadRange').value) | 0;
+    return Math.max(1, Math.min(midiPool.length || 1, r));
+  }
+  // A window of `range` notes centred on the start note, shifted to stay in the pool.
+  function midiSection() {
+    var pool = midiPool.length;
+    if (pool === 0) return { lo: 0, hi: 0 };
+    var range = midiRange(), start = midiStart(), half = Math.floor((range - 1) / 2);
+    var lo = start - half, hi = lo + range - 1;
+    if (lo < 0) { hi -= lo; lo = 0; }
+    if (hi > pool - 1) { lo -= (hi - (pool - 1)); hi = pool - 1; }
+    if (lo < 0) lo = 0;
+    return { lo: lo, hi: hi };
+  }
+
+  // mode: 'preserve' (keep current srcs, extend sequentially), 'seq',
+  // 'rand' (whole file), 'range' (random within the section around start).
+  function midiRebuildSrc(mode) {
+    var n = midiSteps(), pool = midiPool.length, start = midiStart(), out = [];
+    var sec = midiSection(), w = sec.hi - sec.lo + 1;
+    for (var i = 0; i < n; i++) {
+      if (pool === 0) { out.push(0); continue; }
+      if (mode === 'rand') out.push(Math.floor(Math.random() * pool));
+      else if (mode === 'range') out.push(sec.lo + Math.floor(Math.random() * w));
+      else if (mode === 'seq') out.push((start + i) % pool);
+      else out.push(i < midiStepSrc.length ? Math.min(midiStepSrc[i], pool - 1) : (start + i) % pool);
+    }
+    midiStepSrc = out;
+  }
+  // Reorder the notes already chosen (same set, random order).
+  function midiShuffleCurrent() {
+    for (var i = midiStepSrc.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = midiStepSrc[i]; midiStepSrc[i] = midiStepSrc[j]; midiStepSrc[j] = t;
+    }
+    midiRenderSteps();
+  }
+  function midiUpdateRangeLbl() {
+    var sec = midiSection();
+    document.getElementById('midiLoadRangeLbl').textContent =
+      midiPool.length ? ('Section size ' + midiRange() + ' (notes ' + (sec.lo + 1) + '–' + (sec.hi + 1) + ')')
+                      : 'Section size —';
+  }
+  function midiUpdateStartLbl() {
+    var s = midiStart();
+    document.getElementById('midiLoadStartLbl').textContent =
+      midiPool.length ? ('Start at note ' + (s + 1) + ' (' + (midiPool[s] ? midiPool[s].name : '—') + ')')
+                      : 'Start at note —';
+  }
+
+  function midiRenderSteps() {
+    var list = document.getElementById('midiStepList');
+    list.innerHTML = '';
+    if (midiPool.length === 0) {
+      list.innerHTML = '<div class="ml-empty">Load a MIDI file to build a pattern from its notes.</div>';
+      return;
+    }
+    var maxIdx = midiPool.length - 1;
+    for (var i = 0; i < midiStepSrc.length; i++) {
+      var src = midiStepSrc[i], lin = midiPool[src].lin;
+      var cell = document.createElement('div');
+      cell.className = 'ml-step';
+      cell.innerHTML =
+        '<span class="ml-step-num">' + (i + 1) + '</span>' +
+        '<input type="range" min="0" max="' + maxIdx + '" value="' + src + '" data-i="' + i + '" />' +
+        '<span class="ml-step-note">' + noteNameFromLinear(lin) + '</span>' +
+        '<span class="ml-step-src">#' + (src + 1) + '</span>';
+      list.appendChild(cell);
+    }
+  }
+
+  function midiUpdateControls() {
+    var has = midiPool.length > 0;
+    ['midiLoadSteps','midiLoadStart','midiLoadRange','btnMidiSeq','btnMidiRandAll',
+     'btnMidiRandRange','btnMidiShuffle','btnMidiApply'].forEach(function(id) {
+      document.getElementById(id).disabled = !has;
+    });
+    document.getElementById('midiLoadCount').textContent =
+      has ? (midiPool.length + ' notes · ' + midiName) : 'No file';
+  }
+
+  document.getElementById('midiStepList').addEventListener('input', function(ev) {
+    var el = ev.target;
+    if (el.tagName !== 'INPUT') return;
+    var i = el.dataset.i | 0, src = Math.max(0, Math.min(midiPool.length - 1, Number(el.value) | 0));
+    midiStepSrc[i] = src;
+    var cell = el.parentNode;
+    cell.querySelector('.ml-step-note').textContent = noteNameFromLinear(midiPool[src].lin);
+    cell.querySelector('.ml-step-src').textContent = '#' + (src + 1);
+  });
+
+  document.getElementById('btnMidiFile').onclick = function() {
+    document.getElementById('midiFileInput').click();
+  };
+  document.getElementById('midiFileInput').onchange = function(ev) {
+    var file = ev.target.files[0]; if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        var notes = parseMidiNotes(e.target.result);
+        if (notes.length === 0) throw new Error('No note-on events found');
+        if (notes.length > MIDI_MAX_POOL) notes = notes.slice(0, MIDI_MAX_POOL);
+        midiPool = notes.map(function(m) { return { midi: m, lin: midiToLinear(m), name: noteNameFromLinear(midiToLinear(m)) }; });
+        midiName = file.name;
+        var stepsEl = document.getElementById('midiLoadSteps');
+        stepsEl.value = String(Math.max(1, Math.min(16, midiPool.length)));
+        var startEl = document.getElementById('midiLoadStart');
+        startEl.max = String(Math.max(0, midiPool.length - 1));
+        startEl.value = '0';
+        var rangeEl = document.getElementById('midiLoadRange');
+        rangeEl.max = String(midiPool.length);
+        rangeEl.value = String(midiPool.length); // whole file by default
+        midiUpdateStartLbl();
+        midiUpdateRangeLbl();
+        midiRebuildSrc('seq');
+        midiRenderSteps();
+        midiUpdateControls();
+        log('MIDI loaded: ' + midiName + ' (' + midiPool.length + ' notes)', 'log-syx');
+      } catch (err) {
+        alert('MIDI load error: ' + err.message);
+        log('MIDI load error: ' + err.message, 'log-err');
+      }
+      ev.target.value = '';
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  document.getElementById('midiLoadSteps').addEventListener('change', function() {
+    this.value = String(midiSteps());
+    midiRebuildSrc('preserve');
+    midiRenderSteps();
+  });
+  document.getElementById('midiLoadStart').addEventListener('input', function() {
+    midiUpdateStartLbl();
+    midiUpdateRangeLbl(); // section is centred on start
+  });
+  document.getElementById('midiLoadRange').addEventListener('input', midiUpdateRangeLbl);
+  document.getElementById('btnMidiSeq').onclick = function() {
+    midiRebuildSrc('seq'); midiRenderSteps();
+  };
+  document.getElementById('btnMidiRandAll').onclick = function() {
+    midiRebuildSrc('rand'); midiRenderSteps();
+  };
+  document.getElementById('btnMidiRandRange').onclick = function() {
+    midiRebuildSrc('range'); midiRenderSteps();
+  };
+  document.getElementById('btnMidiShuffle').onclick = function() {
+    midiShuffleCurrent();
+  };
+  document.getElementById('btnMidiApply').onclick = function() {
+    if (midiPool.length === 0) return;
+    if (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat)) {
+      alert('Switch to a mono variation to load MIDI into the pitch data.');
+      return;
+    }
+    var blob = activeBlob();
+    var n = Math.min(midiSteps(), patternMaxSteps(blob));
+    for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
+    for (var k = 0; k < MAX_STEPS; k++) blob[k] = PITCH_EMPTY;
+    for (var s = 0; s < n; s++) {
+      setTime(blob, s, 1); // NOTE
+      blob[s] = linearToPacked(midiPool[midiStepSrc[s]].lin);
+    }
+    setLength(blob, n);
+    syncScaleSnapAndApply(activeGroup, activePat, n);
+    syncPatternToolbar();
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    log('MIDI -> pitch data: ' + n + ' steps from ' + (midiName || 'file'), 'log-ack');
+    pushFullPatternNow();
+  };
+  document.getElementById('midiLoadBar').addEventListener('click', function() {
+    var body = document.getElementById('midiLoadBody');
+    var open = body.classList.toggle('is-open');
+    this.classList.toggle('is-open', open);
+  });
 
   // ── Init ────────────────────────────────────────────────────────────
   refreshAllPills();
