@@ -526,6 +526,11 @@
       color: var(--gray-3); font-weight: 900; cursor: pointer; border-radius: 0; line-height: 1; font-size: 11px; }
     .poly-rm:hover { background: var(--gray-1); color: var(--black); }
     .poly-card.is-note .poly-rm { background: transparent; border-color: rgba(255,255,255,0.3); color: rgba(255,255,255,0.6); }
+    .poly-oct { display: flex; flex-direction: column; gap: 2px; width: 16px; flex: 0 0 16px; }
+    .poly-oct-btn { flex: 1; border: var(--rule-sm); background: var(--white); color: var(--gray-3);
+      font-size: 8px; line-height: 1; cursor: pointer; border-radius: 0; padding: 0; }
+    .poly-oct-btn:hover { background: var(--gray-2); color: var(--black); }
+    .poly-card.is-note .poly-oct-btn { background: transparent; border-color: rgba(255,255,255,0.3); color: rgba(255,255,255,0.6); }
     .poly-add { height: 20px; border: 1px dashed var(--gray-3); background: transparent; color: var(--gray-3);
       font-size: 9px; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer;
       border-radius: 0; font-family: var(--font); }
@@ -686,6 +691,14 @@
         <button class="btn" id="btnOctNo2x" title="Drop double-up (2x) notes to the up octave">Remove 2x</button>
       </div>
     </div>
+    <div class="group" id="chordOpsGroup" style="display:none">
+      <span class="lbl">Chords<br>(var 3)</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnChordInvUp" title="Invert every chord up (lowest note +1 octave)">Invert all &#8593;</button>
+        <button class="btn" id="btnChordInvDown" title="Invert every chord down (highest note -1 octave)">Invert all &#8595;</button>
+        <button class="btn" id="btnChordInvRand" title="Random inversion per chord">Random inv</button>
+      </div>
+    </div>
   </div>
 
   <!-- Scale Lock -->
@@ -794,6 +807,14 @@
             <label>Steps (max 64)</label>
             <input type="number" id="midiLoadSteps" min="1" max="64" value="16" disabled />
           </div>
+          <div class="ml-field">
+            <label>Min chord notes</label>
+            <select id="midiMinNotes" title="Chord mode (variation 3 poly): only import chords with at least this many notes">
+              <option value="2">2+</option>
+              <option value="3">3+</option>
+              <option value="4">4</option>
+            </select>
+          </div>
           <div class="ml-field ml-startbox">
             <label id="midiLoadStartLbl">Start at note &mdash;</label>
             <input type="range" id="midiLoadStart" min="0" max="0" value="0" disabled />
@@ -808,8 +829,9 @@
           <button class="btn" id="btnMidiRandAll" disabled>Randomize (whole file)</button>
           <button class="btn" id="btnMidiRandRange" disabled>Randomize in section</button>
           <button class="btn" id="btnMidiShuffle" disabled>Shuffle current</button>
-          <button class="btn btn-primary" id="btnMidiApply" disabled>Load into pitch data</button>
-          <span class="ml-hint">Notes play in file order; chords are split into separate steps low&#8594;high. <b>Start</b> + <b>Section size</b> define a window of the file around the start note. <b>Sequential</b> takes that window in order; <b>Randomize in section</b> picks randomly inside it; <b>Randomize (whole file)</b> ignores the section; <b>Shuffle current</b> reorders the notes already chosen. Each step's vertical slider scrubs its source note. "Load into pitch data" writes them to the active variation.</span>
+          <button class="btn btn-primary" id="btnMidiApply" disabled>Load pitches (keep time)</button>
+          <button class="btn" id="btnMidiReplace" disabled>Replace pattern (set time)</button>
+          <span class="ml-hint">Notes play in file order; chords are split into separate steps low&#8594;high. <b>Start</b> + <b>Section size</b> define a window of the file around the start note. <b>Sequential</b> takes that window in order; <b>Randomize in section</b> picks randomly inside it; <b>Randomize (whole file)</b> ignores the section; <b>Shuffle current</b> reorders the notes already chosen. <b>Load pitches (keep time)</b> overwrites only the pitch stream and leaves your rhythm/length intact; <b>Replace pattern</b> rebuilds the whole pattern as one NOTE per step.</span>
         </div>
         <div class="ml-steps" id="midiStepList">
           <div class="ml-empty">Load a MIDI file to build a pattern from its notes.</div>
@@ -1453,6 +1475,7 @@
   var scaleLockName      = 'Major';
   var scaleLockIntervals = SCALES['Major'].slice(); // intervals relative to root (0–11)
   var scaleLockSnaps     = [];  // [NUM_GROUPS][PATS_PER_GROUP][NUM_VARIATIONS] Uint8Array(MAX_STEPS) | null
+  var scaleLockPolySnaps = [];  // [NUM_GROUPS][PATS_PER_GROUP] Uint8Array(POLY_TIME_OFF) raw chord voices | null (var3 poly)
 
   function makeBlankPat() {
     var b = new Uint8Array(PATTERN_SIZE);
@@ -1889,6 +1912,7 @@
     var tabs = tabsEl.querySelectorAll('.group-tab');
     for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('is-active', i === g);
     syncPatternToolbar();
+    syncVariationUI();
     refreshAllPills();
     renderGrid();
     updateButtons();
@@ -1919,6 +1943,7 @@
     syncBlob();
     slotVar[activeGroup][activePat] = v;
     repointSlot(activeGroup, activePat);
+    if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat, v); applySnapToBlob(activeGroup, activePat, v); }
     history[activeGroup][activePat] = [cloneU8(groups[activeGroup][activePat])];
     histIdx[activeGroup][activePat] = 0;
     commitIdx[activeGroup][activePat] = 0;
@@ -1954,6 +1979,9 @@
       mb.classList.toggle('btn-primary', poly);
       mb.disabled = (v === VAR_303); // variation 1 is the 303's mono analog voice
     }
+    // Global chord-inversion ops only make sense on variation 3 in poly mode.
+    var cog = document.getElementById('chordOpsGroup');
+    if (cog) cog.style.display = (v === 2 && isVar3Poly(g, p)) ? '' : 'none';
   }
 
   function refreshAllPills() {
@@ -2277,6 +2305,7 @@
     var g = activeGroup, p = activePat;
     varMode[g][p][2] = 'poly';
     polyEnsureChords(curPolyBlob(), currentPatLen());
+    polyScaleSnapStep(s); // constrain the edited chord to the scale if scale lock is on
     saveGroupsToLS();
     sendPolyStep(g, p, s);
     renderGrid();
@@ -2318,10 +2347,147 @@
     polySetSlide(blob, ci, !polySlide(blob, ci));
     polyEdited(s);
   }
+  // Invert the chord this step pulls: dir>0 raises the lowest voice an octave,
+  // dir<0 lowers the highest -- moving the note order/octaves around in place.
+  function invertPolyChord(s, dir) {
+    var blob = curPolyBlob();
+    if (polyTime(blob, s) !== 1) return;
+    var ci = polyChordIndexForStep(blob, s);
+    var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
+    if (arr.length < 2) return;
+    polySetChordNotes(blob, ci, chordInvert(arr, dir));
+    polyEdited(s);
+  }
+  // Global: invert every chord in the stream. mode 'up' | 'down' | 'rand'.
+  function invertAllPolyChords(mode) {
+    if (!(slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat))) {
+      showErrorToast('Switch the active slot to variation 3 chord mode first'); return;
+    }
+    var blob = curPolyBlob(), cc = polyChordCount(blob);
+    for (var ci = 0; ci < cc; ci++) {
+      var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
+      if (arr.length < 2) continue;
+      if (mode === 'rand') {
+        var rounds = Math.floor(Math.random() * arr.length); // 0..voices-1 up-inversions
+        for (var r = 0; r < rounds; r++) arr = chordInvert(arr, 1);
+      } else {
+        arr = chordInvert(arr, mode === 'up' ? 1 : -1);
+      }
+      polySetChordNotes(blob, ci, arr);
+    }
+    varMode[activeGroup][activePat][2] = 'poly';
+    syncScaleSnapAndApply(activeGroup, activePat); // keep chords in-scale if scale lock is on
+    saveGroupsToLS(); renderGrid(); recomputeDirty();
+    sendPoly(activeGroup, activePat);
+    log('Chord inversion ' + mode + ' applied to ' + cc + ' chords', 'log-ack');
+  }
+
+  // ── Randomize / Nudge for the chord stream (variation 3 poly) ───────
+  function curIsPoly() { return slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat); }
+  // Normalize poly times like normalizePatternTimes (no leading/standalone ties).
+  function polyNormalizeTimes(blob, len) {
+    var allTie = true;
+    for (var i = 0; i < len; i++) if (polyTime(blob, i) !== 2) { allTie = false; break; }
+    if (allTie) polySetTime(blob, 0, 1);
+    if (polyTime(blob, 0) === 2) polySetTime(blob, 0, 1);
+    for (var j = 0; j < len; j++) { var nx = (j + 1) % len; if (polyTime(blob, j) === 0 && polyTime(blob, nx) === 2) polySetTime(blob, j, 1); }
+  }
+  function polyRandomizePitches(blob) {
+    var cc = polyChordCount(blob);
+    for (var ci = 0; ci < cc; ci++) {
+      var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
+      for (var i = 0; i < arr.length; i++) arr[i] = (Math.floor(Math.random() * 13) & 0x0F) | (pickWeightedOctave() << 4);
+      polySetChordNotes(blob, ci, arr);
+    }
+  }
+  function polyRandomizeOctave(blob) {
+    var cc = polyChordCount(blob);
+    for (var ci = 0; ci < cc; ci++) {
+      var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
+      for (var i = 0; i < arr.length; i++) arr[i] = (arr[i] & 0x0F) | (pickWeightedOctave() << 4);
+      polySetChordNotes(blob, ci, arr);
+    }
+  }
+  function polyRandomizeAccent(blob) { var cc = polyChordCount(blob); for (var ci = 0; ci < cc; ci++) polySetAccent(blob, ci, Math.random() < 0.30); }
+  function polyRandomizeSlide(blob)  { var cc = polyChordCount(blob); for (var ci = 0; ci < cc; ci++) polySetSlide(blob, ci, Math.random() < 0.20); }
+  function polyRandomizeTime(blob, len) {
+    for (var t = POLY_TIME_OFF; t < POLY_ACC_OFF; t++) blob[t] = 0;
+    var prev = 1;
+    for (var s = 0; s < len; s++) {
+      var r = Math.random(), tv;
+      if (s === 0 || prev === 0) tv = (r < 0.60) ? 1 : 0;
+      else                       tv = (r < 0.60) ? 1 : (r < 0.85) ? 0 : 2;
+      polySetTime(blob, s, tv); prev = tv;
+    }
+    polyNormalizeTimes(blob, len);
+    polyEnsureChords(blob, len);
+  }
+  function polyBrownianPitches(blob) {
+    var cc = polyChordCount(blob); if (cc === 0) return;
+    for (var ci = 0; ci < cc; ci++) {
+      var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
+      if (!arr.length) continue;
+      var delta = Math.round((Math.random() * 2 - 1) * 4);
+      arr = arr.map(function(p6){ return linearToPacked(clampFullLinear(unpackLinear(p6) + delta)); });
+      polySetChordNotes(blob, ci, arr);
+    }
+  }
+  function polyRandomizeOp(kind) {
+    var blob = curPolyBlob(), len = currentPatLen();
+    if (kind === 'time'   || kind === 'all') polyRandomizeTime(blob, len);
+    if (kind === 'pitch'  || kind === 'all') polyRandomizePitches(blob);
+    if (kind === 'octave' || kind === 'all') polyRandomizeOctave(blob);
+    if (kind === 'accent' || kind === 'all') polyRandomizeAccent(blob);
+    if (kind === 'slide'  || kind === 'all') polyRandomizeSlide(blob);
+    if (kind === 'brownian') polyBrownianPitches(blob);
+    polyBulkCommit('Randomized chords: ' + kind);
+  }
+  // Rotate a chord-stream array by one position (dir>0 = right).
+  function polyRotate(arr, dir) {
+    if (arr.length < 2) return;
+    if (dir > 0) arr.unshift(arr.pop()); else arr.push(arr.shift());
+  }
+  function polyNudgeOp(mode, dir) {
+    var blob = curPolyBlob(), len = currentPatLen(), cc = polyChordCount(blob), i;
+    if (mode === 'time' || mode === 'all') {
+      var times = []; for (i = 0; i < len; i++) times.push(polyTime(blob, i));
+      polyRotate(times, dir);
+      for (i = 0; i < len; i++) polySetTime(blob, i, times[i]);
+      polyNormalizeTimes(blob, len); polyEnsureChords(blob, len);
+    }
+    if (mode === 'pitch' || mode === 'all') {
+      var chords = []; for (i = 0; i < cc; i++) chords.push(polyChordNotes(blob, i).filter(function(x){ return x !== POLY_EMPTY; }));
+      polyRotate(chords, dir);
+      for (i = 0; i < cc; i++) polySetChordNotes(blob, i, chords[i]);
+    } else if (mode === 'accent') {
+      var acc = []; for (i = 0; i < cc; i++) acc.push(polyAccent(blob, i)); polyRotate(acc, dir);
+      for (i = 0; i < cc; i++) polySetAccent(blob, i, !!acc[i]);
+    } else if (mode === 'slide') {
+      var sl = []; for (i = 0; i < cc; i++) sl.push(polySlide(blob, i)); polyRotate(sl, dir);
+      for (i = 0; i < cc; i++) polySetSlide(blob, i, !!sl[i]);
+    } else if (mode === 'octave') {
+      // Shift every chord a whole octave; pitch-class preserved (no-op at the edge).
+      for (i = 0; i < cc; i++) {
+        var a = polyChordNotes(blob, i).filter(function(x){ return x !== POLY_EMPTY; });
+        a = a.map(function(p6){ var l = unpackLinear(p6) + dir * 12; return (l < 0 || l > 48) ? p6 : linearToPacked(l); });
+        polySetChordNotes(blob, i, a);
+      }
+    }
+    polyBulkCommit('Nudge chords ' + mode + (dir > 0 ? ' →' : ' ←'));
+  }
+  function polyBulkCommit(msg) {
+    varMode[activeGroup][activePat][2] = 'poly';
+    syncScaleSnapAndApply(activeGroup, activePat); // keep chords in-scale if scale lock is on
+    saveGroupsToLS(); renderGrid(); recomputeDirty();
+    sendPoly(activeGroup, activePat);
+    log(msg, 'log-ack');
+  }
   // Save + push the edited step without a full re-render (DOM already updated live
   // during a knob drag), matching the mono pitch-knob's drag-end behaviour.
   function polyCommit(s) {
     varMode[activeGroup][activePat][2] = 'poly';
+    polyScaleSnapStep(s); // snap the dragged note to the scale if scale lock is on
+    if (scaleLockEnabled) renderGrid(); // reflect the snapped pitch (drag showed raw)
     saveGroupsToLS();
     sendPolyStep(activeGroup, activePat, s);
   }
@@ -2339,13 +2505,36 @@
     track.appendChild(fill); track.appendChild(thumb); wrap.appendChild(track);
     polyKnobPosition(fill, thumb, unpackLinear(packed));
 
+    // Per-note octave invert: shift just this voice up/down an octave.
+    var oct = document.createElement('div'); oct.className = 'poly-oct';
+    var up = document.createElement('button'); up.className = 'poly-oct-btn'; up.textContent = '▲';
+    up.title = 'This note +1 octave'; up.addEventListener('click', function(){ octShiftPolyNote(s, vi, 1); });
+    var dn = document.createElement('button'); dn.className = 'poly-oct-btn'; dn.textContent = '▼';
+    dn.title = 'This note -1 octave'; dn.addEventListener('click', function(){ octShiftPolyNote(s, vi, -1); });
+    oct.appendChild(up); oct.appendChild(dn);
+
     var rm = document.createElement('button'); rm.className = 'poly-rm'; rm.textContent = '×';
     rm.title = 'Remove note';
     rm.addEventListener('click', function(){ removePolyNote(s, packed); });
 
-    row.appendChild(nameEl); row.appendChild(wrap); row.appendChild(rm);
+    row.appendChild(nameEl); row.appendChild(wrap); row.appendChild(oct); row.appendChild(rm);
     bindPolyKnob(track, fill, thumb, nameEl, s, vi);
     return row;
+  }
+  // Octave-shift one voice of the chord this step pulls (per-note inversion).
+  function octShiftPolyNote(s, vi, dir) {
+    var blob = curPolyBlob();
+    if (polyTime(blob, s) !== 1) return;
+    var ci = polyChordIndexForStep(blob, s);
+    var arr = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
+    if (vi >= arr.length) return;
+    var nl = unpackLinear(arr[vi]) + dir * 12;
+    if (nl < 0 || nl > 48) return; // can't move this voice another octave; leave the note as-is
+    var np = linearToPacked(nl);
+    for (var i = 0; i < arr.length; i++) if (i !== vi && arr[i] === np) return; // target octave occupied
+    arr[vi] = np;
+    polySetChordNotes(blob, ci, arr);
+    polyEdited(s);
   }
   function polyKnobPosition(fill, thumb, lin) {
     var span = PITCH_FULL_LIN_MAX - PITCH_FULL_LIN_MIN;
@@ -2474,6 +2663,20 @@
       sld.addEventListener('click', function(){ togglePolySlide(s); });
       flags.appendChild(acc); flags.appendChild(sld);
       card.appendChild(flags);
+
+      // Per-chord inversion (only when there are >=2 voices to move around).
+      var present2 = polyChordNotes(blob, ci2).filter(function(x){ return x !== POLY_EMPTY; });
+      if (present2.length >= 2) {
+        var invRow = document.createElement('div'); invRow.className = 'poly-flags';
+        var iu = document.createElement('button'); iu.className = 't-btn'; iu.textContent = 'Inv↑';
+        iu.title = 'Invert up: lowest note +1 octave';
+        iu.addEventListener('click', function(){ invertPolyChord(s, 1); });
+        var idn = document.createElement('button'); idn.className = 't-btn'; idn.textContent = 'Inv↓';
+        idn.title = 'Invert down: highest note -1 octave';
+        idn.addEventListener('click', function(){ invertPolyChord(s, -1); });
+        invRow.appendChild(iu); invRow.appendChild(idn);
+        card.appendChild(invRow);
+      }
     }
 
     // Copy this step's chord / paste a copied chord here (paste makes a rest a NOTE).
@@ -4009,6 +4212,7 @@
   function syncScaleSnapAndApply(g, p, _len) {
     if (!scaleLockEnabled) return;
     var v = slotVar[g][p];
+    if (isPolyVar(g, p, v)) { takeFreshPolySnap(g, p); applyPolySnapToBlob(g, p); return; }
     ensureScaleSnap(g, p, v);
     var blob = varStore[g][p][v], snap = scaleLockSnaps[g][p][v];
     for (var k = 0; k < MAX_STEPS; k++) snap[k] = blob[k];
@@ -4016,6 +4220,7 @@
   }
 
   document.getElementById('btnRandPitch').onclick = function() {
+    if (curIsPoly()) { polyRandomizeOp('pitch'); return; }
     var blob = activeBlob(), len = currentPatLen();
     applyRandomPitches(blob, len);
     syncScaleSnapAndApply(activeGroup, activePat, len);
@@ -4024,6 +4229,7 @@
     log('Randomized pitches', 'log-ack');
   };
   document.getElementById('btnRandOctave').onclick = function() {
+    if (curIsPoly()) { polyRandomizeOp('octave'); return; }
     var blob = activeBlob(), len = currentPatLen();
     applyRandomOctave(blob, len);
     syncScaleSnapAndApply(activeGroup, activePat, len);
@@ -4032,6 +4238,7 @@
     log('Randomized octaves', 'log-ack');
   };
   document.getElementById('btnRandTime').onclick = function() {
+    if (curIsPoly()) { polyRandomizeOp('time'); return; }
     var blob = activeBlob(), len = currentPatLen();
     applyRandomTime(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
@@ -4039,6 +4246,7 @@
     log('Randomized time', 'log-ack');
   };
   document.getElementById('btnRandAccent').onclick = function() {
+    if (curIsPoly()) { polyRandomizeOp('accent'); return; }
     var blob = activeBlob(), len = currentPatLen();
     applyRandomAccent(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
@@ -4046,6 +4254,7 @@
     log('Randomized accent', 'log-ack');
   };
   document.getElementById('btnRandSlide').onclick = function() {
+    if (curIsPoly()) { polyRandomizeOp('slide'); return; }
     var blob = activeBlob(), len = currentPatLen();
     applyRandomSlide(blob, len);
     pushHistory(activeGroup, activePat); saveGroupsToLS(); renderGrid(); recomputeDirty();
@@ -4053,6 +4262,7 @@
     log('Randomized slide', 'log-ack');
   };
   document.getElementById('btnRandAll').onclick = function() {
+    if (curIsPoly()) { polyRandomizeOp('all'); return; }
     var blob = activeBlob(), len = currentPatLen();
     applyRandomTime(blob, len);
     applyRandomPitches(blob, len);
@@ -4084,6 +4294,7 @@
     }
   }
   document.getElementById('btnRandBrownian').onclick = function() {
+    if (curIsPoly()) { polyRandomizeOp('brownian'); return; }
     var blob = activeBlob(), len = currentPatLen();
     applyBrownianPitches(blob, len);
     syncScaleSnapAndApply(activeGroup, activePat, len);
@@ -4121,6 +4332,9 @@
     pushFullPatternNow();
     log('Removed double-up octave', 'log-ack');
   };
+  document.getElementById('btnChordInvUp').onclick   = function() { invertAllPolyChords('up'); };
+  document.getElementById('btnChordInvDown').onclick = function() { invertAllPolyChords('down'); };
+  document.getElementById('btnChordInvRand').onclick = function() { invertAllPolyChords('rand'); };
 
   // ── Scale Lock ─────────────────────────────────────────────────────
   function scaleNoteClasses() {
@@ -4150,17 +4364,24 @@
   // Snaps are per-variation: each operates on varStore[g][p][v] (== groups[g][p]
   // when v is that slot's active variation), so locking one variation never
   // rewrites the others.
+  // Variation 3 in poly mode keeps its pitches in the chord stream, not the mono
+  // blob, so its snap lives in scaleLockPolySnaps and the snap ops delegate to it.
+  function isPolyVar(g, p, v) { return v === 2 && isVar3Poly(g, p); }
+
   function ensureScaleSnap(g, p, v) {
+    if (isPolyVar(g, p, v)) { if (!scaleLockPolySnaps[g][p]) takeFreshPolySnap(g, p); return; }
     if (scaleLockSnaps[g][p][v] === null) takeFreshSnap(g, p, v);
   }
 
   function takeFreshSnap(g, p, v) {
+    if (isPolyVar(g, p, v)) return takeFreshPolySnap(g, p);
     var src = varStore[g][p][v], snap = new Uint8Array(MAX_STEPS);
     for (var i = 0; i < MAX_STEPS; i++) snap[i] = src[i];
     scaleLockSnaps[g][p][v] = snap;
   }
 
   function applySnapToBlob(g, p, v) {
+    if (isPolyVar(g, p, v)) return applyPolySnapToBlob(g, p);
     var blob = varStore[g][p][v], snap = scaleLockSnaps[g][p][v];
     if (!snap) return;
     var nc = noteCount(blob);
@@ -4172,6 +4393,7 @@
   }
 
   function restoreSnapForBlob(g, p, v) {
+    if (isPolyVar(g, p, v)) return restorePolySnap(g, p);
     var snap = scaleLockSnaps[g][p][v];
     if (!snap) return;
     var blob = varStore[g][p][v];
@@ -4185,11 +4407,50 @@
     scaleLockSnaps[g][p][v] = null;
   }
 
+  // ── Poly (variation 3 chord) scale-lock snaps ──────────────────────
+  // The snap holds the raw (un-snapped) chord voices; apply snaps each voice to
+  // the scale; restore puts the raw voices back. Time/accent/slide are untouched.
+  function takeFreshPolySnap(g, p) {
+    var src = polyStore[g][p]; if (!src) return;
+    var snap = new Uint8Array(POLY_TIME_OFF);
+    for (var i = 0; i < POLY_TIME_OFF; i++) snap[i] = src[i];
+    scaleLockPolySnaps[g][p] = snap;
+  }
+  function applyPolySnapToBlob(g, p) {
+    var blob = polyStore[g][p], snap = scaleLockPolySnaps[g][p];
+    if (!blob || !snap) return;
+    var cc = polyChordCount(blob);
+    for (var ci = 0; ci < cc; ci++) {
+      var raw = polyChordNotes(snap, ci).filter(function(x){ return x !== POLY_EMPTY; });
+      polySetChordNotes(blob, ci, raw.map(function(p6){ return linearToPacked(snapLinToScale(unpackLinear(p6))); }));
+    }
+  }
+  function restorePolySnap(g, p) {
+    var blob = polyStore[g][p], snap = scaleLockPolySnaps[g][p];
+    if (blob && snap) for (var i = 0; i < POLY_TIME_OFF; i++) blob[i] = snap[i];
+    scaleLockPolySnaps[g][p] = null;
+  }
+  // Record one step's chord as the raw snap original and snap the live chord to
+  // scale. Called from poly edits while scale lock is on.
+  function polyScaleSnapStep(s) {
+    if (!scaleLockEnabled) return;
+    var g = activeGroup, p = activePat;
+    if (!isPolyVar(g, p, slotVar[g][p])) return;
+    var blob = curPolyBlob();
+    if (polyTime(blob, s) !== 1) return;
+    var ci = polyChordIndexForStep(blob, s);
+    if (!scaleLockPolySnaps[g][p]) takeFreshPolySnap(g, p);
+    var snap = scaleLockPolySnaps[g][p]; if (!snap) return;
+    var raw = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
+    polySetChordNotes(snap, ci, raw);
+    polySetChordNotes(blob, ci, raw.map(function(p6){ return linearToPacked(snapLinToScale(unpackLinear(p6))); }));
+  }
+
   function initScaleLockSnaps() {
-    scaleLockSnaps = [];
+    scaleLockSnaps = []; scaleLockPolySnaps = [];
     for (var g = 0; g < NUM_GROUPS; g++) {
-      scaleLockSnaps[g] = [];
-      for (var p = 0; p < PATS_PER_GROUP; p++) scaleLockSnaps[g][p] = [null, null, null];
+      scaleLockSnaps[g] = []; scaleLockPolySnaps[g] = [];
+      for (var p = 0; p < PATS_PER_GROUP; p++) { scaleLockSnaps[g][p] = [null, null, null]; scaleLockPolySnaps[g][p] = null; }
     }
   }
 
@@ -4248,7 +4509,7 @@
     // and collect them so the firmware sees the un-snap on every snapped slot+variation.
     var snapped = [];
     for (var g = 0; g < NUM_GROUPS; g++)
-      for (var p = 0; p < PATS_PER_GROUP; p++)
+      for (var p = 0; p < PATS_PER_GROUP; p++) {
         for (var v = 0; v < NUM_VARIATIONS; v++) {
           if (scaleLockSnaps[g][p][v] !== null) {
             restoreSnapForBlob(g, p, v);
@@ -4256,6 +4517,11 @@
             pushHistory(g, p);
           }
         }
+        if (scaleLockPolySnaps[g][p] !== null) {   // var3 poly chord snap
+          restorePolySnap(g, p);
+          snapped.push({ g: g, p: p, v: 2 });
+        }
+      }
     updateScaleLockUI();
     saveScaleLockToLS();
     saveGroupsToLS(); renderGrid(); recomputeDirty();
@@ -4451,6 +4717,7 @@
   }
 
   function doNudge(mode, direction) {
+    if (curIsPoly()) { polyNudgeOp(mode, direction); return; }
     var blob = activeBlob(), len = currentPatLen();
     nudgePattern(blob, len, mode, direction);
     pushHistory(activeGroup, activePat);
@@ -4737,6 +5004,9 @@
   function reflowPitchKnobsInGrid() {
     function reflowCards(cards, blob, len) {
       for (var i = 0; i < cards.length; i++) {
+        // Poly chord cards manage their own knobs/labels (polyKnobPosition); the
+        // mono layoutPitchKnob would grab the first voice and blank its name.
+        if (cards[i].classList.contains('poly-card')) continue;
         var wrap = cards[i].querySelector('.pitch-knob-wrap');
         if (!wrap) continue;
         var nameEl = cards[i].querySelector('.step-name');
@@ -4921,9 +5191,11 @@
   // pool, then map pool notes onto pattern steps (1 note per step, chords
   // split low->high). Each step picks its pool index via a vertical slider.
   var MIDI_MAX_POOL = 4096;
-  var midiPool    = [];   // [{ midi, lin, name }]
+  var midiPool    = [];   // note mode: [{ lin, name }] · chord mode: [{ voices:[packed], lin, label }]
   var midiName    = '';
   var midiStepSrc = [];   // per-step pool index
+  var midiChordMode = false; // true when the active variation is poly var3 at load time
+  var midiClustersRaw = null; // chord clusters from the last chord-mode load (pre-filter)
 
   /** Fold a MIDI note number into the device's linear 0..48 range (MIDI 36 = lin 0). */
   function midiToLinear(m) {
@@ -4933,8 +5205,8 @@
     return lin;
   }
 
-  /** Standard MIDI File -> array of note numbers in play order (tie at same tick: low->high). */
-  function parseMidiNotes(buf) {
+  /** Standard MIDI File -> note-on events sorted by (tick, pitch). */
+  function parseMidiEvents(buf) {
     var b = new Uint8Array(buf);
     if (b.length < 14 || b[0] !== 0x4d || b[1] !== 0x54 || b[2] !== 0x68 || b[3] !== 0x64)
       throw new Error('Not a Standard MIDI File (no MThd header)');
@@ -4976,7 +5248,90 @@
       pos = end;
     }
     events.sort(function(a, b) { return a.tick - b.tick || a.note - b.note || a.seq - b.seq; });
-    return events.map(function(e) { return e.note; });
+    return events;
+  }
+  /** Flat play-ordered note numbers (chords split low->high). */
+  function parseMidiNotes(buf) {
+    return parseMidiEvents(buf).map(function(e) { return e.note; });
+  }
+  /** Ticks per quarter note (used to size the chord-onset window). SMPTE -> small. */
+  function midiDivision(buf) {
+    var b = new Uint8Array(buf), d = (b[12] << 8) | b[13];
+    return (d & 0x8000) ? 24 : (d || 96);
+  }
+  /**
+   * Group note-ons that start at (about) the same time into chords. Notes whose
+   * onsets fall within a 32nd-note window of the chord's first note are one chord,
+   * so chords that aren't perfectly tick-aligned still register as chords (not
+   * single notes). Returns chords as distinct note numbers, ascending.
+   */
+  function parseMidiChordClusters(buf) {
+    var ev = parseMidiEvents(buf);
+    if (ev.length === 0) return [];
+    var win = Math.max(1, Math.floor(midiDivision(buf) / 8));
+    var clusters = [], cur = [ev[0].note], start = ev[0].tick;
+    for (var i = 1; i < ev.length; i++) {
+      if (ev[i].tick - start <= win) cur.push(ev[i].note);
+      else { clusters.push(cur); cur = [ev[i].note]; start = ev[i].tick; }
+    }
+    clusters.push(cur);
+    return clusters.map(function(notes) {
+      notes.sort(function(a, b){ return a - b; });
+      var seen = {}, out = [];
+      for (var j = 0; j < notes.length; j++) if (!seen[notes[j]]) { seen[notes[j]] = 1; out.push(notes[j]); }
+      return out; // distinct note numbers, ascending
+    });
+  }
+
+  // ── Chord voicing helpers (arrays of packed 6-bit voices) ───────────
+  function chordSortLins(packedArr) {
+    return packedArr.filter(function(p){ return p !== POLY_EMPTY; })
+      .map(function(p){ return unpackLinear(p); })
+      .sort(function(a, b){ return a - b; });
+  }
+  // 1st-inversion up: lowest voice +12. Down: highest voice -12. Re-sorted; voice
+  // count preserved (a clamp collision can duplicate a voice, which is harmless).
+  function chordInvert(packedArr, dir) {
+    var lins = chordSortLins(packedArr);
+    if (lins.length < 2) return packedArr.slice();
+    // Move a full octave only if it stays in range; clamping to 48 would turn the
+    // note into C (48 = C4), so when it can't move, leave it on its current octave.
+    if (dir > 0) { if (lins[0] + 12 <= 48) lins[0] += 12; }
+    else         { if (lins[lins.length - 1] - 12 >= 0) lins[lins.length - 1] -= 12; }
+    lins.sort(function(a, b){ return a - b; });
+    return lins.map(linearToPacked);
+  }
+  // Map a MIDI chord (note numbers) to up to 4 packed voices: fold each note into
+  // range, dedupe, sort ascending, keep the lowest 4.
+  function midiChordToVoices(notes) {
+    var lins = notes.map(midiToLinear).sort(function(a, b){ return a - b; });
+    var seen = {}, out = [];
+    for (var i = 0; i < lins.length && out.length < POLY_VOICES; i++) {
+      if (!seen[lins[i]]) { seen[lins[i]] = 1; out.push(linearToPacked(lins[i])); }
+    }
+    return out;
+  }
+  function chordLabel(voices) {
+    var lins = chordSortLins(voices);
+    if (lins.length === 0) return '—';
+    var base = noteNameFromLinear(lins[0]);
+    return lins.length > 1 ? (base + ' +' + (lins.length - 1)) : base;
+  }
+  function midiMinNotes() {
+    var v = Number(document.getElementById('midiMinNotes').value) | 0;
+    return Math.max(2, Math.min(POLY_VOICES, v || 2));
+  }
+  // Build the chord pool from the raw clusters. Fold the WHOLE cluster (so the
+  // lowest 4 *distinct* in-range voices are recovered) and filter on the final
+  // voice count -- not the raw note count, which can include octave duplicates
+  // that collapse on folding and leave a chord with fewer notes than the minimum.
+  function midiBuildChordPool() {
+    var min = midiMinNotes();
+    midiPool = midiClustersRaw.map(function(c) {
+      var v = midiChordToVoices(c); // fold all, dedupe, keep lowest 4 distinct
+      return { voices: v, lin: chordSortLins(v)[0] || 0, label: chordLabel(v), size: v.length };
+    }).filter(function(entry){ return entry.voices.length >= min; });
+    if (midiPool.length > MIDI_MAX_POOL) midiPool = midiPool.slice(0, MIDI_MAX_POOL);
   }
 
   function midiSteps() {
@@ -5026,15 +5381,15 @@
     midiRenderSteps();
   }
   function midiUpdateRangeLbl() {
-    var sec = midiSection();
+    var sec = midiSection(), unit = midiChordMode ? 'chords' : 'notes';
     document.getElementById('midiLoadRangeLbl').textContent =
-      midiPool.length ? ('Section size ' + midiRange() + ' (notes ' + (sec.lo + 1) + '–' + (sec.hi + 1) + ')')
+      midiPool.length ? ('Section size ' + midiRange() + ' (' + unit + ' ' + (sec.lo + 1) + '–' + (sec.hi + 1) + ')')
                       : 'Section size —';
   }
   function midiUpdateStartLbl() {
-    var s = midiStart();
+    var s = midiStart(), unit = midiChordMode ? 'chord' : 'note';
     document.getElementById('midiLoadStartLbl').textContent =
-      midiPool.length ? ('Start at note ' + (s + 1) + ' (' + (midiPool[s] ? midiPool[s].name : '—') + ')')
+      midiPool.length ? ('Start at ' + unit + ' ' + (s + 1) + ' (' + (midiPool[s] ? midiPool[s].label : '—') + ')')
                       : 'Start at note —';
   }
 
@@ -5047,13 +5402,13 @@
     }
     var maxIdx = midiPool.length - 1;
     for (var i = 0; i < midiStepSrc.length; i++) {
-      var src = midiStepSrc[i], lin = midiPool[src].lin;
+      var src = midiStepSrc[i];
       var cell = document.createElement('div');
       cell.className = 'ml-step';
       cell.innerHTML =
         '<span class="ml-step-num">' + (i + 1) + '</span>' +
         '<input type="range" min="0" max="' + maxIdx + '" value="' + src + '" data-i="' + i + '" />' +
-        '<span class="ml-step-note">' + noteNameFromLinear(lin) + '</span>' +
+        '<span class="ml-step-note">' + midiPool[src].label + '</span>' +
         '<span class="ml-step-src">#' + (src + 1) + '</span>';
       list.appendChild(cell);
     }
@@ -5062,11 +5417,11 @@
   function midiUpdateControls() {
     var has = midiPool.length > 0;
     ['midiLoadSteps','midiLoadStart','midiLoadRange','btnMidiSeq','btnMidiRandAll',
-     'btnMidiRandRange','btnMidiShuffle','btnMidiApply'].forEach(function(id) {
+     'btnMidiRandRange','btnMidiShuffle','btnMidiApply','btnMidiReplace'].forEach(function(id) {
       document.getElementById(id).disabled = !has;
     });
     document.getElementById('midiLoadCount').textContent =
-      has ? (midiPool.length + ' notes · ' + midiName) : 'No file';
+      has ? (midiPool.length + (midiChordMode ? ' chords · ' : ' notes · ') + midiName) : 'No file';
   }
 
   document.getElementById('midiStepList').addEventListener('input', function(ev) {
@@ -5075,37 +5430,50 @@
     var i = el.dataset.i | 0, src = Math.max(0, Math.min(midiPool.length - 1, Number(el.value) | 0));
     midiStepSrc[i] = src;
     var cell = el.parentNode;
-    cell.querySelector('.ml-step-note').textContent = noteNameFromLinear(midiPool[src].lin);
+    cell.querySelector('.ml-step-note').textContent = midiPool[src].label;
     cell.querySelector('.ml-step-src').textContent = '#' + (src + 1);
   });
 
   document.getElementById('btnMidiFile').onclick = function() {
     document.getElementById('midiFileInput').click();
   };
+  // Reset the selection controls to match the freshly built pool and render.
+  function midiAfterPoolBuilt() {
+    document.getElementById('midiLoadSteps').value = String(Math.max(1, Math.min(16, midiPool.length || 1)));
+    var startEl = document.getElementById('midiLoadStart');
+    startEl.max = String(Math.max(0, midiPool.length - 1));
+    startEl.value = '0';
+    var rangeEl = document.getElementById('midiLoadRange');
+    rangeEl.max = String(midiPool.length || 1);
+    rangeEl.value = String(midiPool.length || 1); // whole file by default
+    midiUpdateStartLbl();
+    midiUpdateRangeLbl();
+    midiRebuildSrc('seq');
+    midiRenderSteps();
+    midiUpdateControls();
+  }
   document.getElementById('midiFileInput').onchange = function(ev) {
     var file = ev.target.files[0]; if (!file) return;
     var reader = new FileReader();
     reader.onload = function(e) {
       try {
-        var notes = parseMidiNotes(e.target.result);
-        if (notes.length === 0) throw new Error('No note-on events found');
-        if (notes.length > MIDI_MAX_POOL) notes = notes.slice(0, MIDI_MAX_POOL);
-        midiPool = notes.map(function(m) { return { midi: m, lin: midiToLinear(m), name: noteNameFromLinear(midiToLinear(m)) }; });
+        // Chord mode when the active variation is poly var3: pull whole chords.
+        midiChordMode = (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat));
+        if (midiChordMode) {
+          midiClustersRaw = parseMidiChordClusters(e.target.result);
+          midiBuildChordPool();
+          if (midiPool.length === 0)
+            throw new Error('No chords found (need ' + midiMinNotes() + '+ notes played together). Lower "Min chord notes" or check the file.');
+        } else {
+          midiClustersRaw = null;
+          var notes = parseMidiNotes(e.target.result);
+          if (notes.length === 0) throw new Error('No note-on events found');
+          if (notes.length > MIDI_MAX_POOL) notes = notes.slice(0, MIDI_MAX_POOL);
+          midiPool = notes.map(function(m) { var l = midiToLinear(m); return { lin: l, label: noteNameFromLinear(l) }; });
+        }
         midiName = file.name;
-        var stepsEl = document.getElementById('midiLoadSteps');
-        stepsEl.value = String(Math.max(1, Math.min(16, midiPool.length)));
-        var startEl = document.getElementById('midiLoadStart');
-        startEl.max = String(Math.max(0, midiPool.length - 1));
-        startEl.value = '0';
-        var rangeEl = document.getElementById('midiLoadRange');
-        rangeEl.max = String(midiPool.length);
-        rangeEl.value = String(midiPool.length); // whole file by default
-        midiUpdateStartLbl();
-        midiUpdateRangeLbl();
-        midiRebuildSrc('seq');
-        midiRenderSteps();
-        midiUpdateControls();
-        log('MIDI loaded: ' + midiName + ' (' + midiPool.length + ' notes)', 'log-syx');
+        midiAfterPoolBuilt();
+        log('MIDI loaded: ' + midiName + ' (' + midiPool.length + (midiChordMode ? ' chords, chord mode)' : ' notes)'), 'log-syx');
       } catch (err) {
         alert('MIDI load error: ' + err.message);
         log('MIDI load error: ' + err.message, 'log-err');
@@ -5114,6 +5482,12 @@
     };
     reader.readAsArrayBuffer(file);
   };
+  document.getElementById('midiMinNotes').addEventListener('change', function() {
+    if (!midiChordMode || !midiClustersRaw) return; // only affects chord-mode loads
+    midiBuildChordPool();
+    midiAfterPoolBuilt();
+    if (midiPool.length === 0) log('No chords with ' + midiMinNotes() + '+ notes', 'log-err');
+  });
 
   document.getElementById('midiLoadSteps').addEventListener('change', function() {
     this.value = String(midiSteps());
@@ -5137,30 +5511,77 @@
   document.getElementById('btnMidiShuffle').onclick = function() {
     midiShuffleCurrent();
   };
-  document.getElementById('btnMidiApply').onclick = function() {
+  // Load the chord pool into variation 3's chord stream. keepTime preserves the poly
+  // time data + length; !keepTime rebuilds it as one NOTE (chord) per step.
+  function midiApplyChords(keepTime) {
+    var blob = curPolyBlob();
+    varMode[activeGroup][activePat][2] = 'poly';
+    if (keepTime) {
+      var n = Math.min(midiSteps(), POLY_CHORDS);
+      for (var c = 0; c < n; c++) polySetChordNotes(blob, c, midiPool[midiStepSrc[c]].voices);
+      blob[POLY_CNT_OFF] = Math.min(POLY_CHORDS, Math.max(polyChordCount(blob), n));
+      polyEnsureChords(blob, polyLen(blob)); // cover any NOTE events past the loaded count
+      log('MIDI -> chord stream: ' + n + ' chords (time kept)', 'log-ack');
+    } else {
+      var m = Math.min(midiSteps(), POLY_CHORDS);
+      for (var t = POLY_TIME_OFF; t < POLY_ACC_OFF; t++) blob[t] = 0; // clear time stream
+      for (var s = 0; s < m; s++) {
+        polySetTime(blob, s, 1);
+        polySetChordNotes(blob, s, midiPool[midiStepSrc[s]].voices);
+        polySetAccent(blob, s, false);
+        polySetSlide(blob, s, false);
+      }
+      blob[POLY_CNT_OFF] = m;
+      blob[POLY_LEN_OFF] = Math.min(MAX_STEPS, m);
+      log('MIDI -> new chord pattern: ' + m + ' chords', 'log-ack');
+    }
+    syncScaleSnapAndApply(activeGroup, activePat); // snap loaded chords to scale if scale lock is on
+    syncPatternToolbar();
+    saveGroupsToLS();
+    renderGrid();
+    recomputeDirty();
+    sendPoly(activeGroup, activePat);
+  }
+  // keepTime: overwrite only the pitch stream, leaving time data + length intact.
+  // !keepTime: rebuild the whole pattern as one NOTE per step.
+  function midiApplyToPattern(keepTime) {
     if (midiPool.length === 0) return;
-    if (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat)) {
-      alert('Switch to a mono variation to load MIDI into the pitch data.');
+    var isPoly = (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat));
+    if (isPoly !== midiChordMode) {
+      alert(midiChordMode
+        ? 'This file was imported as chords for variation 3. Switch the active slot to variation 3 chord mode, or reload the file.'
+        : 'Variation 3 is in chord mode. Reload the MIDI file so it imports as chords.');
       return;
     }
+    if (midiChordMode) { midiApplyChords(keepTime); return; }
     var blob = activeBlob();
-    var n = Math.min(midiSteps(), patternMaxSteps(blob));
-    for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
-    for (var k = 0; k < MAX_STEPS; k++) blob[k] = PITCH_EMPTY;
-    for (var s = 0; s < n; s++) {
-      setTime(blob, s, 1); // NOTE
-      blob[s] = linearToPacked(midiPool[midiStepSrc[s]].lin);
+    if (keepTime) {
+      var n = Math.min(midiSteps(), MAX_STEPS);
+      for (var s = 0; s < n; s++) blob[s] = linearToPacked(midiPool[midiStepSrc[s]].lin);
+      ensurePitchStream(blob); // cover any NOTE events past the loaded count
+      syncScaleSnapAndApply(activeGroup, activePat, getLength(blob));
+      log('MIDI -> pitch stream: ' + n + ' notes from ' + (midiName || 'file') + ' (time kept)', 'log-ack');
+    } else {
+      var m = Math.min(midiSteps(), patternMaxSteps(blob));
+      for (var t = 0; t < TIME_BYTES; t++) blob[TIME_OFF + t] = 0;
+      for (var k = 0; k < MAX_STEPS; k++) blob[k] = PITCH_EMPTY;
+      for (var s2 = 0; s2 < m; s2++) {
+        setTime(blob, s2, 1); // NOTE
+        blob[s2] = linearToPacked(midiPool[midiStepSrc[s2]].lin);
+      }
+      setLength(blob, m);
+      syncScaleSnapAndApply(activeGroup, activePat, m);
+      log('MIDI -> new pattern: ' + m + ' steps from ' + (midiName || 'file'), 'log-ack');
     }
-    setLength(blob, n);
-    syncScaleSnapAndApply(activeGroup, activePat, n);
     syncPatternToolbar();
     pushHistory(activeGroup, activePat);
     saveGroupsToLS();
     renderGrid();
     recomputeDirty();
-    log('MIDI -> pitch data: ' + n + ' steps from ' + (midiName || 'file'), 'log-ack');
     pushFullPatternNow();
-  };
+  }
+  document.getElementById('btnMidiApply').onclick   = function() { midiApplyToPattern(true); };
+  document.getElementById('btnMidiReplace').onclick = function() { midiApplyToPattern(false); };
   document.getElementById('midiLoadBar').addEventListener('click', function() {
     var body = document.getElementById('midiLoadBody');
     var open = body.classList.toggle('is-open');
