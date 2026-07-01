@@ -1470,12 +1470,12 @@
   var SCALE_NAMES = Object.keys(SCALES);
 
   // ── Scale lock state ───────────────────────────────────────────────
-  var scaleLockEnabled   = false;
-  var scaleLockRoot      = 0;
-  var scaleLockName      = 'Major';
-  var scaleLockIntervals = SCALES['Major'].slice(); // intervals relative to root (0–11)
-  var scaleLockSnaps     = [];  // [NUM_GROUPS][PATS_PER_GROUP][NUM_VARIATIONS] Uint8Array(MAX_STEPS) | null
-  var scaleLockPolySnaps = [];  // [NUM_GROUPS][PATS_PER_GROUP] Uint8Array(POLY_TIME_OFF) raw chord voices | null (var3 poly)
+  // Scale is now PER-PATTERN and non-destructive, stored in each blob's
+  // reserved[1..2] (see the scale section near initScaleLockUI). These globals
+  // only mirror the active pattern for the scale panel display.
+  var scaleLockEnabled = false;   // mirror of the active pattern's scale-enabled bit
+  var scaleUIRoot      = 0;       // scale panel's last-selected root
+  var scaleUIName      = 'Major'; // scale panel's last-selected preset name
 
   function makeBlankPat() {
     var b = new Uint8Array(PATTERN_SIZE);
@@ -1908,7 +1908,7 @@
   function switchGroup(g) {
     syncBlob();
     activeGroup = g;
-    if (scaleLockEnabled) { var sgv = slotVar[activeGroup][activePat]; ensureScaleSnap(activeGroup, activePat, sgv); applySnapToBlob(activeGroup, activePat, sgv); }
+    refreshScaleUI();
     var tabs = tabsEl.querySelectorAll('.group-tab');
     for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('is-active', i === g);
     syncPatternToolbar();
@@ -1921,7 +1921,7 @@
   function switchToPat(p) {
     syncBlob();
     activePat = p & 15;
-    if (scaleLockEnabled) { var spv = slotVar[activeGroup][activePat]; ensureScaleSnap(activeGroup, activePat, spv); applySnapToBlob(activeGroup, activePat, spv); }
+    refreshScaleUI();
     syncPatternToolbar();
     syncVariationUI();
     // Refresh delta baseline so the first live edit on this pattern diffs
@@ -1943,7 +1943,7 @@
     syncBlob();
     slotVar[activeGroup][activePat] = v;
     repointSlot(activeGroup, activePat);
-    if (scaleLockEnabled) { ensureScaleSnap(activeGroup, activePat, v); applySnapToBlob(activeGroup, activePat, v); }
+    refreshScaleUI();
     history[activeGroup][activePat] = [cloneU8(groups[activeGroup][activePat])];
     histIdx[activeGroup][activePat] = 0;
     commitIdx[activeGroup][activePat] = 0;
@@ -2855,12 +2855,8 @@
         pk = (v & 0x0F) | (oct << 4);
         wrap.dataset.key = String(v);
       }
-      if (scaleLockEnabled) {
-        var skv = slotVar[activeGroup][activePat];
-        var sk = scaleLockSnaps[activeGroup] && scaleLockSnaps[activeGroup][activePat] && scaleLockSnaps[activeGroup][activePat][skv];
-        if (sk) sk[k] = (existing !== PITCH_EMPTY) ? (pk | flags) : pk;
-        pk = linearToPacked(snapLinToScale(unpackLinear(pk & PITCH_PACK_MASK)));
-      }
+      // Non-destructive scale: store the raw dragged pitch. The scale is applied
+      // at the hardware output, not by rewriting stored pitches.
       blob2[k] = pk | flags;
       layoutPitchKnob(wrap, nameEl, blob2, step, L);
       refreshFollowingTies(blob2, step, L);
@@ -3345,6 +3341,7 @@
         commitIdx[g][pat] = histIdx[g][pat];
         if (activeGroup === g && pat === activePat) {
           syncPatternToolbar();
+          refreshScaleUI(); // the blob carries the pattern's scale in reserved[1..2]
           renderGrid();
         }
       }
@@ -3616,6 +3613,28 @@
         renderGrid();
       }
       log('Length update pat ' + (lPat+1) + ' var ' + (lVar+1) + ' \u2192 ' + newLen, 'log-ack');
+      return;
+    }
+
+    if (cmd === 0x2a && bytes.length >= 6) { // per-pattern scale from hardware
+      if (!reflect303Enabled) return;
+      var scPat = bytes[2] & 0x0f;
+      var scMask = (bytes[3] & 0x7f) | ((bytes[4] & 0x1f) << 7);
+      var scEn  = (bytes[5] & 1) !== 0;
+      var scVar = (bytes.length >= 7) ? (bytes[6] & 0x03) : 0;
+      if (scVar > 2 || hwGroup < 0 || scPat >= 16) return;
+      var scBlob = varStore[hwGroup][scPat][scVar];
+      setBlobScaleMask(scBlob, scMask);
+      setBlobScaleEnabled(scBlob, scEn);
+      var scShown = (scVar === slotVar[hwGroup][scPat]);
+      if (scShown && lastSentBlob && lastSentPat === scPat) {
+        setBlobScaleMask(lastSentBlob, scMask);
+        setBlobScaleEnabled(lastSentBlob, scEn);
+      }
+      saveGroupsToLS();
+      if (activeGroup === hwGroup && scPat === activePat && scShown) { refreshScaleUI(); renderGrid(); }
+      recomputeDirty();
+      log('Scale update pat ' + (scPat+1) + ' var ' + (scVar+1) + (scEn ? ' on' : ' off'), 'log-ack');
       return;
     }
 
@@ -4209,15 +4228,9 @@
     }
   }
 
-  function syncScaleSnapAndApply(g, p, _len) {
-    if (!scaleLockEnabled) return;
-    var v = slotVar[g][p];
-    if (isPolyVar(g, p, v)) { takeFreshPolySnap(g, p); applyPolySnapToBlob(g, p); return; }
-    ensureScaleSnap(g, p, v);
-    var blob = varStore[g][p][v], snap = scaleLockSnaps[g][p][v];
-    for (var k = 0; k < MAX_STEPS; k++) snap[k] = blob[k];
-    applySnapToBlob(g, p, v);
-  }
+  // Non-destructive scale: editing ops no longer rewrite stored pitches. Kept as
+  // a no-op so the many call sites in the randomize/nudge/poly handlers are inert.
+  function syncScaleSnapAndApply(_g, _p, _len) {}
 
   document.getElementById('btnRandPitch').onclick = function() {
     if (curIsPoly()) { polyRandomizeOp('pitch'); return; }
@@ -4336,232 +4349,120 @@
   document.getElementById('btnChordInvDown').onclick = function() { invertAllPolyChords('down'); };
   document.getElementById('btnChordInvRand').onclick = function() { invertAllPolyChords('rand'); };
 
-  // ── Scale Lock ─────────────────────────────────────────────────────
-  function scaleNoteClasses() {
-    return scaleLockIntervals.map(function(i) { return (scaleLockRoot + i) % 12; });
+  // ── Scale (per-pattern, non-destructive) ───────────────────────────
+  // The scale lives in each pattern blob's reserved[1..2] (bytes RES1_OFF,
+  // RES1_OFF+1), matching the firmware Sequence layout: reserved[1] = 12-bit
+  // class mask low 8; reserved[2] bit7 = enabled, bits[3:0] = mask high 4. A raw
+  // mask of 0 is the "unset" sentinel that reads back as all 12 classes allowed,
+  // so cleared/legacy patterns default to all-notes / disabled. Non-destructive:
+  // stored pitches are never rewritten; the scale is metadata the hardware
+  // applies at its audio/MIDI output. Edits sync live to the 303 via SysEx 0x2A
+  // and ride along in full-pattern blobs.
+  function blobScaleRaw(blob)     { return blob[RES1_OFF] | ((blob[RES1_OFF + 1] & 0x0F) << 8); }
+  function blobScaleMask(blob)    { var m = blobScaleRaw(blob); return m ? m : 0x0FFF; }
+  function blobScaleEnabled(blob) { return (blob[RES1_OFF + 1] & 0x80) !== 0; }
+  function setBlobScaleMask(blob, mask) {
+    mask &= 0x0FFF;
+    blob[RES1_OFF]     = mask & 0xFF;
+    blob[RES1_OFF + 1] = (blob[RES1_OFF + 1] & 0x80) | ((mask >> 8) & 0x0F);
+  }
+  function setBlobScaleEnabled(blob, on) {
+    if (on) blob[RES1_OFF + 1] |= 0x80; else blob[RES1_OFF + 1] &= 0x7F;
+  }
+  function activeScaleBlob() {
+    var vs = varStore[activeGroup] && varStore[activeGroup][activePat];
+    return vs ? vs[slotVar[activeGroup][activePat]] : makeBlankPat();
   }
 
-  function snapLinToScale(lin) {
-    var cls = scaleNoteClasses();
-    if (cls.length === 0) return lin;
-    var best = lin, bestDist = Infinity;
-    for (var i = 0; i < cls.length; i++) {
-      for (var o = 0; o <= 4; o++) {
-        var c = o * 12 + cls[i];
-        if (c > 48) break;
-        var d = Math.abs(c - lin);
-        if (d < bestDist) { bestDist = d; best = c; }
-      }
-    }
-    return Math.max(0, Math.min(48, best));
+  // Rotate a root-0 preset mask to a root; generates a mask from root + name.
+  function rotateMask(mask, root) { return ((mask << root) | (mask >> (12 - root))) & 0x0FFF; }
+  function presetMask(name) {
+    var iv = SCALES[name] || SCALES['Major'], m = 0;
+    for (var i = 0; i < iv.length; i++) m |= (1 << (iv[i] % 12));
+    return m; // rooted at C
+  }
+  // Reverse-map a 12-bit mask to {root,name} if it matches a known scale, else null.
+  function matchScale(mask) {
+    mask &= 0x0FFF;
+    for (var r = 0; r < 12; r++)
+      for (var si = 0; si < SCALE_NAMES.length; si++)
+        if (rotateMask(presetMask(SCALE_NAMES[si]), r) === mask) return { root: r, name: SCALE_NAMES[si] };
+    return null;
   }
 
-  function snapPackedToScale(raw) {
-    if (raw === PITCH_EMPTY) return raw;
-    return linearToPacked(snapLinToScale(unpackLinear(raw & PITCH_PACK_MASK))) | (raw & 0xC0);
-  }
-
-  // Snaps are per-variation: each operates on varStore[g][p][v] (== groups[g][p]
-  // when v is that slot's active variation), so locking one variation never
-  // rewrites the others.
-  // Variation 3 in poly mode keeps its pitches in the chord stream, not the mono
-  // blob, so its snap lives in scaleLockPolySnaps and the snap ops delegate to it.
-  function isPolyVar(g, p, v) { return v === 2 && isVar3Poly(g, p); }
-
-  function ensureScaleSnap(g, p, v) {
-    if (isPolyVar(g, p, v)) { if (!scaleLockPolySnaps[g][p]) takeFreshPolySnap(g, p); return; }
-    if (scaleLockSnaps[g][p][v] === null) takeFreshSnap(g, p, v);
-  }
-
-  function takeFreshSnap(g, p, v) {
-    if (isPolyVar(g, p, v)) return takeFreshPolySnap(g, p);
-    var src = varStore[g][p][v], snap = new Uint8Array(MAX_STEPS);
-    for (var i = 0; i < MAX_STEPS; i++) snap[i] = src[i];
-    scaleLockSnaps[g][p][v] = snap;
-  }
-
-  function applySnapToBlob(g, p, v) {
-    if (isPolyVar(g, p, v)) return applyPolySnapToBlob(g, p);
-    var blob = varStore[g][p][v], snap = scaleLockSnaps[g][p][v];
-    if (!snap) return;
-    var nc = noteCount(blob);
-    for (var k = 0; k < nc; k++) {
-      if (snap[k] === PITCH_EMPTY) continue;
-      var flags = (blob[k] !== PITCH_EMPTY) ? (blob[k] & 0xC0) : (snap[k] & 0xC0);
-      blob[k] = linearToPacked(snapLinToScale(unpackLinear(snap[k] & PITCH_PACK_MASK))) | flags;
-    }
-  }
-
-  function restoreSnapForBlob(g, p, v) {
-    if (isPolyVar(g, p, v)) return restorePolySnap(g, p);
-    var snap = scaleLockSnaps[g][p][v];
-    if (!snap) return;
+  // Send the active pattern's scale to the 303 (SysEx 0x2A), guarded to the group
+  // currently loaded on hardware.
+  function sendScaleUpdate(g, p, v) {
+    if (!midiOut || (hwGroup >= 0 && g !== hwGroup)) return;
     var blob = varStore[g][p][v];
-    for (var i = 0; i < MAX_STEPS; i++) {
-      if (snap[i] === PITCH_EMPTY || blob[i] === PITCH_EMPTY) {
-        blob[i] = snap[i];
-      } else {
-        blob[i] = (snap[i] & PITCH_PACK_MASK) | (blob[i] & 0xC0);
-      }
+    var mask = blobScaleMask(blob), en = blobScaleEnabled(blob);
+    sendSysex(new Uint8Array([0x7d, 0x2a, p & 15, mask & 0x7f, (mask >> 7) & 0x1f, en ? 1 : 0, v & 3]));
+  }
+
+  // Commit a scale edit on the active pattern: keep the delta baseline in sync,
+  // persist, mirror to the 303, refresh the panel + grid.
+  function commitActiveScale() {
+    var v = slotVar[activeGroup][activePat];
+    if (activeGroup === hwGroup && lastSentBlob && lastSentPat === activePat) {
+      var ab = activeScaleBlob();
+      setBlobScaleMask(lastSentBlob, blobScaleMask(ab));
+      setBlobScaleEnabled(lastSentBlob, blobScaleEnabled(ab));
     }
-    scaleLockSnaps[g][p][v] = null;
+    pushHistory(activeGroup, activePat);
+    saveGroupsToLS();
+    sendScaleUpdate(activeGroup, activePat, v);
+    refreshScaleUI();
+    recomputeDirty();
+    renderGrid();
   }
 
-  // ── Poly (variation 3 chord) scale-lock snaps ──────────────────────
-  // The snap holds the raw (un-snapped) chord voices; apply snaps each voice to
-  // the scale; restore puts the raw voices back. Time/accent/slide are untouched.
-  function takeFreshPolySnap(g, p) {
-    var src = polyStore[g][p]; if (!src) return;
-    var snap = new Uint8Array(POLY_TIME_OFF);
-    for (var i = 0; i < POLY_TIME_OFF; i++) snap[i] = src[i];
-    scaleLockPolySnaps[g][p] = snap;
-  }
-  function applyPolySnapToBlob(g, p) {
-    var blob = polyStore[g][p], snap = scaleLockPolySnaps[g][p];
-    if (!blob || !snap) return;
-    var cc = polyChordCount(blob);
-    for (var ci = 0; ci < cc; ci++) {
-      var raw = polyChordNotes(snap, ci).filter(function(x){ return x !== POLY_EMPTY; });
-      polySetChordNotes(blob, ci, raw.map(function(p6){ return linearToPacked(snapLinToScale(unpackLinear(p6))); }));
-    }
-  }
-  function restorePolySnap(g, p) {
-    var blob = polyStore[g][p], snap = scaleLockPolySnaps[g][p];
-    if (blob && snap) for (var i = 0; i < POLY_TIME_OFF; i++) blob[i] = snap[i];
-    scaleLockPolySnaps[g][p] = null;
-  }
-  // Record one step's chord as the raw snap original and snap the live chord to
-  // scale. Called from poly edits while scale lock is on.
-  function polyScaleSnapStep(s) {
-    if (!scaleLockEnabled) return;
-    var g = activeGroup, p = activePat;
-    if (!isPolyVar(g, p, slotVar[g][p])) return;
-    var blob = curPolyBlob();
-    if (polyTime(blob, s) !== 1) return;
-    var ci = polyChordIndexForStep(blob, s);
-    if (!scaleLockPolySnaps[g][p]) takeFreshPolySnap(g, p);
-    var snap = scaleLockPolySnaps[g][p]; if (!snap) return;
-    var raw = polyChordNotes(blob, ci).filter(function(x){ return x !== POLY_EMPTY; });
-    polySetChordNotes(snap, ci, raw);
-    polySetChordNotes(blob, ci, raw.map(function(p6){ return linearToPacked(snapLinToScale(unpackLinear(p6))); }));
+  // Root/preset selection: build a mask from root+name and enable it (matches the
+  // hardware, where loading a preset also enables the scale).
+  function setActiveScaleFromRootName() {
+    var blob = activeScaleBlob();
+    setBlobScaleMask(blob, rotateMask(presetMask(scaleUIName), scaleUIRoot));
+    setBlobScaleEnabled(blob, true);
+    commitActiveScale();
   }
 
-  function initScaleLockSnaps() {
-    scaleLockSnaps = []; scaleLockPolySnaps = [];
-    for (var g = 0; g < NUM_GROUPS; g++) {
-      scaleLockSnaps[g] = []; scaleLockPolySnaps[g] = [];
-      for (var p = 0; p < PATS_PER_GROUP; p++) { scaleLockSnaps[g][p] = [null, null, null]; scaleLockPolySnaps[g][p] = null; }
-    }
-  }
+  // No-op stubs: the old destructive snapshot system is gone. Editing ops still
+  // call these; the scale is applied at the hardware output, not by rewriting
+  // stored pitches, so they intentionally do nothing now.
+  function ensureScaleSnap()   {}
+  function applySnapToBlob()   {}
+  function polyScaleSnapStep() {}
+  function reapplyScaleLock()  {}
 
-  // Patterns the scale lock should affect: the full chain when one is active,
-  // otherwise just the displayed pattern. Each carries the variation to lock —
-  // the slot's currently-selected variation, never the others.
-  function scaleLockAffectedPats() {
-    var pats = [];
-    if (patChain.length > 1) {
-      for (var i = 0; i < patChain.length; i++)
-        pats.push({ g: activeGroup, p: patChain[i], v: slotVar[activeGroup][patChain[i]] });
-    } else {
-      pats.push({ g: activeGroup, p: activePat, v: slotVar[activeGroup][activePat] });
-    }
-    return pats;
-  }
-
-  function sendScaleLockPats(pats) {
-    if (!midiOut) return;
-    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
-    var apat = activePat & 15;
-    for (var i = 0; i < pats.length; i++) {
-      var x = pats[i];
-      if (hwGroup >= 0 && x.g !== hwGroup) continue;
-      var v = (x.v === undefined) ? slotVar[x.g][x.p] : x.v;
-      if (v === 2 && isVar3Poly(x.g, x.p)) { sendPoly(x.g, x.p); continue; }
-      sendPattern(x.p, varStore[x.g][x.p][v], v);
-      if (x.g === activeGroup && x.p === apat && v === slotVar[x.g][x.p]) {
-        lastSentBlob = new Uint8Array(varStore[x.g][x.p][v]);
-        lastSentPat  = apat;
-      }
-    }
-  }
-
-  function enableScaleLock() {
-    scaleLockEnabled = true;
-    var pats = scaleLockAffectedPats();
-    for (var i = 0; i < pats.length; i++) {
-      // Force a fresh snap from the current blob so the immediate apply is
-      // always against the user's current pitches, not a leftover snap.
-      takeFreshSnap(pats[i].g, pats[i].p, pats[i].v);
-      applySnapToBlob(pats[i].g, pats[i].p, pats[i].v);
-      pushHistory(pats[i].g, pats[i].p);
-    }
-    updateScaleLockUI();
-    saveScaleLockToLS();
-    saveGroupsToLS(); renderGrid(); recomputeDirty();
-    sendScaleLockPats(pats);
-    log('Scale lock on — ' + NOTE_NAMES[scaleLockRoot] + ' ' + scaleLockName +
-        (pats.length > 1 ? ' (' + pats.length + ' patterns)' : ''), 'log-ack');
-  }
-
-  function disableScaleLock() {
-    scaleLockEnabled = false;
-    // Restore every snapped variation (covers leftovers from prior chains/variations)
-    // and collect them so the firmware sees the un-snap on every snapped slot+variation.
-    var snapped = [];
-    for (var g = 0; g < NUM_GROUPS; g++)
-      for (var p = 0; p < PATS_PER_GROUP; p++) {
-        for (var v = 0; v < NUM_VARIATIONS; v++) {
-          if (scaleLockSnaps[g][p][v] !== null) {
-            restoreSnapForBlob(g, p, v);
-            snapped.push({ g: g, p: p, v: v });
-            pushHistory(g, p);
-          }
-        }
-        if (scaleLockPolySnaps[g][p] !== null) {   // var3 poly chord snap
-          restorePolySnap(g, p);
-          snapped.push({ g: g, p: p, v: 2 });
-        }
-      }
-    updateScaleLockUI();
-    saveScaleLockToLS();
-    saveGroupsToLS(); renderGrid(); recomputeDirty();
-    sendScaleLockPats(snapped);
-    log('Scale lock off — pitches restored' +
-        (snapped.length > 1 ? ' (' + snapped.length + ' patterns)' : ''), 'log-ack');
-  }
-
-  function reapplyScaleLock() {
-    if (!scaleLockEnabled) return;
-    var pats = scaleLockAffectedPats();
-    // Make sure any pat newly added to the chain since lock-on gets a snap.
-    for (var i = 0; i < pats.length; i++) {
-      ensureScaleSnap(pats[i].g, pats[i].p, pats[i].v);
-      applySnapToBlob(pats[i].g, pats[i].p, pats[i].v);
-    }
-    saveGroupsToLS(); renderGrid(); recomputeDirty();
-    sendScaleLockPats(pats);
-  }
-
-  function updateScaleLockUI() {
+  // Refresh the scale panel from the active pattern's blob.
+  function refreshScaleUI() {
+    var blob = activeScaleBlob();
+    var mask = blobScaleMask(blob);
+    scaleLockEnabled = blobScaleEnabled(blob);
+    var m = matchScale(mask);
+    if (m) { scaleUIRoot = m.root; scaleUIName = m.name; }
     var toggleBtn = document.getElementById('btnScaleLockToggle');
-    toggleBtn.textContent = scaleLockEnabled ? 'On' : 'Off';
-    toggleBtn.classList.toggle('is-on', scaleLockEnabled);
-    var rootBtns = document.getElementById('scaleRootBtns').querySelectorAll('.scale-root-btn');
-    rootBtns.forEach(function(b) {
-      b.classList.toggle('active', parseInt(b.dataset.root, 10) === scaleLockRoot);
+    if (toggleBtn) {
+      toggleBtn.textContent = scaleLockEnabled ? 'On' : 'Off';
+      toggleBtn.classList.toggle('is-on', scaleLockEnabled);
+    }
+    var rootBtns = document.getElementById('scaleRootBtns');
+    if (rootBtns) rootBtns.querySelectorAll('.scale-root-btn').forEach(function(b) {
+      b.classList.toggle('active', parseInt(b.dataset.root, 10) === scaleUIRoot);
     });
     var sel = document.getElementById('scaleSelect');
-    if (sel.value !== scaleLockName) sel.value = scaleLockName;
-    rebuildScaleNoteBtns();
+    if (sel) sel.value = m ? scaleUIName : ''; // blank = custom mask
+    rebuildScaleNoteBtns(mask);
   }
 
-  function rebuildScaleNoteBtns() {
+  // Per-note toggle buttons reflect the active pattern's mask; clicking flips a
+  // class bit (making the scale "custom").
+  function rebuildScaleNoteBtns(mask) {
     var container = document.getElementById('scaleNoteBtns');
+    if (!container) return;
     container.innerHTML = '';
-    var cls = scaleNoteClasses();
     for (var n = 0; n < 12; n++) {
       var isBlack  = BLACK_KEY_INDICES.indexOf(n) !== -1;
-      var isActive = cls.indexOf(n) !== -1;
+      var isActive = (mask & (1 << n)) !== 0;
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'scale-note-btn' + (isBlack ? ' is-black' : '') + (isActive ? ' active' : '');
@@ -4570,45 +4471,16 @@
       btn.title = NOTE_NAMES[n] + (isActive ? ' (in scale — click to remove)' : ' (click to add)');
       btn.addEventListener('click', (function(nc) {
         return function() {
-          var interval = (nc - scaleLockRoot + 12) % 12;
-          var idx = scaleLockIntervals.indexOf(interval);
-          if (idx !== -1) scaleLockIntervals.splice(idx, 1);
-          else { scaleLockIntervals.push(interval); scaleLockIntervals.sort(function(a,b){return a-b;}); }
-          saveScaleLockToLS();
-          rebuildScaleNoteBtns();
-          reapplyScaleLock();
+          var b = activeScaleBlob();
+          setBlobScaleMask(b, blobScaleMask(b) ^ (1 << nc));
+          commitActiveScale();
         };
       })(n));
       container.appendChild(btn);
     }
   }
 
-  function saveScaleLockToLS() {
-    try {
-      localStorage.setItem(LS_SCALE_LOCK, JSON.stringify({
-        root: scaleLockRoot, name: scaleLockName, intervals: scaleLockIntervals
-      }));
-    } catch(_e) {}
-  }
-
-  function loadScaleLockFromLS() {
-    try {
-      var raw = localStorage.getItem(LS_SCALE_LOCK);
-      if (!raw) return;
-      var d = JSON.parse(raw);
-      if (typeof d.root === 'number' && d.root >= 0 && d.root < 12) scaleLockRoot = d.root;
-      if (typeof d.name === 'string' && SCALES[d.name]) {
-        scaleLockName = d.name;
-        scaleLockIntervals = SCALES[d.name].slice();
-      }
-      if (Array.isArray(d.intervals) && d.intervals.length > 0)
-        scaleLockIntervals = d.intervals.filter(function(x) { return Number.isInteger(x) && x >= 0 && x < 12; });
-    } catch(_e) {}
-  }
-
   function initScaleLockUI() {
-    loadScaleLockFromLS();
-    initScaleLockSnaps();
     // Root buttons
     var rootContainer = document.getElementById('scaleRootBtns');
     for (var n = 0; n < 12; n++) {
@@ -4619,12 +4491,7 @@
         btn.className = 'scale-root-btn' + (isBlack ? ' is-black' : '');
         btn.textContent = NOTE_NAMES[root];
         btn.dataset.root = String(root);
-        btn.addEventListener('click', function() {
-          scaleLockRoot = root;
-          saveScaleLockToLS();
-          updateScaleLockUI();
-          reapplyScaleLock();
-        });
+        btn.addEventListener('click', function() { scaleUIRoot = root; setActiveScaleFromRootName(); });
         rootContainer.appendChild(btn);
       })(n);
     }
@@ -4635,19 +4502,18 @@
       opt.value = name; opt.textContent = name;
       sel.appendChild(opt);
     });
-    sel.value = scaleLockName;
     sel.addEventListener('change', function() {
-      scaleLockName = sel.value;
-      scaleLockIntervals = SCALES[scaleLockName].slice();
-      saveScaleLockToLS();
-      updateScaleLockUI();
-      reapplyScaleLock();
+      if (!sel.value) return;
+      scaleUIName = sel.value;
+      setActiveScaleFromRootName();
     });
-    // Toggle
+    // On/Off toggle flips the active pattern's enabled bit.
     document.getElementById('btnScaleLockToggle').addEventListener('click', function() {
-      if (scaleLockEnabled) disableScaleLock(); else enableScaleLock();
+      var b = activeScaleBlob();
+      setBlobScaleEnabled(b, !blobScaleEnabled(b));
+      commitActiveScale();
     });
-    updateScaleLockUI();
+    refreshScaleUI();
   }
   initScaleLockUI();
 

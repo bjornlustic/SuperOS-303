@@ -132,6 +132,54 @@ struct Sequence {
     else    reserved[0] &= uint8_t(~TRIPLET_FLAG);
   }
 
+  // ---------------------------------------------------------------------------
+  // Per-pattern scale. reserved[1] = mask low 8 bits, reserved[2]: bit7 =
+  // enabled, bits[3:0] = mask high 4 bits. A raw mask of 0 is the "unset"
+  // sentinel and reads back as all 12 classes allowed, so cleared/legacy
+  // patterns default to all-notes / disabled. Non-destructive: scale quantizes
+  // pitch only at output and constrains random generation; stored pitch[] is
+  // never rewritten.
+  // ---------------------------------------------------------------------------
+  uint16_t scale_raw() const {
+    return uint16_t(reserved[1] | (uint16_t(reserved[2] & 0x0F) << 8));
+  }
+  uint16_t scale_mask() const { const uint16_t m = scale_raw(); return m ? m : 0x0FFF; }
+  bool scale_enabled() const { return (reserved[2] & 0x80) != 0; }
+  void set_scale_mask(uint16_t m) {
+    m &= 0x0FFF;
+    reserved[1] = uint8_t(m & 0xFF);
+    reserved[2] = uint8_t((reserved[2] & 0x80) | ((m >> 8) & 0x0F));
+  }
+  void set_scale_enabled(bool on) {
+    if (on) reserved[2] |= 0x80; else reserved[2] &= uint8_t(0x7F);
+  }
+  void toggle_scale_class(uint8_t cls) {
+    set_scale_mask(scale_mask() ^ uint16_t(1u << (cls % 12)));
+  }
+  bool scale_allows(uint8_t cls) const { return (scale_mask() >> (cls % 12)) & 1; }
+
+  /// Map a linear semitone 0..48 to the nearest allowed note class (ties to the
+  /// lower note, clamped 0..48). Identity when the scale is disabled.
+  uint8_t scale_quantize_linear(uint8_t lin) const {
+    if (!scale_enabled()) return lin;
+    const uint16_t mask = scale_mask();
+    if ((mask >> (lin % 12)) & 1) return lin;
+    for (int d = 1; d <= 12; ++d) {
+      const int lo = int(lin) - d, hi = int(lin) + d;
+      if (lo >= 0  && ((mask >> (lo % 12)) & 1)) return uint8_t(lo);
+      if (hi <= 48 && ((mask >> (hi % 12)) & 1)) return uint8_t(hi);
+    }
+    return lin;
+  }
+
+  /// Quantize the 6-bit packed pitch field (caller preserves the 0xC0 flag bits).
+  uint8_t scale_apply_packed(uint8_t packed6) const {
+    if (!scale_enabled()) return packed6;
+    const uint8_t lin = scale_quantize_linear(unpack_pitch_linear(packed6));
+    const uint8_t oct = lin / 12;
+    return pack_pitch(uint8_t(lin - oct * 12), oct);
+  }
+
   uint8_t get_pitch_count() const { return pitch_count_runtime; }
   void    set_pitch_count(uint8_t n) {
     pitch_count_runtime = (n <= MAX_STEPS) ? n : MAX_STEPS;

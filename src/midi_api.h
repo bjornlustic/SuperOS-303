@@ -38,6 +38,8 @@ void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave
 bool midi_live_accent();
 /// True while a live MIDI Note On is held (clock stopped); driven by most-recent note only.
 bool midi_live_gate();
+/// MIDI note number of the live note currently holding the gate (clock stopped).
+uint8_t midi_live_note();
 /// True while the destination note of a live legato slide is active (clock stopped).
 bool midi_live_slide();
 
@@ -107,6 +109,12 @@ void midi_send_active_pattern(uint8_t pat);
 /// Broadcast a single step-lock toggle to host (SysEx 0x19).
 /// Format: F0 7D 19 <pat:0-15> <step:0-63> <locked:0|1> F7
 void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
+
+/// Per-pattern scale update (SysEx 0x2A). Bidirectional: device broadcasts after
+/// a hardware scale edit; host sends the same format to set a pattern's scale.
+/// mask = 12-bit class mask (bit0=C). Format:
+///   F0 7D 2A <pat:0-15> <mask_lo7> <mask_hi5> <enabled:0|1> <var:0-2> F7
+void midi_send_scale_update(uint8_t pat, uint16_t mask, bool enabled, uint8_t var);
 
 /// Play a metronome tick note via MIDI (E3 on first beat of pattern, E4 otherwise).
 void midi_metronome_tick(bool first_beat);

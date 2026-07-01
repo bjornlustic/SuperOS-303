@@ -45,6 +45,49 @@ struct SuperOsMidiSettings {
 
 MIDI_CREATE_CUSTOM_INSTANCE(HardwareSerial, Serial1, MIDI, SuperOsMidiSettings);
 
+// --- Dual MIDI output (DIN + USB) -----------------------------------------------
+// Every performance message (notes, clock, transport) is sent to DIN (Serial1) and,
+// when built with USB MIDI, mirrored to the USB-MIDI port so a host can record the
+// 303 and play it from USB. All MIDI.sendNoteOn/Off/Clock/Start/Stop/Continue call
+// sites below route through these. SysEx (the web-editor protocol) stays DIN-only
+// for now — USB SysEx is Phase 2.
+static inline void out_note_on(byte n, byte v, byte ch) {
+  MIDI.sendNoteOn(n, v, ch);
+#ifdef SUPEROS_USB_MIDI
+  usbMIDI.sendNoteOn(n, v, ch);
+#endif
+}
+static inline void out_note_off(byte n, byte v, byte ch) {
+  MIDI.sendNoteOff(n, v, ch);
+#ifdef SUPEROS_USB_MIDI
+  usbMIDI.sendNoteOff(n, v, ch);
+#endif
+}
+static inline void out_clock() {
+  MIDI.sendClock();
+#ifdef SUPEROS_USB_MIDI
+  usbMIDI.sendRealTime(usbMIDI.Clock);
+#endif
+}
+static inline void out_start() {
+  MIDI.sendStart();
+#ifdef SUPEROS_USB_MIDI
+  usbMIDI.sendRealTime(usbMIDI.Start);
+#endif
+}
+static inline void out_stop() {
+  MIDI.sendStop();
+#ifdef SUPEROS_USB_MIDI
+  usbMIDI.sendRealTime(usbMIDI.Stop);
+#endif
+}
+static inline void out_continue() {
+  MIDI.sendContinue();
+#ifdef SUPEROS_USB_MIDI
+  usbMIDI.sendRealTime(usbMIDI.Continue);
+#endif
+}
+
 static Engine *g_eng = nullptr;
 static bool g_clk_run = false;
 static uint8_t s_in_channel = 0; // 0 = omni
@@ -125,10 +168,18 @@ static void midi_tx_drain() {
 }
 
 static bool tx_push_message(const uint8_t *inner, uint16_t inner_len) {
-  // Check space BEFORE writing anything to avoid partial SysEx corruption.
-  // A partial F0...no-F7 left in the buffer would break the MIDI output stream.
+#ifdef SUPEROS_USB_MIDI
+  // Send to USB FIRST and unconditionally. The web editor (USB host) handshakes far
+  // faster than the 31250-baud Serial1 ring drains, so the DIN ring fills after a
+  // handful of replies. Gating USB on ring space dropped replies mid-dump (the
+  // "stalls at ~6/48" bug). USB is its own transport — independent of the ring.
+  // hasTerm=false -> the core wraps F0..F7 around `inner`. Non-blocking / dropped
+  // when no USB host is configured.
+  usbMIDI.sendSysEx(inner_len, inner, false);
+#endif
+  // DIN (Serial1) ring: check space first so we never leave a partial F0..no-F7.
   uint16_t avail = (s_tx_r + kTxCap - s_tx_w - 1) % kTxCap;
-  if (avail < inner_len + 2) return false; // +2 for F0 and F7
+  if (avail < inner_len + 2) return false; // ring full -> DIN drops it (USB already sent)
   tx_push_byte(0xF0);
   for (uint16_t i = 0; i < inner_len; ++i) tx_push_byte(inner[i]);
   tx_push_byte(0xF7);
@@ -499,6 +550,32 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     send_ack(0);
     break;
   }
+  case 0x2A: { // host -> 303: set per-pattern scale (mask + enabled); optional <var>
+    if (n < 6 || !g_eng) return;
+    const uint8_t  pat  = p[2] & 0x0F;
+    const uint16_t mask = uint16_t((p[3] & 0x7F) | (uint16_t(p[4] & 0x1F) << 7));
+    const bool     en   = (p[5] & 0x01) != 0;
+    const uint8_t  var  = (n >= 7) ? (p[6] & 0x03) : 0;
+    Sequence *seqp;
+    if (var == 0) {
+      seqp = &g_eng->pattern[pat];
+    } else if (var < NUM_VARIATIONS &&
+               (pat & uint8_t(NUM_PATTERNS - 1)) == g_eng->get_patsel()) {
+      seqp = &g_eng->shadow_[var - 1];
+    } else {
+      return; // non-resident shadow scale not supported (web sends the full blob)
+    }
+    seqp->set_scale_mask(mask);
+    seqp->set_scale_enabled(en);
+    if (var == 0) {
+      g_eng->stale = true;
+      mark_pat_dirty(pat);
+    } else {
+      g_eng->shadow_stale_ = true;
+      g_eng->shadow_dirty_ms_ = millis();
+    }
+    break;
+  }
   case 0x20: { // request config
     const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                               (GlobalSettings.midi_thru          ? 2 : 0));
@@ -565,6 +642,38 @@ static void sysex_cb(byte *data, unsigned sz) {
                     static_cast<unsigned>(sz - 2));
 }
 
+#ifdef SUPEROS_USB_MIDI
+// USB SysEx reassembly. The Teensy usb_midi core's RX buffer is only 60 bytes
+// (USB_MIDI_SYSEX_MAX), but the editor's pattern (0x12) and poly-blob (0x26) writes
+// run to ~266 bytes. So we register the CHUNKED (partial) handler: the core hands us
+// the message in <=60-byte pieces (complete=0) plus a final piece (complete=1), and
+// we reassemble the whole F0..F7 message here, then dispatch like the DIN path.
+static uint8_t  usb_sysex_buf[320];
+static uint16_t usb_sysex_len  = 0;
+static bool     usb_sysex_drop = false;   // overflow guard: skip rest of an oversized msg
+static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complete) {
+  if (length && data[0] == 0xF0) {        // first chunk of a new message -> restart
+    usb_sysex_len = 0;
+    usb_sysex_drop = false;
+  }
+  if (!usb_sysex_drop) {
+    if (usb_sysex_len + length <= sizeof(usb_sysex_buf)) {
+      for (uint16_t i = 0; i < length; ++i) usb_sysex_buf[usb_sysex_len++] = data[i];
+    } else {
+      usb_sysex_drop = true;              // too big for our buffer -> ignore the remainder
+    }
+  }
+  if (complete) {
+    if (!usb_sysex_drop && usb_sysex_len >= 4 &&
+        usb_sysex_buf[0] == 0xF0 && usb_sysex_buf[usb_sysex_len - 1] == 0xF7) {
+      handle_sysex_body(usb_sysex_buf + 1, usb_sysex_len - 2);
+    }
+    usb_sysex_len = 0;
+    usb_sysex_drop = false;
+  }
+}
+#endif
+
 // --- Bank select state (for Ableton Program Change mapping) ----------------------
 // CC 0 = group (0-3), CC 32 = section (0=Bank A patterns 0-7, 1=Bank B patterns 8-15)
 // PC value = pattern within section (0-7)
@@ -611,10 +720,16 @@ static bool    s_live_accent = false;
 static bool    s_live_gate   = false;
 static bool    s_live_slide  = false;
 static uint8_t s_live_note   = 0;
+// Ticks to force the accent pin LOW after a slid-into accented note so it re-edges
+// (low->high) even when the previous note was also accented. A slide keeps the gate
+// continuously high, so there is no gate retrigger to fire the accent; without this
+// the accent pin stays high across the slide and the accented note does not accent.
+static uint8_t s_live_acc_retrig = 0;
 
-bool midi_live_accent() { return s_live_accent; }
+bool midi_live_accent() { return s_live_accent && s_live_acc_retrig == 0; }
 bool midi_live_gate()   { return s_live_gate; }
 bool midi_live_slide()  { return s_live_slide; }
+uint8_t midi_live_note() { return s_live_note; }
 
 static void note_on_cb(byte ch, byte pitch, byte vel) {
   if (vel == 0) return;
@@ -629,11 +744,11 @@ static void note_on_cb(byte ch, byte pitch, byte vel) {
     if (!s_midi_thru) {
       if (was_playing && prev_note != static_cast<uint8_t>(pitch)) {
         // Legato: slide from previous note — Note On new BEFORE Note Off old.
-        MIDI.sendNoteOn(pitch, vel, ch);
-        MIDI.sendNoteOff(prev_note, 0, ch);
+        out_note_on(pitch, vel, ch);
+        out_note_off(prev_note, 0, ch);
         s_live_slide = true;
       } else {
-        MIDI.sendNoteOn(pitch, vel, ch);
+        out_note_on(pitch, vel, ch);
         s_live_slide = false;
       }
     } else {
@@ -644,8 +759,11 @@ static void note_on_cb(byte ch, byte pitch, byte vel) {
     s_live_accent = (vel >= 100);
     s_live_gate   = true;
     s_live_note   = static_cast<uint8_t>(pitch);
+    // Slid-into accented note: re-edge the accent pin (gate stays high on a slide,
+    // so there is no gate retrigger to fire the accent).
+    if (s_live_slide && s_live_accent) s_live_acc_retrig = 2;
   } else if (!s_midi_thru) {
-    MIDI.sendNoteOn(pitch, vel, ch);
+    out_note_on(pitch, vel, ch);
   }
 
   if (g_eng)
@@ -664,27 +782,31 @@ static void note_off_cb(byte ch, byte pitch, byte vel) {
       // Slide back: Note On new BEFORE Note Off old for portamento ordering.
       const uint8_t back_note = s_note_stack[s_note_stack_depth - 1];
       const uint8_t back_vel  = s_note_stack_vel[s_note_stack_depth - 1];
-      MIDI.sendNoteOn(back_note, back_vel, ch);
+      out_note_on(back_note, back_vel, ch);
       if (!s_midi_thru)
-        MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
-      s_live_note  = back_note;
-      s_live_slide = true;
-      s_live_gate  = true;
+        out_note_off(static_cast<uint8_t>(pitch), 0, ch);
+      s_live_note   = back_note;
+      s_live_slide  = true;
+      s_live_gate   = true;
+      s_live_accent = (back_vel >= 100); // slide-back adopts the held note's accent
+      if (s_live_accent) s_live_acc_retrig = 2; // re-edge accent (slide keeps gate high)
       if (g_eng)
         g_eng->midi_apply_note_on(back_note, back_vel);
     } else {
       // When thru is off, explicitly send Note Off (covers normal release and
       // duplicate Note Off for already-slid notes, harmless to receiving synth).
       if (!s_midi_thru)
-        MIDI.sendNoteOff(static_cast<uint8_t>(pitch), 0, ch);
+        out_note_off(static_cast<uint8_t>(pitch), 0, ch);
       if (was_top) {
-        s_live_gate  = false;
-        s_live_slide = false;
-        s_live_note  = 0;
+        s_live_gate   = false;
+        s_live_slide  = false;
+        s_live_note   = 0;
+        s_live_accent = false; // drop accent when the gate closes so the next
+                               // accented note re-asserts a fresh accent edge
       }
     }
   } else if (!s_midi_thru) {
-    MIDI.sendNoteOff(pitch, 0, ch);
+    out_note_off(pitch, 0, ch);
   }
 }
 
@@ -703,11 +825,11 @@ static uint8_t audition_ch() {
 void midi_audition_note_on(uint8_t note, uint8_t vel) {
   const byte ch = static_cast<byte>(audition_ch());
   if (s_audition_on && (s_audition_note != note || s_audition_ch != ch)) {
-    MIDI.sendNoteOff(s_audition_note, 0, s_audition_ch); // close prev on its channel
+    out_note_off(s_audition_note, 0, s_audition_ch); // close prev on its channel
     s_audition_on = false;
   }
   if (!s_audition_on) {
-    MIDI.sendNoteOn(note, vel, ch);
+    out_note_on(note, vel, ch);
     s_audition_note = note;
     s_audition_ch   = ch;
     s_audition_on   = true;
@@ -716,7 +838,7 @@ void midi_audition_note_on(uint8_t note, uint8_t vel) {
 
 void midi_audition_note_off() {
   if (s_audition_on) {
-    MIDI.sendNoteOff(s_audition_note, 0, s_audition_ch);
+    out_note_off(s_audition_note, 0, s_audition_ch);
     s_audition_on = false;
   }
 }
@@ -730,7 +852,7 @@ static uint8_t s_aud_chord_ch = 0;
 
 void midi_audition_chord_off() {
   for (uint8_t i = 0; i < s_aud_chord_n; ++i)
-    MIDI.sendNoteOff(s_aud_chord[i], 0, s_aud_chord_ch);
+    out_note_off(s_aud_chord[i], 0, s_aud_chord_ch);
   s_aud_chord_n = 0;
 }
 
@@ -743,7 +865,7 @@ void midi_audition_chord_on(const uint8_t *voices, bool accent, int16_t transpos
     int n = 36 + int(unpack_pitch_linear(voices[i])) + int(transpose);
     if (n > 127) n = 127;
     if (n < 0)   n = 0;
-    MIDI.sendNoteOn(static_cast<byte>(n), vel, ch);
+    out_note_on(static_cast<byte>(n), vel, ch);
     s_aud_chord[s_aud_chord_n++] = static_cast<uint8_t>(n);
   }
   s_aud_chord_ch = ch;
@@ -816,6 +938,16 @@ void midi_send_poly_flag(uint8_t pat, uint8_t flag) {
   tx_push_message(inner, 4);
 }
 
+// --- Per-pattern scale broadcast (SysEx 0x2A) -----------------------------------
+// Device -> host after a hardware scale edit. Same wire as the host->device edit;
+// the device never echoes a received 0x2A, so there is no feedback loop.
+void midi_send_scale_update(uint8_t pat, uint16_t mask, bool enabled, uint8_t var) {
+  const uint8_t inner[7] = {0x7D, 0x2A, (uint8_t)(pat & 0x0F),
+                            (uint8_t)(mask & 0x7F), (uint8_t)((mask >> 7) & 0x1F),
+                            (uint8_t)(enabled ? 1 : 0), (uint8_t)(var & 0x03)};
+  tx_push_message(inner, 7);
+}
+
 // Broadcast ONE variation-3 poly step (device -> host) after a hardware chord edit,
 // so the web editor mirrors panel edits live. Same 0x27 wire as the host->device edit;
 // the device only sends this on hardware edits and never echoes a received 0x27, so
@@ -851,15 +983,15 @@ void midi_metronome_tick(bool first_beat) {
   const uint8_t note = first_beat ? 76 : 88;
   const uint8_t vel  = first_beat ? 127 : 80;
   if (s_metro_note_on) {
-    MIDI.sendNoteOff(s_metro_note_on, 0, static_cast<byte>(out_ch()));
+    out_note_off(s_metro_note_on, 0, static_cast<byte>(out_ch()));
   }
-  MIDI.sendNoteOn(note, vel, static_cast<byte>(out_ch()));
+  out_note_on(note, vel, static_cast<byte>(out_ch()));
   s_metro_note_on = note;
 }
 
 void midi_metronome_stop() {
   if (s_metro_note_on) {
-    MIDI.sendNoteOff(s_metro_note_on, 0, static_cast<byte>(out_ch()));
+    out_note_off(s_metro_note_on, 0, static_cast<byte>(out_ch()));
     s_metro_note_on = 0;
   }
 }
@@ -918,6 +1050,10 @@ void midi_init(Engine *engine) {
   MIDI.setHandleSystemExclusive(sysex_cb);
   MIDI.setHandleNoteOn(note_on_cb);
   MIDI.setHandleNoteOff(note_off_cb);
+#ifdef SUPEROS_USB_MIDI
+  // 3-arg (partial) overload -> reassembled in usb_sysex_partial (handles >60-byte msgs).
+  usbMIDI.setHandleSystemExclusive(usb_sysex_partial);
+#endif
   tx_clear();
   s_dump_active = false;
 }
@@ -937,11 +1073,14 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
   }
   g_clk_run = clk_run;
   midi_clock_pulses = 0;
+  // Count down the slid-accent retrigger so the forced accent-low window expires a
+  // couple of polls after the note-on that armed it (set later in this same poll).
+  if (s_live_acc_retrig) --s_live_acc_retrig;
 
   if (!s_midi_clock_rx) midi_clk = false;
 
   if (!clk_run && s_seq_note_on) {
-    MIDI.sendNoteOff(s_seq_note, 0, s_seq_note_ch);
+    out_note_off(s_seq_note, 0, s_seq_note_ch);
     s_seq_note_on = false;
   }
   if (!clk_run) midi_shadows_all_notes_off(engine);
@@ -954,16 +1093,16 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
     // DIN-sync mode already does (it generates the clock on OUT). Forwarded 1:1 here
     // so piled-up pulses aren't under-sent. (DIN sync uses a separate clock pin.)
     case midi::MidiType::Clock:
-      if (s_midi_clock_rx) { ++midi_clock_pulses; MIDI.sendClock(); }
+      if (s_midi_clock_rx) { ++midi_clock_pulses; out_clock(); }
       break;
     case midi::MidiType::Start:
-      if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); MIDI.sendStart(); }
+      if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); out_start(); }
       break;
     case midi::MidiType::Continue:
-      if (s_midi_clock_rx) { midi_clk = true; MIDI.sendContinue(); } // resume (no reset)
+      if (s_midi_clock_rx) { midi_clk = true; out_continue(); } // resume (no reset)
       break;
     case midi::MidiType::Stop:
-      if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); MIDI.sendStop(); }
+      if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); out_stop(); }
       break;
     case midi::MidiType::ControlChange:
       if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel) {
@@ -990,6 +1129,52 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
     }
   }
 
+#ifdef SUPEROS_USB_MIDI
+  // USB MIDI RX — mirror of the DIN handling above. Notes route through the same
+  // live-play handlers; clock/transport drive the engine identically and echo to
+  // both ports via out_*(). USB SysEx (web editor / updates) is Phase 2: ignored.
+  // Bounded drain. usbMIDI.read() returns false for SysEx-continuation packets, not
+  // only for "empty", so a plain while(read()) loop dribbles a multi-packet SysEx in
+  // at one packet per poll (a ~265B poly write took ~90 polls). The host->device
+  // endpoint is 64B x2 banks = 32 packets, so drain a full bank per poll: keep going
+  // past a false return so continuation packets flush too. An empty read() is only a
+  // few register checks, so the fixed bound is cheap when idle; leftover packets (host
+  // refills between polls) drain on the next poll.
+  for (uint8_t n = 0; n < 48; ++n) {
+    if (!usbMIDI.read()) continue;   // false = empty OR a SysEx-continuation packet consumed
+    const uint8_t ut = usbMIDI.getType();
+    if (ut == usbMIDI.NoteOn) {
+      note_on_cb(usbMIDI.getChannel(), usbMIDI.getData1(), usbMIDI.getData2());
+    } else if (ut == usbMIDI.NoteOff) {
+      note_off_cb(usbMIDI.getChannel(), usbMIDI.getData1(), usbMIDI.getData2());
+    } else if (ut == usbMIDI.Clock) {
+      if (s_midi_clock_rx) { ++midi_clock_pulses; out_clock(); }
+    } else if (ut == usbMIDI.Start) {
+      if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); out_start(); }
+    } else if (ut == usbMIDI.Continue) {
+      if (s_midi_clock_rx) { midi_clk = true; out_continue(); }
+    } else if (ut == usbMIDI.Stop) {
+      if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); out_stop(); }
+    } else if (ut == usbMIDI.ControlChange) {
+      if (s_in_channel == 0 || usbMIDI.getChannel() == s_in_channel) {
+        const uint8_t cc  = usbMIDI.getData1();
+        const uint8_t val = usbMIDI.getData2();
+        if (cc == 0)  s_bank_group   = val < NUM_GROUPS ? val : NUM_GROUPS - 1;
+        if (cc == 32) s_bank_section = val < 2 ? val : 1;
+      }
+    } else if (ut == usbMIDI.ProgramChange) {
+      if (s_in_channel == 0 || usbMIDI.getChannel() == s_in_channel) {
+        const uint8_t pc  = usbMIDI.getData1();
+        const uint8_t pat = s_bank_section * 8 + (pc < 8 ? pc : 7);
+        if (s_bank_group != engine.get_group())
+          engine.SetGroup(s_bank_group);
+        engine.SetPattern(pat, true);
+        engine.get_sequence().Reset();
+      }
+    }
+  }
+#endif
+
   midi_tx_drain();
   dump_try_advance();
 }
@@ -997,9 +1182,9 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
 void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave,
                            bool run_rising, bool run_falling) {
   if (midi_transport_slave) return;
-  if (run_rising)  MIDI.sendStart();
-  if (run_falling) MIDI.sendStop();
-  if (clocked && clk_run) MIDI.sendClock();
+  if (run_rising)  out_start();
+  if (run_falling) out_stop();
+  if (clocked && clk_run) out_clock();
 }
 
 static int s_silence_step = -1;
@@ -1014,10 +1199,10 @@ void midi_set_silence_step(int step) { s_silence_step = step; }
 static uint8_t s_off_note[12], s_off_ch[12], s_off_n = 0;
 static void queue_off(byte note, byte ch) {
   if (s_off_n < 12) { s_off_note[s_off_n] = note; s_off_ch[s_off_n] = ch; ++s_off_n; }
-  else MIDI.sendNoteOff(note, 0, ch); // overflow safety
+  else out_note_off(note, 0, ch); // overflow safety
 }
 void midi_flush_note_offs() {
-  for (uint8_t i = 0; i < s_off_n; ++i) MIDI.sendNoteOff(s_off_note[i], 0, s_off_ch[i]);
+  for (uint8_t i = 0; i < s_off_n; ++i) out_note_off(s_off_note[i], 0, s_off_ch[i]);
   s_off_n = 0;
 }
 
@@ -1045,18 +1230,18 @@ void midi_seq_gate_tick(Engine &engine, int16_t transpose) {
     return;
   }
 
-  int n = int(engine.get_midi_note()) + transpose;
+  int n = 36 + int(engine.get_pitch_scaled()) + transpose;
   if (n > 127) n = 127;
   if (n < 0)   n = 0;
   const uint8_t vel = engine.get_accent() ? 127 : 80;
 
   if (!s_seq_note_on) {
-    MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
+    out_note_on(static_cast<byte>(n), vel, och);
     s_seq_note = static_cast<uint8_t>(n);
     s_seq_note_on = true;
     s_seq_note_ch = och;
   } else if (s_seq_note != static_cast<uint8_t>(n)) {
-    MIDI.sendNoteOn(static_cast<byte>(n), vel, och);   // slide: new on before old off
+    out_note_on(static_cast<byte>(n), vel, och);   // slide: new on before old off
     queue_off(s_seq_note, och);
     s_seq_note = static_cast<uint8_t>(n);
     s_seq_note_ch = och;
@@ -1078,7 +1263,7 @@ static uint8_t s_poly_on_count = 0;
 
 static void poly_all_off(byte och) {
   for (uint8_t i = 0; i < s_poly_on_count; ++i)
-    MIDI.sendNoteOff(s_poly_on[i], 0, och);
+    out_note_off(s_poly_on[i], 0, och);
   s_poly_on_count = 0;
 }
 
@@ -1099,7 +1284,7 @@ static void poly_gate_tick(Engine &engine, int16_t transpose) {
   uint8_t wn = 0;
   for (uint8_t i = 0; i < POLY_VOICES; ++i) {
     if (v[i] == POLY_EMPTY) continue;
-    int n = 36 + int(unpack_pitch_linear(v[i])) + transpose;
+    int n = 36 + int(engine.shadow_[1].scale_quantize_linear(unpack_pitch_linear(v[i]))) + transpose;
     if (n > 127) n = 127;
     if (n < 0)   n = 0;
     want[wn++] = static_cast<uint8_t>(n);
@@ -1114,7 +1299,7 @@ static void poly_gate_tick(Engine &engine, int16_t transpose) {
   for (uint8_t j = 0; j < wn; ++j) {
     bool on = false;
     for (uint8_t i = 0; i < s_poly_on_count; ++i) if (s_poly_on[i] == want[j]) { on = true; break; }
-    if (!on) { MIDI.sendNoteOn(want[j], vel, och); s_poly_on[s_poly_on_count++] = want[j]; }
+    if (!on) { out_note_on(want[j], vel, och); s_poly_on[s_poly_on_count++] = want[j]; }
   }
 }
 
@@ -1144,16 +1329,16 @@ void midi_shadows_gate_tick(Engine &engine, int16_t transpose) {
       continue;
     }
     Sequence &sq = engine.shadow_[i];
-    int n = 36 + int(sq.get_pitch()) + base + int(int8_t(sq.transpose));
+    int n = 36 + int(sq.scale_quantize_linear(sq.get_pitch())) + base + int(int8_t(sq.transpose));
     if (n > 127) n = 127;
     if (n < 0)   n = 0;
     const uint8_t vel = sq.get_accent() ? 127 : 80;
     if (!s_shadow_note_on[i]) {
-      MIDI.sendNoteOn(static_cast<byte>(n), vel, och);
+      out_note_on(static_cast<byte>(n), vel, och);
       s_shadow_note[i] = static_cast<uint8_t>(n);
       s_shadow_note_on[i] = true;
     } else if (s_shadow_note[i] != static_cast<uint8_t>(n)) {
-      MIDI.sendNoteOn(static_cast<byte>(n), vel, och);   // slide: new on before old off
+      out_note_on(static_cast<byte>(n), vel, och);   // slide: new on before old off
       queue_off(s_shadow_note[i], och);
       s_shadow_note[i] = static_cast<uint8_t>(n);
     }
@@ -1167,7 +1352,7 @@ void midi_shadows_all_notes_off(Engine &engine) {
   for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
     if (s_shadow_note_on[i]) {
       const byte och = static_cast<byte>(out_ch_for_var(engine.shadow_var_[i]));
-      MIDI.sendNoteOff(s_shadow_note[i], 0, och);
+      out_note_off(s_shadow_note[i], 0, och);
       s_shadow_note_on[i] = false;
     }
   }

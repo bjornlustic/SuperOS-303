@@ -9,7 +9,7 @@ syx_path = os.path.join(env["PROJECT_DIR"], "app-update.syx")
 
 # First byte of the flash-as-EEPROM arena. App code must never reach it, or an
 # app update would overwrite saved patterns. See FLASH_EEPROM_DESIGN.md.
-FLASH_ARENA_BASE = 0xE000
+FLASH_ARENA_BASE = 0x10000
 
 def make_syx(target, source, env):
     hex_path = str(source[0])

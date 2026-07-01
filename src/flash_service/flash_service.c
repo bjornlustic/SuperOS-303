@@ -30,7 +30,7 @@
  * application code (pages 0x000..0x0FF), the boot section, or the arena's
  * neighbours. The only page this service will ever write is one the caller
  * names AND that falls inside [ARENA_FIRST_PAGE, ARENA_LAST_PAGE]. */
-#define ARENA_FIRST_PAGE 0xE0u  /* 0xE000 / 256 -> 64 KB arena base */
+#define ARENA_FIRST_PAGE 0x100u /* 0x10000 / 256 -> 56 KB arena base (raised from 0xE0 for the USB-MIDI app) */
 #define ARENA_LAST_PAGE  0x1DFu /* 0x1DF00 / 256 -> last page fully below 0x1E000 */
 
 /* Trampoline pinned at byte 0x1FF00 by the linker (--section-start). The app
@@ -53,6 +53,14 @@ uint8_t flash_service_impl(uint16_t page, const uint8_t *buf) {
   cli(); /* interrupt vectors live in RWW and are unreadable during the write */
 
   eeprom_busy_wait();
+
+  /* The arena now lives at 0x10000..0x1DFFF -- above the 64 KB boundary. SPM
+   * page erase/write address the flash via RAMPZ:Z, but the plain boot_page_*
+   * macros only load the 16-bit Z register and leave RAMPZ untouched, so they
+   * cannot reach bit 16 and would hit the wrong (low) page. Set RAMPZ to the
+   * high address byte ourselves; the macros' SPM then targets the real page.
+   * (Page fill writes the temp buffer by word offset and does not use RAMPZ.) */
+  RAMPZ = (uint8_t)(addr >> 16);
 
   boot_page_erase(addr);
   boot_spm_busy_wait();

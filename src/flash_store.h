@@ -15,9 +15,9 @@ typedef uint8_t (*FlashServiceFn)(uint16_t page, const uint8_t *buf);
 static const FlashServiceFn kFlashService = (FlashServiceFn)(FLASH_SERVICE_ENTRY >> 1);
 
 static constexpr uint32_t FLASH_PAGE_SIZE  = 256;
-static constexpr uint32_t FLASH_ARENA_BASE = 0xE000UL;   // first arena byte (64 KB arena)
+static constexpr uint32_t FLASH_ARENA_BASE = 0x10000UL;  // first arena byte (56 KB arena; base raised from 0xE000 to make room for the USB-MIDI app)
 static constexpr uint32_t FLASH_ARENA_END  = 0x1E000UL;  // one past the last arena byte
-static constexpr uint16_t FLASH_ARENA_FIRST_PAGE = FLASH_ARENA_BASE / FLASH_PAGE_SIZE;        // 0xE0
+static constexpr uint16_t FLASH_ARENA_FIRST_PAGE = FLASH_ARENA_BASE / FLASH_PAGE_SIZE;        // 0x100
 static constexpr uint16_t FLASH_ARENA_LAST_PAGE  = (FLASH_ARENA_END / FLASH_PAGE_SIZE) - 1;   // 0x1DF
 
 // Status codes returned by flash_write_page (0 = ok).

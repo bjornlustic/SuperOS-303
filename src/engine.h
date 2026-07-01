@@ -716,7 +716,7 @@ struct Engine {
     normalize_pattern_times_only(s);
     const uint8_t nc = s.note_count();
     for (uint8_t k = 0; k < nc; ++k) {
-      s.pitch[k] = fast_rand_pitch_byte_weighted()
+      s.pitch[k] = s.scale_apply_packed(fast_rand_pitch_byte_weighted())
                    | fast_rand_accent_weighted()
                    | fast_rand_slide_weighted();
     }
@@ -759,7 +759,7 @@ struct Engine {
     const uint8_t pc = s.get_pitch_count();
     fast_rand_seed();
     for (uint8_t k = 0; k < pc; ++k) {
-      s.pitch[k] = fast_rand_pitch_byte_weighted()
+      s.pitch[k] = s.scale_apply_packed(fast_rand_pitch_byte_weighted())
                    | fast_rand_accent_weighted()
                    | fast_rand_slide_weighted();
     }
@@ -828,7 +828,7 @@ struct Engine {
           if (t_i == 1) {
             const uint8_t slot = s.pitch_index_for_note(i);
             if (slot < s.get_pitch_count()) {
-              const uint8_t pk = fast_rand_pitch_byte_weighted();
+              const uint8_t pk = s.scale_apply_packed(fast_rand_pitch_byte_weighted());
               s.pitch[slot] = (s.pitch[slot] & 0xC0) | pk;
             }
           }
@@ -865,6 +865,7 @@ struct Engine {
               int nlin = int(lin) + dirN;
               if (nlin < 0) nlin = 0;
               if (nlin > 48) nlin = 48;
+              nlin = s.scale_quantize_linear(uint8_t(nlin));
               const uint8_t oct = uint8_t(nlin / 12);
               const uint8_t key = uint8_t(nlin - oct * 12);
               s.pitch[slot] = (s.pitch[slot] & 0xC0) | pack_pitch(key, oct);
@@ -1193,6 +1194,12 @@ struct Engine {
   }
   uint8_t get_pitch() const {
     return get_sequence().get_pitch_dir(last_step_dir_);
+  }
+  // Playback pitch quantized to the active pattern's scale (identity when the
+  // pattern's scale is disabled). Used for CV + MIDI output; non-destructive.
+  uint8_t get_pitch_scaled() const {
+    const Sequence &s = get_sequence();
+    return s.scale_quantize_linear(s.get_pitch_dir(last_step_dir_));
   }
   uint8_t get_midi_note() const {
     return uint8_t(36 + get_sequence().get_pitch_dir(last_step_dir_));

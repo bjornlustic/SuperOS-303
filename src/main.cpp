@@ -212,6 +212,109 @@ static void cfg_save_midi() {
 //   ACCENT LED OFF = MIDI THRU (midi_thru == true).
 //   ACCENT_KEY rising → toggle thru.
 //   CLEAR or FN rising → exit menu.
+
+// Preset scale shapes as 12-bit class masks rooted at C (bit0). Order matches the
+// web editor's SCALES list exactly so FN-cycling lands on the same scale.
+static const uint16_t SCALE_PRESETS[] PROGMEM = {
+  0xAB5, // Major
+  0x5AD, // Minor
+  0x6AD, // Dorian
+  0x6B5, // Mixolydian
+  0xAD5, // Lydian
+  0x5AB, // Phrygian
+  0x56B, // Locrian
+  0x555, // Whole Tone
+  0x6DB, // Half-Whole Dim.
+  0xB6D, // Whole-Half Dim.
+  0x4E9, // Minor Blues
+  0x4A9, // Minor Pentatonic
+  0x295, // Major Pentatonic
+  0x9AD, // Harmonic Minor
+  0x9B5, // Harmonic Major
+  0x6CD, // Dorian #4
+  0x5B3, // Phrygian Dominant
+  0xAAD, // Melodic Minor
+  0xB55, // Lydian Augmented
+  0x6D5, // Lydian Dominant
+  0x55B, // Super Locrian
+  0x57B, // 8-Tone Spanish
+  0x9B3, // Bhairav
+  0x9CD, // Hungarian Minor
+  0x18D, // Hirajoshi
+  0x4A3, // In-Sen
+  0x463, // Iwato
+  0x28D, // Kumoi
+  0x18B, // Pelog Selisir
+  0x1A3, // Pelog Tembung
+  0xDDD, // Messiaen 3
+  0x9E7, // Messiaen 4
+  0x8E3, // Messiaen 5
+  0xD75, // Messiaen 6
+  0xBEF, // Messiaen 7
+};
+static constexpr uint8_t NUM_SCALE_PRESETS = 35;
+static bool    s_scale_mode       = false; // per-pattern scale editor active
+static uint8_t s_scale_cycle_root = 0xFF;  // last FN+note root this FN-hold (0xFF = none)
+static uint8_t s_scale_cycle_idx  = 0;     // preset index within the cycle
+
+// Per-pattern scale editor. Entered by FN + ACCENT in Pattern Write; edits the
+// active edit pattern's scale (stored in its reserved metadata, saved with the
+// pattern). Non-destructive quantization applies live to playback.
+//   Without FN: pitch keys C..B toggle individual classes; High C (pitch_leds[12])
+//     toggles the scale on/off.
+//   With FN held: pressing a note loads a preset scale rooted at that note --
+//     first press = Major, pressing the SAME note again advances through the
+//     preset list (Minor, Dorian, ...). A different note resets to Major at that
+//     root. Releasing FN resets the cycle, so the next FN+note is Major.
+//   BACK exits the editor.
+void ProcessScaleMode() {
+  Leds::Set(FUNCTION_MODE_LED, true);
+  Sequence &s = engine.get_edit_sequence();
+
+  if (inputs[FUNCTION_KEY].falling()) {
+    s_scale_cycle_root = 0xFF;
+    s_scale_cycle_idx = 0;
+  }
+
+  for (uint8_t i = 0; i < 12; ++i)
+    Leds::Set(pitch_leds[i], s.scale_allows(i));
+  Leds::Set(pitch_leds[12], s.scale_enabled());
+
+  bool changed = false;
+  if (inputs[FUNCTION_KEY].held()) {
+    for (uint8_t i = 0; i < 12; ++i) {
+      if (!inputs[pitched_keys[i]].rising()) continue;
+      if (i == s_scale_cycle_root)
+        s_scale_cycle_idx = uint8_t((s_scale_cycle_idx + 1) % NUM_SCALE_PRESETS);
+      else { s_scale_cycle_root = i; s_scale_cycle_idx = 0; }
+      const uint16_t shape = pgm_read_word(&SCALE_PRESETS[s_scale_cycle_idx]);
+      s.set_scale_mask(uint16_t(((shape << i) | (shape >> (12 - i))) & 0x0FFF));
+      s.set_scale_enabled(true);
+      changed = true;
+      break;
+    }
+  } else {
+    for (uint8_t i = 0; i < 12; ++i) {
+      if (inputs[pitched_keys[i]].rising()) { s.toggle_scale_class(i); changed = true; }
+    }
+    if (inputs[pitched_keys[12]].rising()) {
+      s.set_scale_enabled(!s.scale_enabled());
+      changed = true;
+    }
+  }
+
+  // Edits apply live from RAM; the pattern (with its scale) is saved lazily via
+  // engine.stale, so there is no per-toggle flash write to stall playback. Each
+  // change is broadcast to the web editor (SysEx 0x2A).
+  if (changed) {
+    engine.stale = true;
+    midi_send_scale_update(engine.get_patsel(), s.scale_mask(), s.scale_enabled(),
+                           engine.get_edit_var());
+  }
+
+  if (inputs[BACK_KEY].rising()) s_scale_mode = false;
+}
+
 static void process_config_menu() {
   if (s_cfg_menu == CfgMenu::Off) return;
   Leds::Set(FUNCTION_MODE_LED, true);
@@ -431,7 +534,9 @@ static void usb_shutdown_hw() {
 }
 
 void setup() {
-#if !DEBUG
+  // Keep USB alive when built for USB MIDI; otherwise tear it down as before
+  // (the stock app left USB detached to avoid the idle PLL/noise).
+#if !DEBUG && !defined(SUPEROS_USB_MIDI)
   usb_shutdown_hw();
 #endif
   midi_init(&engine);
@@ -1093,6 +1198,18 @@ void loop() {
   // from the web editor survive a power cycle without requiring a RUN/WRITE
   // toggle. Safe during playback - EEPROM write is ~3-100ms per pattern.
   midi_flush_pending_pattern_saves(engine);
+  // Persist hardware-edited resident patterns in the background too. engine.stale
+  // is otherwise only flushed on transport stop / dial-mode change, so a user who
+  // writes a pattern and powers off without ever running the transport or moving
+  // the dial loses the edits. Save when stopped and quiet (2s) so the flash stall
+  // happens between keypresses, not on every one.
+  {
+    static bool     s_stale_prev = false;
+    static uint32_t s_stale_ms   = 0;
+    if (engine.stale && !s_stale_prev) s_stale_ms = millis();
+    s_stale_prev = engine.stale;
+    if (engine.stale && !clk_run && (millis() - s_stale_ms) >= 2000) engine.Save();
+  }
   // Detect MIDI clock Start rising edge (midi_clk just became true this frame).
   const bool midi_clk_rose = (!prev_midi_clk && midi_clk && GlobalSettings.midi_clock_receive);
 
@@ -1157,6 +1274,7 @@ void loop() {
     s_step_sel      = -1;
     s_step_sel_ext  = false;
     s_dir_mode      = false;
+    s_scale_mode    = false;
     if (s_keyboard_mode) {
       s_keyboard_mode = false;
       s_tap_pitch_preview_gate = false;
@@ -1280,7 +1398,9 @@ void loop() {
 
   // -=-=- Process inputs and set LEDs -=-=-
 
-  if (s_cfg_menu != CfgMenu::Off) {
+  if (s_scale_mode) {
+    ProcessScaleMode();
+  } else if (s_cfg_menu != CfgMenu::Off) {
     process_config_menu();
   } else if (!clk_run && dial_pattern_write && engine.get_mode() == PITCH_MODE &&
              engine.edit_var_ == 2 && engine.poly_active_) {
@@ -1442,6 +1562,10 @@ void loop() {
     // TIME_MODE set at line ~1050 is gated by !fn_mod).
     if (fn_mod && inputs[TIME_KEY].rising()) {
       s_dir_mode = true;
+    } else if (fn_mod && inputs[ACCENT_KEY].rising() && dial_pattern_write) {
+      s_scale_mode = true;
+      s_scale_cycle_root = 0xFF;
+      s_scale_cycle_idx = 0;
     } else if (fn_mod && inputs[PITCH_KEY].rising() && !s_step_sel_mode && dial_pattern_write) {
       s_step_sel_mode = true;
       s_step_sel_chain_view = 0; // always default to first chain slot on entry
@@ -2035,6 +2159,8 @@ void loop() {
       engine.SetMode(NORMAL_MODE, !clk_run);
     } else if (s_dir_mode) {
       s_dir_mode = false;
+    } else if (s_scale_mode) {
+      // FN is the scale-preset modifier here; exit the editor via BACK, not FN.
     } else if (s_cfg_menu == CfgMenu::Midi) {
       s_cfg_menu = CfgMenu::Off;
     } else if (s_cfg_menu == CfgMenu::Off) {
@@ -2421,7 +2547,7 @@ void loop() {
   // keys select a direction instead of writing notes into the active pattern.
   // Also suppressed in step-select mode (FN + PITCH held) so its inputs don't leak into writes.
   if (s_cfg_menu == CfgMenu::Off && !edit_mode && write_mode && !track_mode && !s_dir_mode
-      && !s_step_sel_mode && !engine.in_poly_pitch_edit()) {
+      && !s_step_sel_mode && !s_scale_mode && !engine.in_poly_pitch_edit()) {
 
     if (engine.get_mode() == TIME_MODE) {
       // SLIDE_KEY step-lock toggle removed (RAM-only after OS-303 migration).
@@ -2521,7 +2647,7 @@ void loop() {
     // Metronome click: override pitch with fixed CV (no transpose); accent on downbeat
     const uint8_t pitch_cv = s_metro_gate_pulse
         ? s_metro_pitch_cv
-        : clamp_cv(int(engine.get_pitch()) + total_transpose);
+        : clamp_cv(int(engine.get_pitch_scaled()) + total_transpose);
     DAC::SetPitch(pitch_cv);
     DAC::SetSlide(engine.get_slide_dac() || force_slide_live);
     DAC::SetAccent(engine.get_accent() || force_accent_live || (s_metro_gate_pulse && s_metro_is_downbeat));
@@ -2535,8 +2661,13 @@ void loop() {
         : engine.get_gate();
     DAC::SetGate(gate_running || s_metro_gate_pulse);
   } else {
-    uint8_t pitch_cv = clamp_cv(int(engine.get_pitch()) + total_transpose);
     bool gate = midi_live_gate();
+    // Live MIDI play (clock stopped): drive the CV from the received note, not the
+    // sequencer's resting pitch -- otherwise every incoming note plays the resting
+    // slot (C1). Note 36 maps to linear 0 (matches engine pitch / get_midi_note).
+    uint8_t pitch_cv = gate
+        ? clamp_cv(int(midi_live_note()) - 36 + total_transpose)
+        : clamp_cv(int(engine.get_pitch()) + total_transpose);
     // Auditioning a non-CV variation (var2/var3) is MIDI-only: the 303 analog voice
     // must stay silent. Only variation-1 edits open the audition CV/gate; the MIDI
     // audition (sent on the variation's channel) is unaffected.
