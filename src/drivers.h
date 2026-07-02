@@ -40,14 +40,11 @@ namespace DAC {
     // set 6-bit pitch for CV Out
     PORTC = pitch_; // & 0x3f;
 
-    // set gate and accent (data) before raising the latch clock: some 4013
-    // brands (CD4013, HD14013) latch stale data when clock and data edges
-    // land in the same PORT write
+    // 4013 needs data stable before the latch clock edge (CD4013/HD14013)
+    PORTE = 0;
     PORTE = (gate_ << 1) | (accent_ << 6);
-    delayMicroseconds(1);
-    PORTE |= 0x1; // enable latch/slide
-    delayMicroseconds(10); // make sure the latch stays on long enough
-    if (!slide_) // turn slide bit back off
+    PORTE |= 0x1;
+    if (!slide_)
       PORTE ^= 0x1;
   }
 
