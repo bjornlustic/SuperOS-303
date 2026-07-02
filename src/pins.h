@@ -183,41 +183,9 @@ const uint8_t status_pins[] = {
   PA0_PIN, PA1_PIN, PA2_PIN, PA3_PIN,
 };
 
-// The PG and PH pins are all part of PORTF on the Teensy,
-// which can simply be written as one byte.
-// Each LED in the switchboard matrix can be defined as series of bytes as addresses.
-// Welcome to CS-450
-// Encoded PG+PH patterns per matrix LED (alternative encoding; primary path uses MatrixPin).
-const uint8_t led_bytes[16] = {
-  // PG  PH
-  0b00011110,
-  0b00101110,
-  0b01001110,
-  0b10001110,
-
-  0b00011101,
-  0b00101101,
-  0b01001101,
-  0b10001101,
-
-  0b00011011,
-  0b00101011,
-  0b01001011,
-  0b10001011,
-
-  0b00010111,
-  0b00100111,
-  0b01000111,
-  0b10000111,
-};
-
 // =============================================================================
 // Debounced digital input (4-bit shift register → edges)
 // =============================================================================
-// data + function bundles
-struct PinPair {
-  uint8_t led, button, pitch;
-};
 struct MatrixPin {
   uint8_t select, led, pitch;
   InputIndex button;

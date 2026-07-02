@@ -139,8 +139,6 @@ void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_rece
     MIDI.turnThruOff();
 }
 
-uint8_t midi_sequencer_out_channel() { return out_ch(); }
-
 // --- TX queue (non-blocking multi-pattern dump) ---------------------------------
 static const uint16_t kTxCap = 512;
 static uint8_t s_tx[kTxCap];
@@ -202,7 +200,7 @@ static uint16_t pack_7bit(const uint8_t *src, uint16_t len, uint8_t *out) {
 }
 
 // 7-bit packing inflation: every 7 raw bytes -> 1 MSB byte + 7 data bytes.
-// 48 raw -> 6 full chunks (48 packed bytes) + 1 partial (1 + 6 = 7) = 55.
+// 92 raw -> 13 full chunks (104 packed bytes) + 1 partial (1 + 1 = 2) = 106.
 static constexpr uint16_t kPackedPatternLen =
     PATTERN_SIZE + ((PATTERN_SIZE + 6) / 7);
 
@@ -220,19 +218,13 @@ static bool unpack_7bit(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16
   return true;
 }
 
-static uint8_t xor_blob_pattern(const uint8_t *p) {
-  uint8_t x = 0;
-  for (uint16_t i = 0; i < PATTERN_SIZE; ++i)
-    x ^= p[i];
-  return x;
-}
 static uint8_t xor_blob_n(const uint8_t *p, uint16_t len) {
   uint8_t x = 0;
   for (uint16_t i = 0; i < len; ++i) x ^= p[i];
   return x;
 }
 
-// 7-bit packed length of a variation-3 poly blob (226 raw -> 259 packed).
+// 7-bit packed length of a variation-3 poly blob (227 raw -> 260 packed).
 static constexpr uint16_t kPackedPolyLen = POLY_BLOB_SIZE + ((POLY_BLOB_SIZE + 6) / 7);
 
 // 0x25: variation-3 poly blob reply (device -> host). Sent in place of the mono
@@ -262,7 +254,7 @@ static void enqueue_pattern_reply(uint8_t pat, uint8_t var = 0) {
   }
   uint8_t raw[PATTERN_SIZE];
   g_eng->export_pattern_blob_var(pat, var, raw);
-  const uint8_t cx = xor_blob_pattern(raw);
+  const uint8_t cx = xor_blob_n(raw, PATTERN_SIZE);
   uint8_t inner[5 + kPackedPatternLen + 1];
   inner[0] = 0x7D;
   inner[1] = 0x11;
@@ -349,7 +341,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t var = (n > 5 + kPackedPatternLen) ? (p[5 + kPackedPatternLen] & 0x03) : 0;
     uint8_t raw[PATTERN_SIZE];
     if (!unpack_7bit(p + 5, kPackedPatternLen, raw, PATTERN_SIZE)) { send_ack(1); return; }
-    if (xor_blob_pattern(raw) != cx) { send_ack(1); return; }
+    if (xor_blob_n(raw, PATTERN_SIZE) != cx) { send_ack(1); return; }
     if (var == 0) {
       // Variation 1 (the 303 / CV voice). Never persist inline: a flash write
       // blocks the UART long enough to drop the next SysEx. RAM update only;
@@ -430,8 +422,9 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     const uint8_t pat = p[2] & 0x0F;
     const uint8_t len = p[3] & 0x7F;
     if (len < 1 || len > MAX_STEPS) return;
-    g_eng->pattern[pat].length = len;
-    g_eng->stale = true;
+    // Same invariants as the hardware editor: triplet cap, pitch_count rebuild,
+    // pitch[] tail clear (a raw length assignment left pitch_count stale).
+    g_eng->ApplyLength(g_eng->pattern[pat], len);
     mark_pat_dirty(pat);
     break;
   }
@@ -1002,19 +995,6 @@ void midi_send_pattern_update(uint8_t pat) {
   enqueue_pattern_reply(pat & 0x0F);
 }
 
-void midi_send_pattern_steps(uint8_t pat, const Sequence &seq, uint8_t len) {
-  pat &= 0x0F;
-  for (uint8_t k = 0; k < len; ++k) {
-    const uint8_t tt = seq.time(k);
-    uint8_t pb = PITCH_EMPTY;
-    if (tt == 1) {
-      const uint8_t slot = seq.pitch_index_for_note(k);
-      if (slot < seq.get_pitch_count()) pb = seq.pitch[slot];
-    }
-    midi_send_step_update(pat, k, pb, tt);
-  }
-}
-
 // --- Step lock broadcast (SysEx 0x19) -------------------------------------------
 void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked) {
   const uint8_t inner[5] = {0x7D, 0x19, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), uint8_t(locked)};
@@ -1062,6 +1042,39 @@ static uint8_t s_seq_note = 0;
 static bool s_seq_note_on = false;
 static uint8_t s_seq_note_ch = 0;   // channel the open main note was sent on
 
+// --- Shared clock / transport / channel-message RX (DIN and USB paths) ----------
+// When following incoming MIDI clock, echo clock + transport to MIDI OUT so the
+// web editor (and any downstream gear) can chase the playhead -- mirroring what
+// DIN-sync mode already does (it generates the clock on OUT). Clock is forwarded
+// 1:1 so piled-up pulses aren't under-sent.
+static void rx_clock(uint8_t &midi_clock_pulses) {
+  if (s_midi_clock_rx) { ++midi_clock_pulses; out_clock(); }
+}
+static void rx_start(Engine &engine, bool &midi_clk) {
+  if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); out_start(); }
+}
+static void rx_continue(bool &midi_clk) {
+  if (s_midi_clock_rx) { midi_clk = true; out_continue(); } // resume (no reset)
+}
+static void rx_stop(Engine &engine, bool &midi_clk) {
+  if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); out_stop(); }
+}
+// CC 0 = group (0-3), CC 32 = section (0=patterns 0-7, 1=patterns 8-15).
+static void rx_control_change(uint8_t ch, uint8_t cc, uint8_t val) {
+  if (s_in_channel != 0 && ch != s_in_channel) return;
+  if (cc == 0)  s_bank_group   = val < NUM_GROUPS ? val : NUM_GROUPS - 1;
+  if (cc == 32) s_bank_section = val < 2 ? val : 1;
+}
+// PC value = pattern within the CC32-selected section (Ableton bank-select mapping).
+static void rx_program_change(Engine &engine, uint8_t ch, uint8_t pc) {
+  if (s_in_channel != 0 && ch != s_in_channel) return;
+  const uint8_t pat = s_bank_section * 8 + (pc < 8 ? pc : 7);
+  if (s_bank_group != engine.get_group())
+    engine.SetGroup(s_bank_group);
+  engine.SetPattern(pat, true);
+  engine.get_sequence().Reset();
+}
+
 void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses) {
   g_eng = &engine;
   if (clk_run && !g_clk_run) {
@@ -1086,43 +1099,16 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
   if (!clk_run) midi_shadows_all_notes_off(engine);
 
   while (MIDI.read()) {
-    const midi::MidiType t = MIDI.getType();
-    switch (t) {
-    // When following incoming MIDI clock, echo clock + transport to MIDI OUT so the
-    // web editor (and any downstream gear) can chase the playhead -- mirroring what
-    // DIN-sync mode already does (it generates the clock on OUT). Forwarded 1:1 here
-    // so piled-up pulses aren't under-sent. (DIN sync uses a separate clock pin.)
-    case midi::MidiType::Clock:
-      if (s_midi_clock_rx) { ++midi_clock_pulses; out_clock(); }
-      break;
-    case midi::MidiType::Start:
-      if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); out_start(); }
-      break;
-    case midi::MidiType::Continue:
-      if (s_midi_clock_rx) { midi_clk = true; out_continue(); } // resume (no reset)
-      break;
-    case midi::MidiType::Stop:
-      if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); out_stop(); }
-      break;
+    switch (MIDI.getType()) {
+    case midi::MidiType::Clock:    rx_clock(midi_clock_pulses);    break;
+    case midi::MidiType::Start:    rx_start(engine, midi_clk);     break;
+    case midi::MidiType::Continue: rx_continue(midi_clk);          break;
+    case midi::MidiType::Stop:     rx_stop(engine, midi_clk);      break;
     case midi::MidiType::ControlChange:
-      if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel) {
-        const uint8_t cc  = MIDI.getData1();
-        const uint8_t val = MIDI.getData2();
-        if (cc == 0)  s_bank_group   = val < NUM_GROUPS ? val : NUM_GROUPS - 1;
-        if (cc == 32) s_bank_section = val < 2 ? val : 1;
-      }
+      rx_control_change(MIDI.getChannel(), MIDI.getData1(), MIDI.getData2());
       break;
     case midi::MidiType::ProgramChange:
-      if (s_in_channel == 0 || MIDI.getChannel() == s_in_channel) {
-        const uint8_t pc  = MIDI.getData1();
-        const uint8_t pat = s_bank_section * 8 + (pc < 8 ? pc : 7);
-        if (s_bank_group != engine.get_group())
-          engine.SetGroup(s_bank_group);
-        engine.SetPattern(pat, true);
-        engine.get_sequence().Reset();
-      }
-      break;
-    case midi::MidiType::SystemExclusive:
+      rx_program_change(engine, MIDI.getChannel(), MIDI.getData1());
       break;
     default:
       break;
@@ -1148,29 +1134,17 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
     } else if (ut == usbMIDI.NoteOff) {
       note_off_cb(usbMIDI.getChannel(), usbMIDI.getData1(), usbMIDI.getData2());
     } else if (ut == usbMIDI.Clock) {
-      if (s_midi_clock_rx) { ++midi_clock_pulses; out_clock(); }
+      rx_clock(midi_clock_pulses);
     } else if (ut == usbMIDI.Start) {
-      if (s_midi_clock_rx) { midi_clk = true; engine.Reset(); out_start(); }
+      rx_start(engine, midi_clk);
     } else if (ut == usbMIDI.Continue) {
-      if (s_midi_clock_rx) { midi_clk = true; out_continue(); }
+      rx_continue(midi_clk);
     } else if (ut == usbMIDI.Stop) {
-      if (s_midi_clock_rx) { midi_clk = false; engine.Reset(); out_stop(); }
+      rx_stop(engine, midi_clk);
     } else if (ut == usbMIDI.ControlChange) {
-      if (s_in_channel == 0 || usbMIDI.getChannel() == s_in_channel) {
-        const uint8_t cc  = usbMIDI.getData1();
-        const uint8_t val = usbMIDI.getData2();
-        if (cc == 0)  s_bank_group   = val < NUM_GROUPS ? val : NUM_GROUPS - 1;
-        if (cc == 32) s_bank_section = val < 2 ? val : 1;
-      }
+      rx_control_change(usbMIDI.getChannel(), usbMIDI.getData1(), usbMIDI.getData2());
     } else if (ut == usbMIDI.ProgramChange) {
-      if (s_in_channel == 0 || usbMIDI.getChannel() == s_in_channel) {
-        const uint8_t pc  = usbMIDI.getData1();
-        const uint8_t pat = s_bank_section * 8 + (pc < 8 ? pc : 7);
-        if (s_bank_group != engine.get_group())
-          engine.SetGroup(s_bank_group);
-        engine.SetPattern(pat, true);
-        engine.get_sequence().Reset();
-      }
+      rx_program_change(engine, usbMIDI.getChannel(), usbMIDI.getData1());
     }
   }
 #endif
@@ -1186,9 +1160,6 @@ void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave
   if (run_falling) out_stop();
   if (clocked && clk_run) out_clock();
 }
-
-static int s_silence_step = -1;
-void midi_set_silence_step(int step) { s_silence_step = step; }
 
 // Note-off coalescing. Gate-tick note-offs are queued and flushed (midi_flush_note_offs)
 // only AFTER all three voices have sent their note-ONs for the tick, so a new step's
@@ -1220,11 +1191,7 @@ void midi_seq_gate_tick(Engine &engine, int16_t transpose) {
     s_seq_note_on = false;
   }
 
-  bool gate = engine.get_gate();
-  // Step-select detail editor mute: don't sound the edited step.
-  if (s_silence_step >= 0 && static_cast<int>(engine.get_time_pos()) == s_silence_step)
-    gate = false;
-
+  const bool gate = engine.get_gate();
   if (!gate) {
     if (s_seq_note_on) { queue_off(s_seq_note, och); s_seq_note_on = false; }
     return;

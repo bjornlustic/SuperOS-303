@@ -10,7 +10,7 @@
 #include "flash_persist.h"
 #include "poly.h"
 
-// SysEx pattern blob = 48 raw bytes (pitch[32] + time_data[8] + 8 metadata).
+// SysEx / flash pattern blob = 92 raw bytes (pitch[64] + time_data[16] + 12 metadata).
 static constexpr int PATTERN_SIZE = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE;
 
 static_assert(POLY_STEPS == MAX_STEPS, "poly step count must match MAX_STEPS");
@@ -109,9 +109,7 @@ struct PersistentSettings {
   }
 
   bool Validate() const {
-    if (strncmp(signature, sig_compat_prefix, kSigCompatPrefixLen) == 0) return true;
-    memcpy((char *)signature, sig_pew, kSigEepromLen);
-    return false;
+    return strncmp(signature, sig_compat_prefix, kSigCompatPrefixLen) == 0;
   }
 
   // MIDI fields are loaded/clamped in Load() and persisted by Save(); these

@@ -8,8 +8,6 @@ struct Engine;
 void midi_init(Engine *engine);
 /// Apply after EEPROM load / config menu: `ch` 0 = omni, 1–16 = listen; `clock_rx` = use MIDI transport clock; `thru` = forward MIDI IN to MIDI OUT.
 void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive, bool midi_thru);
-/// Channel 1–16 for sequencer Note On/Off (omni listen → 1).
-uint8_t midi_sequencer_out_channel();
 /// Increments `midi_clock_pulses` for each MIDI Clock byte received (24 ppqn).
 /// Using a counter instead of a boolean ensures no clock ticks are lost when
 /// multiple clocks arrive during a single poll (e.g. while parsing a long SysEx).
@@ -17,9 +15,6 @@ void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock
 /// Main voice (variation 1) MIDI: call EVERY clock tick while running. Drives Note
 /// On/Off from engine.get_gate() so MIDI note length tracks the analog gate exactly.
 void midi_seq_gate_tick(Engine &engine, int16_t transpose);
-/// Mute the sequencer's MIDI Note On for a specific step index. -1 = no muted step.
-/// Used by the step-select detail editor so the edited step doesn't repeat audibly.
-void midi_set_silence_step(int step);
 /// Shadow voices (variations 2/3) MIDI: call EVERY clock tick while running, after
 /// Engine::AdvanceShadows() ran at the 16th boundary. Gate-follows like the main voice.
 void midi_shadows_gate_tick(Engine &engine, int16_t transpose);
@@ -61,11 +56,6 @@ void midi_send_step_position(uint8_t pat, uint8_t step);
 /// Broadcast the full pattern blob to host (SysEx 0x11).
 /// Call after any operation that rewrites the whole pattern (e.g. Clear).
 void midi_send_pattern_update(uint8_t pat);
-
-/// Lightweight pattern broadcast: sends per-step 0x16 messages instead of
-/// the heavy 0x11 packed blob. No memcpy/xor/pack_7bit -- just ring buffer
-/// writes. Use when the clock is running to avoid delaying gate timing.
-void midi_send_pattern_steps(uint8_t pat, const struct Sequence &seq, uint8_t len);
 
 /// Broadcast a single step edit to host (SysEx 0x16).
 /// Called after every pitch or time write in pattern-write mode so the

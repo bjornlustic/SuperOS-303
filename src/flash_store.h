@@ -39,8 +39,3 @@ inline uint8_t flash_write_page(uint16_t page, const uint8_t *buf) {
   if (!flash_service_present()) return FLASH_ERR_NO_SERVICE;
   return kFlashService(page, buf);
 }
-
-// Read one byte from the arena (far address, >64 KB).
-inline uint8_t flash_read(uint32_t addr) {
-  return pgm_read_byte_far(addr);
-}

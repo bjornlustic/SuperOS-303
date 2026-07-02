@@ -89,15 +89,6 @@ namespace Leds {
     const uint8_t row = ledidx >> 3;
     front_dim[row] = (front_dim[row] & ~(1 << bit_idx)) | (enable << bit_idx);
   }
-  // directly set hardware
-  void Set(const MatrixPin pins, bool enable = true) {
-    if (enable && pins.select) {
-      PORTF = 0x0f;
-      digitalWriteFast(pins.select, LOW);
-    }
-    digitalWriteFast(pins.led, enable ? HIGH : LOW);
-  }
-
   void SetLedSelection(uint8_t select_pin, uint8_t enable_mask) {
     const uint8_t switched_pins[4] = {
       PG0_PIN, PG1_PIN, PG2_PIN, PG3_PIN,

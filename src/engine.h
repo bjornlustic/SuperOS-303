@@ -102,6 +102,7 @@ struct Engine {
 
   int8_t clk_count = -1;
 
+  bool slide_dac_ = false; // slide CV for the current step (set in Advance)
   bool slide_gate = false;
   bool stale = false;
   uint32_t saved_hash_[NUM_PATTERNS] = {}; // per-pattern content hash at last save/load (dirty detection)
@@ -194,7 +195,6 @@ struct Engine {
       GlobalSettings.midi_thru = false;
       memcpy(GlobalSettings.signature, sig_pew, kSigEepromLen);
       GlobalSettings.Save();
-      GlobalSettings.save_midi_to_storage();
       // Patterns are written lazily on first edit; unwritten blocks read back as
       // empty (ReadPatternAt clears them), so nothing to pre-write.
       stale = false;
@@ -504,9 +504,6 @@ struct Engine {
   uint8_t TrackGetPattern(uint8_t chain_step) const {
     return p_chain_get(chain_step);
   }
-  bool TrackGetIsLast(uint8_t chain_step) const {
-    return t_chain_last_get(chain_step);
-  }
   // Per-chain-step transpose. Encoding matches the global performance transpose
   // (0..47, with TRACK_TRANSPOSE_ZERO = 12 meaning "no transpose"). Adding the
   // chain-step transpose to a note linear-semitone gives the effective output.
@@ -548,13 +545,11 @@ struct Engine {
     track_stale = true;
   }
 
-  void Tick() {}
-
   void SyncAfterManualAdvance(bool) { step_start_us_ = micros(); }
 
-  bool get_slide_dac() const {
-    return get_sequence().slide_from_prev_dir(uint8_t(direction_), last_step_dir_);
-  }
+  // Cached once per step in Advance() (slide_from_prev_dir scans time_data,
+  // too heavy to recompute on every main-loop DAC refresh).
+  bool get_slide_dac() const { return slide_dac_; }
 
   bool Advance() {
     bool result;
@@ -634,6 +629,8 @@ struct Engine {
     }
 
     last_step_dir_ = step_dir;
+    slide_dac_ = result &&
+                 get_sequence().slide_from_prev_dir(uint8_t(direction_), step_dir);
 
     if (result) {
       const bool next_is_tie = get_sequence().is_tied_dir(uint8_t(direction_), next_step_dir);
@@ -687,6 +684,7 @@ struct Engine {
     poly_resting_    = true;
     poly_slide_gate_ = false;
     clk_count = -1;
+    slide_dac_ = false;
     slide_gate = false;
     resting = true;
     step_start_us_ = micros();
@@ -879,39 +877,6 @@ struct Engine {
     stale = true;
   }
 
-  /// Insert a REST time-step at the current time_pos, shifting later time nibbles
-  /// right. Pitch stream is left untouched.
-  void InsertTimeStep() {
-    Sequence &s = get_edit_sequence();
-    const uint8_t gmax = MAX_STEPS;
-    if (s.length >= gmax) return;
-    const uint8_t at = uint8_t(s.time_pos & (MAX_STEPS - 1));
-    for (int i = int(s.length); i > int(at); --i)
-      sequence_set_time_at(s, uint8_t(i), s.time(uint8_t(i - 1)));
-    sequence_set_time_at(s, at, 0);
-    s.length = uint8_t(s.length + 1);
-    normalize_pattern_times(s);
-    stale = true;
-  }
-
-  /// Delete the time-step at the current time_pos. Pitch stream is left
-  /// untouched; the deleted NOTE's pitch is preserved as a queued slot, so
-  /// re-adding a NOTE elsewhere replays the same pitch in stream order.
-  void DeleteTimeStep() {
-    Sequence &s = get_edit_sequence();
-    if (s.length <= 1) return;
-    const uint8_t at = uint8_t(s.time_pos & (MAX_STEPS - 1));
-    if (at >= s.length) return;
-    for (uint8_t i = at; i < s.length - 1; ++i)
-      sequence_set_time_at(s, i, s.time(uint8_t(i + 1)));
-    const uint8_t last = uint8_t(s.length - 1);
-    sequence_set_time_at(s, last, 0);
-    s.length = uint8_t(s.length - 1);
-    if (s.time_pos >= s.length) s.time_pos = 0;
-    normalize_pattern_times(s);
-    stale = true;
-  }
-
   /// Shift entire pattern (pitch + time) one step LEFT within length.
   void ShiftPatternLeft() {
     Sequence &s = get_edit_sequence();
@@ -1053,13 +1018,6 @@ struct Engine {
     stale = true;
   }
 
-  void ClearAllPatterns() {
-    for (uint8_t i = 0; i < 16; ++i) pattern[i].Clear();
-    stale = true;
-    Reset();
-    mode_ = NORMAL_MODE;
-  }
-
   void RandomizeSemitones() {
     Sequence &s = get_edit_sequence();
     const uint8_t pc = s.get_pitch_count();
@@ -1088,22 +1046,6 @@ struct Engine {
     }
     stale = true;
   }
-
-  void NudgeSemitone(int dir) {
-    Sequence &s = get_edit_sequence();
-    uint8_t slot;
-    if (!s.edit_slot_index(slot)) return;
-    if (s.pitch[slot] == PITCH_EMPTY) return;
-    const uint8_t pk = s.pitch[slot] & 0x3F;
-    int lin = int(unpack_pitch_linear(pk)) + dir;
-    if (lin < 0)  lin = 0;
-    if (lin > 48) lin = 48;
-    const uint8_t oct = uint8_t(lin / 12);
-    const uint8_t key = uint8_t(lin - oct * 12);
-    s.pitch[slot] = (s.pitch[slot] & 0xC0) | pack_pitch(key, oct);
-    stale = true;
-  }
-
 
   // ---------------------------------------------------------------------------
   // Direction
@@ -1189,20 +1131,17 @@ struct Engine {
   bool get_accent() const {
     return !resting && get_sequence().get_accent();
   }
-  uint8_t get_semitone() const {
-    return get_sequence().get_semitone();
-  }
   uint8_t get_pitch() const {
-    return get_sequence().get_pitch_dir(last_step_dir_);
+    return get_sequence().get_pitch();
   }
   // Playback pitch quantized to the active pattern's scale (identity when the
   // pattern's scale is disabled). Used for CV + MIDI output; non-destructive.
   uint8_t get_pitch_scaled() const {
     const Sequence &s = get_sequence();
-    return s.scale_quantize_linear(s.get_pitch_dir(last_step_dir_));
+    return s.scale_quantize_linear(s.get_pitch());
   }
   uint8_t get_midi_note() const {
-    return uint8_t(36 + get_sequence().get_pitch_dir(last_step_dir_));
+    return uint8_t(36 + get_sequence().get_pitch());
   }
   // Signed pattern transpose (-24..+24, 0 = none). Stored as int8 in the byte.
   int8_t get_pattern_transpose() const {
@@ -1220,9 +1159,6 @@ struct Engine {
   uint8_t get_next() const {
     return next_p;
   }
-  const uint8_t get_time() const {
-    return get_sequence().get_time();
-  }
   const uint8_t get_length() const {
     return get_sequence().length;
   }
@@ -1235,28 +1171,22 @@ struct Engine {
     if (override) p_select = next_p;
     edit_var_ = 0; // a new pattern always starts on variation 1 for editing
   }
-  void SetLength(uint8_t len) {
-    Sequence &s = get_edit_sequence();
+  // Canonical length change: clamps to the triplet cap (24) or MAX_STEPS,
+  // rebuilds pitch_count (NOTE events outside the new length no longer count)
+  // and clears the pitch[] tail. Used by the hardware editor (via SetLength)
+  // and the SysEx 0x18 handler (on an arbitrary pattern).
+  void ApplyLength(Sequence &s, uint8_t len) {
     const uint8_t old_len = s.length;
-    // Triplet mode caps at 24 steps (~2 bars of 4/4 in triplet 8ths). 16ths
-    // mode caps at MAX_STEPS (32).
     const uint8_t cap = s.is_triplet_mode() ? uint8_t(24) : uint8_t(MAX_STEPS);
     s.SetLength(len, cap);
     if (s.length != old_len) {
-      // Length changed: pitch_count may have changed (NOTE events outside new
-      // length no longer count). Rebuild from time_data.
       sequence_rebuild_pitch_count(s);
-      // Clear pitch[] tail beyond the (possibly shrunk) count.
       for (uint8_t k = s.get_pitch_count(); k < MAX_STEPS; ++k) s.pitch[k] = PITCH_EMPTY;
     }
     stale = true;
   }
-  bool BumpLength() {
-    stale = true;
-    Sequence &s = get_edit_sequence();
-    bool ok = s.BumpLength(MAX_STEPS);
-    sequence_rebuild_pitch_count(s);
-    return ok;
+  void SetLength(uint8_t len) {
+    ApplyLength(get_edit_sequence(), len);
   }
   void SetMode(SequencerMode m, bool reset = false) {
     if (reset && m != mode_) Reset();
@@ -1299,18 +1229,9 @@ struct Engine {
   }
 
   bool is_step_locked() const {
-    const Sequence &s = (edit_var_ == 0) ? pattern[p_select] : shadow_[(edit_var_ - 1) & 0x1];
-    if (mode_ == TIME_MODE)
-      return s.step_locked(uint8_t(s.time_pos));
-    if (mode_ == PITCH_MODE)
-      return s.step_locked(uint8_t(s.time_pos));
-    return false;
-  }
-  void ToggleStepLockFromTimeMode() {
-    if (mode_ != TIME_MODE) return;
-    Sequence &s = get_edit_sequence();
-    s.ToggleStepLock(uint8_t(s.time_pos));
-    stale = true;
+    if (mode_ == NORMAL_MODE) return false;
+    const Sequence &s = edit_seq_view();
+    return s.step_locked(uint8_t(s.time_pos));
   }
 
   // ---------------------------------------------------------------------------

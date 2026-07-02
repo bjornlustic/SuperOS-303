@@ -1,29 +1,28 @@
 // Copyright (c) 2026, Nicholas J. Michalek
 //
-// sequence.h -- TB-303 pattern data model.
-// Layout matches OS-303 v0.6 byte-for-byte so EEPROM is round-trippable
-// between SuperOS-303 and stock OS-303 firmware.
+// sequence.h -- TB-303 pattern data model (two-stream: pitch and time are
+// independent; the K-th NOTE event in time order plays pitch[K]).
 //
-// Pattern storage (48 bytes):
-//   pitch[32]            -- 8 bits: bits[3:0]=semitone (0..12, 12=high-C button)
+// Persisted pattern layout (PATTERN_SIZE = 92 bytes, serialized by
+// persistent_settings.h into the flash block store):
+//   pitch[64]            -- 8 bits: bits[3:0]=semitone (0..12, 12=high-C button)
 //                                   bits[5:4]=octave (0..3)
 //                                   bit[6]=accent, bit[7]=slide
 //                          NOTE-event-indexed: pitch[i] = i-th NOTE in time order.
 //                          PITCH_EMPTY (0xFF) marks unwritten slots.
-//   time_data[8]         -- 2-bit cells per time step (0=REST, 1=NOTE, 2=TIE),
+//   time_data[16]        -- 2-bit cells per time step (0=REST, 1=NOTE, 2=TIE),
 //                          4 steps packed per byte.
-//   reserved[5]          -- bytes that OS-303 round-trips untouched.
-//                            reserved[0] = direction (0..5)
-//                            reserved[1..8] = unused padding (was the ratchet
-//                                             bitmap; kept reserved so the stored
-//                                             format is unchanged).
-//   transpose            -- per-pattern transpose (semitones).
-//   engine_select        -- OS-303's multi-engine selector (we leave at 0).
-//   length               -- 1..32.
+//   reserved[9]          -- reserved[0] = direction (bits[2:0]) + triplet flag (bit 3)
+//                           reserved[1] = scale mask low 8 bits
+//                           reserved[2] = scale enabled (bit 7) + mask high 4 bits
+//                           reserved[3..8] = free padding.
+//   transpose            -- per-pattern transpose, signed int8 in the byte (-24..+24).
+//   engine_select        -- unused, kept 0.
+//   length               -- 1..64 (triplet mode caps at 24).
 //
-// Runtime state (NOT in EEPROM, lives after the persisted block):
+// Runtime state (NOT persisted, lives after the persisted block):
 //   pitch_pos, time_pos, reset, first_step, pitch_count_runtime,
-//   step_lock_ram (32 bits, RAM-only live-write lockout).
+//   step_lock_ram (64 bits, RAM-only live-write lockout).
 
 #pragma once
 #include <Arduino.h>
@@ -68,17 +67,6 @@ enum SequenceDirection : uint8_t {
   DIR_HALF_RAND = 4,
   DIR_BROWNIAN  = 5,
   DIR_COUNT     = 6,
-};
-
-// Octave register (low 4-bit values for OS-303 pitch byte). DOUBLE_UP is gone:
-// the OS-303 encoding has only 4 octave registers (0..3). High-C is reached by
-// pressing the dedicated high-C key, which writes semi=12 instead of climbing
-// to oct=4.
-enum OctaveState {
-  OCTAVE_DOWN      = 0,
-  OCTAVE_ZERO      = 1,
-  OCTAVE_UP        = 2,
-  OCTAVE_DOUBLE_UP = 3,
 };
 
 static constexpr uint8_t PITCH_EMPTY     = 0xFF;          // unwritten slot sentinel
@@ -190,10 +178,6 @@ struct Sequence {
     idx &= (MAX_STEPS - 1);
     return (step_lock_ram[idx >> 3] >> (idx & 7)) & 1;
   }
-  void ToggleStepLock(uint8_t idx) {
-    idx &= (MAX_STEPS - 1);
-    step_lock_ram[idx >> 3] ^= uint8_t(1u << (idx & 7));
-  }
 
   // ---------------------------------------------------------------------------
   // Time stream accessors
@@ -203,15 +187,14 @@ struct Sequence {
   }
   const uint8_t get_time() const { return time(time_pos); }
 
-  uint8_t count_notes_to(uint8_t time_idx) const {
+  // Number of NOTE events strictly before `time_idx` = the pitch-stream slot
+  // the NOTE at that step plays (the two-stream mapping).
+  uint8_t pitch_index_for_note(uint8_t time_idx) const {
     uint8_t cnt = 0;
     const uint8_t lim = (time_idx < length) ? time_idx : length;
     for (uint8_t i = 0; i < lim; ++i)
       if (time(i) == 1) ++cnt;
     return cnt;
-  }
-  uint8_t pitch_index_for_note(uint8_t time_idx) const {
-    return count_notes_to(time_idx);
   }
 
   // ---------------------------------------------------------------------------
@@ -225,15 +208,6 @@ struct Sequence {
     return (b == PITCH_EMPTY) ? PITCH_DEFAULT : (b & PITCH_PACK_MASK);
   }
   const uint8_t get_pitch() const { return unpack_pitch_linear(get_pitch_packed_or_default()); }
-  uint8_t get_pitch_dir(int8_t /*step_dir*/) const { return get_pitch(); }
-
-  const uint8_t get_octave() const  { return (get_pitch_packed_or_default() >> 4) & 0x03; }
-  const uint8_t get_semitone() const {
-    if (get_pitch_count() == 0) return PITCH_EMPTY;
-    return get_pitch_packed_or_default() & 0x0F;
-  }
-  uint8_t get_note_key_index() const { return get_pitch_packed_or_default() & 0x0F; }
-  uint8_t get_octave_button() const  { return (get_pitch_packed_or_default() >> 4) & 0x03; }
 
   const uint8_t get_accent() const {
     const uint8_t pc = get_pitch_count();
@@ -301,18 +275,11 @@ struct Sequence {
     if (b == PITCH_EMPTY) return false;
     return (b & 0x80) != 0;
   }
-  bool slide_from_prev() const { return slide_from_prev_dir(uint8_t(DIR_FORWARD), 1); }
 
   // ---------------------------------------------------------------------------
   // Tie helpers
   // ---------------------------------------------------------------------------
   bool is_tie() const { return (time_pos < length) && (time(uint8_t(time_pos)) == 2); }
-  bool next_is_tie() const {
-    if (length == 0) return false;
-    const uint8_t n = (time_pos + 1) % length;
-    return time(n) == 2;
-  }
-  bool is_tied() const { return next_is_tie(); }
   bool is_tied_dir(uint8_t dir, int8_t next_dir) const {
     if (dir == DIR_RANDOM || dir == DIR_HALF_RAND || dir == DIR_BROWNIAN) return false;
     if (length == 0) return false;
@@ -320,28 +287,6 @@ struct Sequence {
       ? uint8_t((unsigned(time_pos) + 1u) % unsigned(length))
       : uint8_t((unsigned(time_pos) + unsigned(length) - 1u) % unsigned(length));
     return time(n) == 2;
-  }
-  bool tie_chain_ending() const { return is_tie() && !next_is_tie(); }
-  bool note_after_tie_run() const {
-    if (length <= 1 || first_step || time(uint8_t(time_pos)) != 1) return false;
-    uint8_t tp = uint8_t((time_pos + length - 1) % length);
-    bool seen_tie = false;
-    for (uint8_t g = 0; g < length; ++g) {
-      const uint8_t tt = time(tp);
-      if (tt == 0) return false;
-      if (tt == 2) { seen_tie = true; tp = uint8_t((tp + length - 1) % length); continue; }
-      if (tt == 1) return seen_tie;
-    }
-    return false;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Time-step writing (raw nibble; does NOT touch pitch stream)
-  // ---------------------------------------------------------------------------
-  void SetTime(uint8_t t) {
-    const uint8_t shift = 2 * uint8_t(time_pos & 3);
-    uint8_t &data = time_data[time_pos >> 2];
-    data = uint8_t((data & ~(0x03u << shift)) | ((t & 0x03u) << shift));
   }
 
   // ---------------------------------------------------------------------------
@@ -357,16 +302,6 @@ struct Sequence {
     if (pitch[pitch_pos] == PITCH_EMPTY) pitch[pitch_pos] = PITCH_DEFAULT;
     if (uint8_t(pitch_pos) >= get_pitch_count()) set_pitch_count(uint8_t(pitch_pos + 1));
   }
-  bool step_is_empty() const {
-    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return true;
-    if (uint8_t(pitch_pos) >= get_pitch_count()) return true;
-    return pitch[pitch_pos] == PITCH_EMPTY;
-  }
-  bool pitch_is_empty(uint8_t slot) const {
-    if (slot >= get_pitch_count()) return true;
-    return pitch[slot] == PITCH_EMPTY;
-  }
-
   // SetPitch: caller passes the packed pitch in `p` (low 6 bits used: semi | oct<<4)
   // and the flag bits in `flags` (top 2 bits used: accent | slide).
   void SetPitch(uint8_t p, uint8_t flags) {
@@ -398,26 +333,12 @@ struct Sequence {
     if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
     pitch[pitch_pos] ^= (1 << 6);
   }
-  void SetSlide(bool on) {
-    init_if_empty();
-    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
-    pitch[pitch_pos] = (pitch[pitch_pos] & ~(1 << 7)) | (on << 7);
-  }
-  void SetAccent(bool on) {
-    init_if_empty();
-    if (pitch_pos < 0 || pitch_pos >= MAX_STEPS) return;
-    pitch[pitch_pos] = (pitch[pitch_pos] & ~(1 << 6)) | (on << 6);
-  }
 
   // ---------------------------------------------------------------------------
   // Length
   // ---------------------------------------------------------------------------
   void SetLength(uint8_t len, uint8_t max_len = MAX_STEPS) {
     length = constrain(len, 1, max_len);
-  }
-  bool BumpLength(uint8_t max_len = MAX_STEPS) {
-    if (++length == max_len) return false;
-    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -457,7 +378,6 @@ struct Sequence {
       sync_time_pos_to_pitch_pos();
     }
   }
-  void ensure_pitch_write_entry() { ensure_pitch_edit_entry(); }
   void sync_time_pos_to_pitch_pos() {
     if (length == 0) { time_pos = 0; return; }
     const uint8_t want = uint8_t(pitch_pos < 0 ? 0 : pitch_pos);
@@ -566,8 +486,6 @@ struct Sequence {
     return time(uint8_t(time_pos)) != 0;
   }
 
-  void AdvancePitch() { advance_pitch_to_next_note(); }
-
   bool StepBack() {
     if (reset || (time_pos == 0)) return false;
     --time_pos;
@@ -588,10 +506,7 @@ inline void sequence_set_time_at(Sequence &s, uint8_t idx, uint8_t t) {
 }
 
 inline void sequence_rebuild_pitch_count(Sequence &s) {
-  uint8_t n = 0;
-  for (uint8_t i = 0; i < s.length; ++i)
-    if (s.time(i) == 1) ++n;
-  s.set_pitch_count(n);
+  s.set_pitch_count(s.note_count());
 }
 
 inline void sequence_ensure_pitch_for_notes(Sequence &s) {
@@ -666,14 +581,7 @@ inline void normalize_pattern_times(Sequence &s) {
   }
 }
 
-// Helper to roll a random pitch byte (semi 0..12, oct 0..3, no flags).
-static inline uint8_t fast_rand_pitch_byte() {
-  const uint8_t semi = fast_rand(13);  // 0..12 inclusive
-  const uint8_t oct  = fast_rand(4);   // 0..3
-  return pack_pitch(semi, oct);
-}
-
-// Weighted octave: DOWN 25% / CENTRE 50% / UP 25%. DOUBLE_UP excluded.
+// Weighted octave: DOWN 25% / CENTRE 50% / UP 25%. Top register excluded.
 static inline uint8_t fast_rand_octave_weighted() {
   const uint8_t r = fast_rand(20);
   if (r < 5)  return 0;
