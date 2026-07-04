@@ -54,7 +54,6 @@ struct Engine {
   uint8_t t_chain_transpose[MAX_CHAIN]         = {0};            // 64 bytes (0..47, 12 = no-op)
   uint8_t p_chain_len = 0;        // number of valid chain steps (0 = no track loaded)
   uint8_t p_chain_pos = 0;        // current chain step index
-  int8_t  p_repeats = -1;         // -1 = uninitialized; else current repeat count of current step
   uint8_t track_select = 0;       // which track (0..7) is currently loaded
   bool    track_stale = false;    // track-data dirty flag (separate from `stale`)
   bool    track_active = false;   // true while in TrackPlay/TrackWrite playback
@@ -98,7 +97,6 @@ struct Engine {
   uint8_t advance_count_ = 0;
   SequenceDirection  next_direction_          = DIR_FORWARD;
   bool               direction_change_pending_ = false;
-  int8_t last_step_dir_ = 1;
 
   int8_t clk_count = -1;
 
@@ -147,10 +145,7 @@ struct Engine {
   bool      poly_edit_dirty_ = false;
   uint32_t  poly_edit_ms_    = 0;    // millis() of last buffered edit (idle coalescing)
 
-  uint32_t step_start_us_ = 0;
-
   uint8_t get_group() const { return group_; }
-  uint8_t get_pending_group() const { return pending_group_; }
 
   void QueueGroup(uint8_t g) {
     if (g < NUM_GROUPS) pending_group_ = g;
@@ -462,7 +457,6 @@ struct Engine {
         if (t_chain_transpose[i] > 47) t_chain_transpose[i] = TRACK_TRANSPOSE_ZERO;
     }
     p_chain_pos = 0;
-    p_repeats   = -1;
     track_stale = false;
   }
   void SaveTrack() {
@@ -477,7 +471,6 @@ struct Engine {
     g_flash.write(uint8_t(FB_TRACK_BASE + track_select), b, FB_TRACK_LEN);
     track_stale = false;
   }
-  uint8_t get_track_select() const { return track_select; }
   uint8_t get_chain_len()    const { return p_chain_len; }
   uint8_t get_chain_pos()    const { return p_chain_pos; }
 
@@ -517,7 +510,7 @@ struct Engine {
     t_chain_transpose[chain_step] = value;
     track_stale = true;
   }
-  void TrackResetCursor() { p_chain_pos = 0; p_repeats = -1; }
+  void TrackResetCursor() { p_chain_pos = 0; }
 
   // Called at pattern wrap (time_pos returns to 0). Advances the chain cursor
   // and updates next_p so the engine's existing pattern-switch logic picks
@@ -529,7 +522,6 @@ struct Engine {
   void track_advance_chain() {
     if (!track_active || p_chain_len == 0) return;
     p_chain_pos = uint8_t((p_chain_pos + 1) % p_chain_len);
-    p_repeats = 0;
     next_p = p_chain_get(p_chain_pos);
   }
   void TrackAdvanceCursor() {
@@ -541,11 +533,8 @@ struct Engine {
     for (uint8_t i = 0; i < MAX_CHAIN; ++i) t_chain_transpose[i] = TRACK_TRANSPOSE_ZERO;
     p_chain_len = 0;
     p_chain_pos = 0;
-    p_repeats   = -1;
     track_stale = true;
   }
-
-  void SyncAfterManualAdvance(bool) { step_start_us_ = micros(); }
 
   // Cached once per step in Advance() (slide_from_prev_dir scans time_data,
   // too heavy to recompute on every main-loop DAC refresh).
@@ -628,7 +617,6 @@ struct Engine {
       }
     }
 
-    last_step_dir_ = step_dir;
     slide_dac_ = result &&
                  get_sequence().slide_from_prev_dir(uint8_t(direction_), step_dir);
 
@@ -659,7 +647,6 @@ struct Engine {
     if (++clk_count >= int8_t(period)) clk_count = 0;
     if (clk_count == 0) {
       Advance();
-      step_start_us_ = micros();
       return true;
     }
     return false;
@@ -687,10 +674,8 @@ struct Engine {
     slide_dac_ = false;
     slide_gate = false;
     resting = true;
-    step_start_us_ = micros();
     advance_count_ = 0;
     pp_dir_ = 1;
-    last_step_dir_ = 1;
   }
 
   // ---------------------------------------------------------------------------
@@ -1110,12 +1095,11 @@ struct Engine {
     return uint8_t(edit_seq_view().time_pos & (MAX_STEPS - 1));
   }
   bool SetEditVar(uint8_t v) { if (v >= NUM_VARIATIONS || v == edit_var_) return false; edit_var_ = v; return true; }
-  // Advance the edit cursor: variation 1 uses the full engine advance (and the
-  // playback sync when requested); a shadow just steps its own cursor forward.
-  void AdvanceEditCursor(bool sync) {
+  // Advance the edit cursor: variation 1 uses the full engine advance;
+  // a shadow just steps its own cursor forward.
+  void AdvanceEditCursor() {
     if (edit_var_ != 0) { shadow_[(edit_var_ - 1) & 0x1].Advance(); return; }
-    const bool send = Advance();
-    if (sync) SyncAfterManualAdvance(send);
+    Advance();
   }
 
   // Gate window: 50% of the step period in 16ths (clk_count < 3 of 6) and in
@@ -1238,9 +1222,9 @@ struct Engine {
   // SysEx blob (PATTERN_SIZE = 92 bytes: pitch[64] + time_data[16] + reserved[9]
   // + transpose + engine_select + length). Layout matches Sequence struct memory.
   // ---------------------------------------------------------------------------
-  void export_pattern_blob(uint8_t idx, uint8_t *blob128) const {
+  void export_pattern_blob(uint8_t idx, uint8_t *blob) const {
     idx &= 0xf;
-    memcpy(blob128, pattern[idx].pitch, PATTERN_SIZE);
+    memcpy(blob, pattern[idx].pitch, PATTERN_SIZE);
   }
   // Export one variation's blob: var1 = pattern[idx]; var2/3 = the resident
   // shadow if idx is the active slot, else read from flash. Used to send all 3
@@ -1254,13 +1238,13 @@ struct Engine {
     memcpy(blob, tmp.pitch, PATTERN_SIZE);
   }
 
-  bool import_pattern_blob(uint8_t idx, const uint8_t *blob128, bool persist_eeprom = true) {
+  bool import_pattern_blob(uint8_t idx, const uint8_t *blob, bool persist_eeprom = true) {
     idx &= 0xf;
-    uint8_t L = blob128[PATTERN_SIZE - 1];
+    uint8_t L = blob[PATTERN_SIZE - 1];
     if (L < 1 || uint8_t(L) > MAX_STEPS) return false;
     const uint8_t gmax = MAX_STEPS;
     if (L > gmax) L = gmax;
-    memcpy(pattern[idx].pitch, blob128, PATTERN_SIZE);
+    memcpy(pattern[idx].pitch, blob, PATTERN_SIZE);
     pattern[idx].length = L;
     Sequence &s = pattern[idx];
     sequence_rebuild_pitch_count(s);

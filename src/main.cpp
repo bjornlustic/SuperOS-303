@@ -82,28 +82,41 @@ static bool s_keyboard_mode = false;
 // top note is released while older notes are still held.
 static uint8_t s_kb_stack_key[8];
 static uint8_t s_kb_stack_cv[8];
+static uint8_t s_kb_stack_note[8]; // MIDI note sent for this key (for its Note Off)
 static uint8_t s_kb_stack_depth = 0;
+// Octave latch: TIME_KEY toggles, TIME_MODE_LED shows state. Latched (LED on):
+// tap DOWN/UP to step the octave register 0..3 and it holds. Off: DOWN/UP must
+// be held while pressing keys (stock behavior; octave 3 = DOWN+UP together).
+static bool    s_kb_oct_latch = true;
+static uint8_t s_kb_oct       = 1;
 
 static void kb_stack_clear() { s_kb_stack_depth = 0; }
+static uint8_t kb_stack_note_of(uint8_t key) {
+  for (uint8_t i = 0; i < s_kb_stack_depth; ++i)
+    if (s_kb_stack_key[i] == key) return s_kb_stack_note[i];
+  return 0xFF;
+}
 static void kb_stack_remove(uint8_t key) {
   for (uint8_t i = 0; i < s_kb_stack_depth; ++i) {
     if (s_kb_stack_key[i] == key) {
       for (uint8_t j = i; j < s_kb_stack_depth - 1; ++j) {
-        s_kb_stack_key[j] = s_kb_stack_key[j + 1];
-        s_kb_stack_cv[j]  = s_kb_stack_cv[j + 1];
+        s_kb_stack_key[j]  = s_kb_stack_key[j + 1];
+        s_kb_stack_cv[j]   = s_kb_stack_cv[j + 1];
+        s_kb_stack_note[j] = s_kb_stack_note[j + 1];
       }
       --s_kb_stack_depth;
       return;
     }
   }
 }
-static void kb_stack_push(uint8_t key, uint8_t cv) {
+static bool kb_stack_push(uint8_t key, uint8_t cv, uint8_t note) {
   kb_stack_remove(key);
-  if (s_kb_stack_depth < 8) {
-    s_kb_stack_key[s_kb_stack_depth] = key;
-    s_kb_stack_cv[s_kb_stack_depth]  = cv;
-    ++s_kb_stack_depth;
-  }
+  if (s_kb_stack_depth >= 8) return false;
+  s_kb_stack_key[s_kb_stack_depth]  = key;
+  s_kb_stack_cv[s_kb_stack_depth]   = cv;
+  s_kb_stack_note[s_kb_stack_depth] = note;
+  ++s_kb_stack_depth;
+  return true;
 }
 
 // Track Write: CLEAR ("bar reset") arms "next TAP_NEXT writes the last step".
@@ -177,9 +190,6 @@ static void emit_track_state(DialMode dial, bool clk_run, uint8_t track_idx) {
 //     Press SLIDE_KEY to toggle; CLEAR → main. CLEAR in main exits menu entirely.
 //   EEPROM bytes 16–19 + midi_apply_settings() — survives power cycle.
 // =============================================================================
-static const OutputIndex kCfgWhiteNoteLeds[8] = {
-    C_KEY_LED, D_KEY_LED, E_KEY_LED, F_KEY_LED,
-    G_KEY_LED, A_KEY_LED, B_KEY_LED, C_KEY2_LED};
 static const InputIndex kCfgWhiteKeys[8] = {
     C_KEY, D_KEY, E_KEY, F_KEY, G_KEY, A_KEY, B_KEY, C_KEY2};
 
@@ -252,6 +262,7 @@ static const uint16_t SCALE_PRESETS[] PROGMEM = {
 };
 static constexpr uint8_t NUM_SCALE_PRESETS = 35;
 static bool    s_scale_mode       = false; // per-pattern scale editor active
+static bool    s_scale_fn_entry   = false; // FN still held from the entry gesture
 static uint8_t s_scale_cycle_root = 0xFF;  // last FN+note root this FN-hold (0xFF = none)
 static uint8_t s_scale_cycle_idx  = 0;     // preset index within the cycle
 
@@ -264,12 +275,17 @@ static uint8_t s_scale_cycle_idx  = 0;     // preset index within the cycle
 //     first press = Major, pressing the SAME note again advances through the
 //     preset list (Minor, Dorian, ...). A different note resets to Major at that
 //     root. Releasing FN resets the cycle, so the next FN+note is Major.
-//   BACK exits the editor.
+//   FN tap (press and release without a preset note) exits the editor. The
+//   FN release that ends the entry gesture (FN + ACCENT) is ignored.
 void ProcessScaleMode() {
   Leds::Set(FUNCTION_MODE_LED, true);
   Sequence &s = engine.get_edit_sequence();
 
   if (inputs[FUNCTION_KEY].falling()) {
+    if (s_scale_fn_entry)
+      s_scale_fn_entry = false;         // entry gesture's release: stay
+    else if (s_scale_cycle_root == 0xFF)
+      s_scale_mode = false;             // FN tap with no preset: exit
     s_scale_cycle_root = 0xFF;
     s_scale_cycle_idx = 0;
   }
@@ -309,8 +325,6 @@ void ProcessScaleMode() {
     midi_send_scale_update(engine.get_patsel(), s.scale_mask(), s.scale_enabled(),
                            engine.get_edit_var());
   }
-
-  if (inputs[BACK_KEY].rising()) s_scale_mode = false;
 }
 
 static void process_config_menu() {
@@ -470,7 +484,7 @@ void input_time(bool mod = false, bool clk_run = false) {
   else if (inputs[ACCENT_KEY].rising()) { new_t = 0; written_time = 0; }
   if (written_time == 0xFF) return;
 
-  if (!mod) { engine.AdvanceEditCursor(false); ++s_time_edit_steps; }
+  if (!mod) { engine.AdvanceEditCursor(); ++s_time_edit_steps; }
   Sequence &s = engine.get_edit_sequence();
   const uint8_t len = s.length;
   uint8_t before_pt[MAX_STEPS];
@@ -509,12 +523,16 @@ extern "C" {
 // =============================================================================
 // setup — MIDI, GPIO, optional bootloader, EEPROM load
 // =============================================================================
+// Only compiled for non-USB-MIDI builds (e.g. Arduino IDE with a Serial USB
+// type); the app env always defines SUPEROS_USB_MIDI and keeps USB alive.
+#if !DEBUG && !defined(SUPEROS_USB_MIDI)
 static void usb_shutdown_hw() {
   UDIEN = 0;
   UDCON = 1;
   USBCON = (1 << FRZCLK);
   PLLCSR = 0;
 }
+#endif
 
 void setup() {
   // Keep USB alive when built for USB MIDI; otherwise tear it down as before
@@ -593,6 +611,17 @@ void PrintTime() {
   Leds::Set(SLIDE_KEY_LED, false);
 }
 
+// Light the pitch-key LED of the NOTE at the edit cursor (no octave/flag
+// LEDs; in TIME_MODE those belong to PrintTime's note/tie/rest display).
+static void PrintCursorNoteLed() {
+  const Sequence &s = engine.edit_seq_view();
+  const uint8_t tp = uint8_t(s.time_pos & (MAX_STEPS - 1));
+  if (tp >= s.length || s.time(tp) != 1) return;
+  const uint8_t slot = s.pitch_index_for_note(tp);
+  if (slot < s.get_pitch_count() && s.pitch[slot] != PITCH_EMPTY)
+    Leds::Set(pitch_leds[s.pitch[slot] & 0x0F], true);
+}
+
 // ---------------------------------------------------------------------------
 // ProcessDirectionMode — FN + PITCH_KEY: select playback direction
 // C=Forward D=Reverse E=PingPong F=Random G=HalfRand A=Brownian; FN to exit
@@ -652,7 +681,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
         const uint8_t vel = acc ? 127 : 80;
         s_tap_pitch_preview_cv = clamp_cv(int(es.get_pitch()) + total_transpose);
         s_tap_pitch_preview_accent = acc;
-        s_tap_pitch_preview_slide = es.get_slide();
+        s_tap_pitch_preview_slide = false; // previews always trigger clean, never slide
         midi_audition_note_on(uint8_t(mn), vel);
       }
     }
@@ -663,6 +692,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
     if (write_mode) {
       input_time(true, clk_run);
       PrintTime();
+      PrintCursorNoteLed(); // keep the step's note visible while stepping
     }
     break;
   case NORMAL_MODE:
@@ -680,7 +710,7 @@ void ProcessEdit(const bool &write_mode, const bool clk_run) {
       const uint8_t vel = acc ? 127 : 80;
       s_back_pitch_preview_cv = clamp_cv(int(es.get_pitch()) + total_transpose);
       s_tap_pitch_preview_accent = acc;
-      s_tap_pitch_preview_slide = es.get_slide();
+      s_tap_pitch_preview_slide = false; // previews always trigger clean, never slide
       s_back_pitch_preview_gate = true;
       midi_audition_note_on(uint8_t(mn), vel);
     }
@@ -825,19 +855,25 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       PrintPitch();
       const uint8_t tp = engine.get_edit_time_pos();
       Leds::Set(OutputIndex(tp & 0x7), true);
-      Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
-      if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4);
+      // Bank indicator (C#/D#/F#/G# + A# blink for the 8-step block) disabled
+      // in live pitch edit: it collides with the note-key display.
+      // Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
+      // if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4);
     }
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
   case TIME_MODE:
+    // Time state + note LED stay visible in TIME_MODE whether running or
+    // stopped (stopped display previously went dark between TAP presses).
+    PrintTime();
+    PrintCursorNoteLed();
     if (clk_run) {
-      PrintTime();
-      { const uint8_t tp = engine.get_edit_time_pos();
-        Leds::Set(OutputIndex(tp & 0x7), true);
-        Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
-        if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4); }
+      const uint8_t tp = engine.get_edit_time_pos();
+      Leds::Set(OutputIndex(tp & 0x7), true);
+      // Bank indicator disabled in live time edit (see PITCH_MODE above).
+      // Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
+      // if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4);
     }
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
@@ -1214,7 +1250,6 @@ static void ProcessTrackUI(DialMode dial, bool dial_track_write, bool clk_run,
         }
         if (moved) {
           engine.p_chain_pos = pos;
-          engine.p_repeats   = -1;
           engine.SetPattern(engine.TrackGetPattern(pos), true);
           emit_track_state(dial, clk_run, track_idx);
         }
@@ -1339,19 +1374,33 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
     if (s_step_sel >= 0 && (uint8_t(s_step_sel) & ~uint8_t(7)) == s_step_sel_base)
       Leds::Set(OutputIndex(s_step_sel & 0x7), bool((millis() >> 7) & 1));
 
-    // Chain slot select + LEDs. Visible only when no step is selected so
-    // step-edit feedback on DOWN/UP/ACCENT/SLIDE can take over the moment
-    // a step is picked. Hidden entirely when chain has < 2 patterns.
-    if (chain_view_active && s_step_sel < 0) {
-      if (inputs[DOWN_KEY].rising()   && s_chain_len > 0) { s_step_sel_chain_view = 0; s_step_sel_base = 0; s_step_sel_ext = false; }
-      if (inputs[UP_KEY].rising()     && s_chain_len > 1) { s_step_sel_chain_view = 1; s_step_sel_base = 0; s_step_sel_ext = false; }
-      if (inputs[ACCENT_KEY].rising() && s_chain_len > 2) { s_step_sel_chain_view = 2; s_step_sel_base = 0; s_step_sel_ext = false; }
-      if (inputs[SLIDE_KEY].rising()  && s_chain_len > 3) { s_step_sel_chain_view = 3; s_step_sel_base = 0; s_step_sel_ext = false; }
-      const bool blinkc = bool((millis() >> 7) & 1);
-      Leds::Set(DOWN_KEY_LED,   s_chain_len > 0 && (s_step_sel_chain_view == 0 ? blinkc : true));
-      Leds::Set(UP_KEY_LED,     s_chain_len > 1 && (s_step_sel_chain_view == 1 ? blinkc : true));
-      Leds::Set(ACCENT_KEY_LED, s_chain_len > 2 && (s_step_sel_chain_view == 2 ? blinkc : true));
-      Leds::Set(SLIDE_KEY_LED,  s_chain_len > 3 && (s_step_sel_chain_view == 3 ? blinkc : true));
+    // Chain slot select + LEDs. Available in the pitch sub-mode always (its
+    // picker leaves DOWN/UP/ACCENT/SLIDE free); in the time sub-mode only
+    // while no step is selected (a selection hands those keys to the time
+    // editor). Hidden entirely when the chain has < 2 patterns.
+    if (chain_view_active && (!s_step_sel_time || s_step_sel < 0)) {
+      bool switched = false;
+      if (inputs[DOWN_KEY].rising()   && s_chain_len > 0) { s_step_sel_chain_view = 0; switched = true; }
+      if (inputs[UP_KEY].rising()     && s_chain_len > 1) { s_step_sel_chain_view = 1; switched = true; }
+      if (inputs[ACCENT_KEY].rising() && s_chain_len > 2) { s_step_sel_chain_view = 2; switched = true; }
+      if (inputs[SLIDE_KEY].rising()  && s_chain_len > 3) { s_step_sel_chain_view = 3; switched = true; }
+      if (switched) {
+        // Selection belongs to the previous pattern; drop it with the view.
+        s_step_sel = -1;
+        s_step_sel_base = 0;
+        s_step_sel_ext  = false;
+      }
+      // LEDs: viewed slot = solid full brightness; playing slot = chase blink
+      // at full brightness; remaining chain slots = dim.
+      static const OutputIndex kChainLeds[4] =
+          {DOWN_KEY_LED, UP_KEY_LED, ACCENT_KEY_LED, SLIDE_KEY_LED};
+      const bool blinkc = bool(clk_count & 4);
+      for (uint8_t ci = 0; ci < 4 && ci < s_chain_len; ++ci) {
+        const bool sel  = (s_step_sel_chain_view == ci);
+        const bool play = clk_run && (s_chain_pos == ci);
+        if (sel || (play && blinkc)) Leds::Set(kChainLeds[ci], true);
+        else                         Leds::SetDim(kChainLeds[ci], true);
+      }
     }
 
     if (s_step_sel_time) {
@@ -1427,7 +1476,7 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
             if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
             s_tap_pitch_preview_cv = clamp_cv(int(linear) + total_transpose);
             s_tap_pitch_preview_accent = acc;
-            s_tap_pitch_preview_slide = (pb & (1 << 7)) != 0;
+            s_tap_pitch_preview_slide = false; // previews never slide
             s_tap_pitch_preview_gate = true;
           }
         }
@@ -1524,7 +1573,7 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
           if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
           s_tap_pitch_preview_cv = clamp_cv(int(lin) + total_transpose);
           s_tap_pitch_preview_accent = acc;
-          s_tap_pitch_preview_slide = (ab & (1 << 7)) != 0;
+          s_tap_pitch_preview_slide = false; // previews never slide
           s_tap_pitch_preview_gate = true;
         }
       }
@@ -1549,39 +1598,100 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
 
 // =============================================================================
 // Keyboard play: pitched keys play notes via the audition CV path; no pattern
-// writes. Octave selected by DOWN / UP (same encoding as PITCH_MODE write).
+// writes. Octave: latched (TIME toggles, TIME_MODE_LED lit) = tap DOWN/UP to
+// step register 0..3 and it holds; unlatched = hold DOWN/UP while playing.
 // Press-order stack drives legato slide: holding one key and pressing another
 // keeps the gate high and forces slide CV high so the 303 portamentos between
 // notes. Releasing the top note slides back to the next-most-recent held note.
-// Releasing all notes drops the gate.
+// Releasing all notes drops the gate. MIDI out is per-key: every held key
+// keeps its own Note On open until released, so overlaps come out as legato
+// (mono synths slide) and a DAW records true note lengths.
 // =============================================================================
+
+// The button matrix has no diodes: DOWN/UP/ACCENT/SLIDE sit on scan row 2 at
+// columns 0..3, sharing columns with the note rows. When two of them are held
+// and a note key in a matching column is pressed, the scan reads back a
+// phantom note in the same row at the other matching column (three corners of
+// a rectangle conduct the fourth). The phantom rises in the same frame as the
+// real key and is electrically indistinguishable from it.
+static bool kb_mod_col_held(uint8_t col) {
+  switch (col) {
+    case 0: return inputs[DOWN_KEY].held();
+    case 1: return inputs[UP_KEY].held();
+    case 2: return inputs[ACCENT_KEY].held();
+    default: return inputs[SLIDE_KEY].held();
+  }
+}
+// True when a rising DOWN/UP read at matrix column `col` is a likely phantom:
+// a note row has a pressed key at `col` plus a pressed key at another column
+// whose row-2 modifier is held.
+static bool kb_oct_tap_ghosted(uint8_t col) {
+  for (uint8_t r = 0; r < 4; ++r) {
+    if (r == 2) continue; // the modifier row itself
+    if (!inputs[InputIndex(r * 4 + col)].held()) continue;
+    for (uint8_t c = 0; c < 4; ++c)
+      if (c != col && kb_mod_col_held(c) && inputs[InputIndex(r * 4 + c)].held())
+        return true;
+  }
+  return false;
+}
+
 static void ProcessKeyboardPlay() {
   Leds::Set(PITCH_MODE_LED, true);
   Leds::Set(FUNCTION_MODE_LED, true);
+  Leds::Set(TIME_MODE_LED, s_kb_oct_latch);
 
-  // Falling edges: remove released keys from stack; slide back if the top
-  // changed and other keys remain.
+  // TIME toggles the octave latch.
+  if (inputs[TIME_KEY].rising()) s_kb_oct_latch = !s_kb_oct_latch;
+
+  if (s_kb_oct_latch) {
+    // Tap DOWN/UP to step the latched octave; ghost-guarded so a phantom
+    // octave read (accent/slide held plus overlapping notes) cannot move it.
+    if (inputs[UP_KEY].rising() && !kb_oct_tap_ghosted(1) && s_kb_oct < 3) ++s_kb_oct;
+    if (inputs[DOWN_KEY].rising() && !kb_oct_tap_ghosted(0) && s_kb_oct > 0) --s_kb_oct;
+    Leds::Set(DOWN_KEY_LED, s_kb_oct == 0 || s_kb_oct == 3);
+    Leds::Set(UP_KEY_LED,   s_kb_oct == 2 || s_kb_oct == 3);
+  }
+
+  // Falling edges: remove released keys from stack, close their MIDI notes;
+  // slide back if the top changed and other keys remain.
   bool top_changed = false;
   for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
     if (!inputs[pitched_keys[pi]].falling()) continue;
     const bool was_top = (s_kb_stack_depth > 0 &&
                           s_kb_stack_key[s_kb_stack_depth - 1] == pi);
+    const uint8_t off_note = kb_stack_note_of(pi);
     kb_stack_remove(pi);
+    if (off_note != 0xFF) midi_kb_note_off(off_note);
     if (was_top) top_changed = true;
   }
   if (top_changed && s_kb_stack_depth > 0) {
-    const uint8_t cv = s_kb_stack_cv[s_kb_stack_depth - 1];
-    s_tap_pitch_preview_cv    = cv;
+    // CV slides back to the next-most-recent held key. Its MIDI note is
+    // still open (per-key notes), so nothing to send.
+    s_tap_pitch_preview_cv    = s_kb_stack_cv[s_kb_stack_depth - 1];
     s_tap_pitch_preview_slide = true;
-    uint16_t mn = uint16_t(36) + cv;
-    if (mn > 127) mn = 127;
-    midi_audition_note_on(uint8_t(mn), 80);
+  }
+
+  // Ghost guard: two rising note keys in the same matrix row whose columns
+  // both match held modifiers are a real+phantom pair that cannot be told
+  // apart; drop both rather than play a possibly-wrong note. (With the
+  // octave latch there is no need to hold DOWN/UP, so this never triggers
+  // in normal latched play.)
+  bool ghosted[ARRAY_SIZE(pitched_keys)] = {false};
+  for (uint8_t a = 0; a < ARRAY_SIZE(pitched_keys); ++a) {
+    const uint8_t ia = pitched_keys[a];
+    if (ia >= 16 || !inputs[ia].rising() || !kb_mod_col_held(ia & 3)) continue;
+    for (uint8_t b = uint8_t(a + 1); b < ARRAY_SIZE(pitched_keys); ++b) {
+      const uint8_t ib = pitched_keys[b];
+      if (ib >= 16 || !inputs[ib].rising() || !kb_mod_col_held(ib & 3)) continue;
+      if ((ia >> 2) == (ib >> 2)) { ghosted[a] = true; ghosted[b] = true; }
+    }
   }
 
   // Rising edges: legato if stack already non-empty, else fresh trigger.
   for (uint8_t pi = 0; pi < ARRAY_SIZE(pitched_keys); ++pi) {
-    if (!inputs[pitched_keys[pi]].rising()) continue;
-    const uint8_t oct    = resolve_octave();
+    if (!inputs[pitched_keys[pi]].rising() || ghosted[pi]) continue;
+    const uint8_t oct    = s_kb_oct_latch ? s_kb_oct : resolve_octave();
     const uint8_t packed = pack_pitch(pi, oct);
     const uint8_t linear = unpack_pitch_linear(packed);
     const uint8_t cv     = clamp_cv(int(linear) + total_transpose);
@@ -1598,24 +1708,27 @@ static void ProcessKeyboardPlay() {
     s_tap_pitch_preview_accent = acc;
     s_tap_pitch_preview_slide  = sld;
     s_tap_pitch_preview_gate   = true;
-    kb_stack_push(pi, cv);
-    midi_audition_note_on(uint8_t(mn), vel);
+    if (kb_stack_push(pi, cv, uint8_t(mn)))
+      midi_kb_note_on(uint8_t(mn), vel);
     break; // only one new note per loop iteration
   }
 
-  // Close gate + MIDI note when stack drains.
+  // Light exactly the keys in the stack (raw held reads include phantoms and
+  // are suppressed from the global pressed-button echo in keyboard mode).
+  for (uint8_t i = 0; i < s_kb_stack_depth; ++i)
+    Leds::Set(pitch_leds[s_kb_stack_key[i]], true);
+
+  // Close gate when stack drains (per-key MIDI offs already went out).
   if (s_kb_stack_depth == 0 && s_tap_pitch_preview_gate) {
     s_tap_pitch_preview_gate  = false;
     s_tap_pitch_preview_slide = false;
-    midi_audition_note_off();
   }
 }
 
 // =============================================================================
-// FN held: pattern length editor + length LED display. Pattern Write applies
-// edits; other dial positions show the read-only length display.
+// FN held: pattern length editor + length LED display (Pattern Write only).
 // =============================================================================
-static void ProcessLengthEditor(bool write_mode, bool dial_pattern_write) {
+static void ProcessLengthEditor(bool dial_pattern_write) {
   // Always-solid FUNCTION_MODE_LED so it stays visible when the clock is stopped
   // (clk_count is frozen and may sit at 0, hiding any blink mask).
   Leds::Set(FUNCTION_MODE_LED, true);
@@ -1623,27 +1736,8 @@ static void ProcessLengthEditor(bool write_mode, bool dial_pattern_write) {
   // FN + ACCENT / FN + SLIDE: live force at the CV stage; only active while held.
   // No persistent stamp — handled below in the DAC output block via fn_mod.
 
-  if (!write_mode) {
-    // LED: white key = position within 8-step block; black keys = cumulative block coverage.
-    // Steps 33-64: A# blinks and covered blocks blink to signal extended range.
-    // Use millis()-based blink so it works even when the MIDI clock is stopped.
-    const uint8_t cur_len = engine.get_length();
-    const bool blink = bool((millis() >> 8) & 1); // ~2 Hz, clock-independent
-    Leds::Set(OutputIndex((cur_len - 1) & 0x7), true);
-    if (cur_len > 32) {
-      Leds::Set(ASHARP_KEY_LED, blink);
-      Leds::Set(CSHARP_KEY_LED, blink);            // always: we're in extended range
-      Leds::Set(DSHARP_KEY_LED, cur_len > 40 ? blink : false);
-      Leds::Set(FSHARP_KEY_LED, cur_len > 48 ? blink : false);
-      Leds::Set(GSHARP_KEY_LED, cur_len > 56 ? blink : false);
-    } else {
-      Leds::Set(ASHARP_KEY_LED, false);
-      Leds::Set(CSHARP_KEY_LED, true);
-      Leds::Set(DSHARP_KEY_LED, cur_len > 8);
-      Leds::Set(FSHARP_KEY_LED, cur_len > 16);
-      Leds::Set(GSHARP_KEY_LED, cur_len > 24);
-    }
-  }
+  // Length display and edits are Pattern Write only; FN in Pattern Play shows
+  // nothing (it is just the keyboard-mode / direction-mode modifier there).
 
   if (dial_pattern_write) {
     // FN hold + step press: pattern length editor (Pattern Write only)
@@ -1770,7 +1864,7 @@ static void ProcessClearCombos(bool clear_mod, bool fn_mod, bool dial_pattern_wr
   }
   // CLEAR + C# held + pat key rising: copy pattern (current bank) to clipboard.
   // CLEAR + D# held + pat key rising: paste clipboard into that pattern slot.
-  static uint8_t s_clip_buf[128];
+  static uint8_t s_clip_buf[PATTERN_SIZE];
   static bool    s_clip_valid = false;
   if (inputs[CSHARP_KEY].held()) {
     for (uint8_t i = 0; i < 8; ++i) {
@@ -2076,9 +2170,13 @@ void loop() {
     if (s_keyboard_mode) {
       s_keyboard_mode = false;
       s_tap_pitch_preview_gate = false;
-      midi_audition_note_off();
+      midi_kb_all_notes_off();
       kb_stack_clear();
     }
+    // Config menu must not survive a dial move; it otherwise keeps consuming
+    // keys in the new dial position until CLEAR or FN is pressed.
+    s_cfg_menu = CfgMenu::Off;
+    s_cfg_suppress_clear_exit = false;
     // Exit any in-progress edit mode so PITCH_MODE / TIME_MODE state cannot
     // bleed across dial positions.
     engine.SetMode(NORMAL_MODE);
@@ -2217,15 +2315,21 @@ void loop() {
     // TIME_MODE set at line ~1050 is gated by !fn_mod).
     if (fn_mod && inputs[TIME_KEY].rising()) {
       s_dir_mode = true;
+      // Overlay modes sit on top of NORMAL_MODE: drop any active PITCH/TIME
+      // submode so exiting the overlay always returns to normal.
+      engine.SetMode(NORMAL_MODE, !clk_run);
     } else if (fn_mod && inputs[ACCENT_KEY].rising() && dial_pattern_write) {
       s_scale_mode = true;
+      s_scale_fn_entry = true; // FN is down from the entry combo; its release must not exit
       s_scale_cycle_root = 0xFF;
       s_scale_cycle_idx = 0;
+      engine.SetMode(NORMAL_MODE, !clk_run);
     } else if (fn_mod && inputs[PITCH_KEY].rising() && !s_step_sel_mode && dial_pattern_write) {
       s_step_sel_mode = true;
       s_step_sel_chain_view = 0; // always default to first chain slot on entry
       s_step_sel_base = 0;
       s_step_sel_ext  = false;
+      engine.SetMode(NORMAL_MODE, !clk_run);
     } else if (s_step_sel_mode) {
       ProcessStepSelect(clk_run, dial_pattern_write);
     } else if (s_keyboard_mode && (dial == DialMode::PatternPlay)) {
@@ -2236,7 +2340,7 @@ void loop() {
       Leds::Set(FUNCTION_MODE_LED, true);
       // TODO: performance time effects
     } else if (fn_mod) {
-      ProcessLengthEditor(write_mode, dial_pattern_write);
+      ProcessLengthEditor(dial_pattern_write);
     } else if (edit_mode && dial_pattern_write && !fn_mod && !clear_mod &&
                !s_metronome_active && engine.get_mode() == NORMAL_MODE) {
       // Hold TAP_NEXT in Pattern Write/normal mode: edit-variation picker.
@@ -2298,10 +2402,16 @@ void loop() {
       const InputIndex b = switched_leds[i].button;
       if (!inputs[b].held()) continue;
       if (b == UP_KEY && inputs[C_KEY2].held()) continue;
+      // Keyboard mode: raw held reads of note keys include matrix phantoms;
+      // ProcessKeyboardPlay lights the real (stack) keys instead.
+      if (s_keyboard_mode &&
+          (b <= C_KEY2 || b == CSHARP_KEY || b == DSHARP_KEY ||
+           b == FSHARP_KEY || b == GSHARP_KEY))
+        continue;
       Leds::Set(OutputIndex(i), true);
     }
     // A# is a direct LED (switched_leds[17]) not covered by the 0-15 loop above
-    if (inputs[ASHARP_KEY].held())
+    if (inputs[ASHARP_KEY].held() && !s_keyboard_mode)
       Leds::Set(ASHARP_KEY_LED, true);
   }
 
@@ -2351,7 +2461,7 @@ void loop() {
       s_keyboard_mode = false;
       kb_stack_clear();
       s_tap_pitch_preview_gate = false;
-      midi_audition_note_off();
+      midi_kb_all_notes_off();
     } else if (s_step_sel_mode) {
       s_step_sel_mode = false;
       s_step_sel_edit = false;
@@ -2360,7 +2470,8 @@ void loop() {
     } else if (s_dir_mode) {
       s_dir_mode = false;
     } else if (s_scale_mode) {
-      // FN is the scale-preset modifier here; exit the editor via BACK, not FN.
+      // FN is also the scale-preset modifier; the exit fires on FN FALLING
+      // (tap with no preset note) inside ProcessScaleMode, not on rising.
     } else if (s_cfg_menu == CfgMenu::Midi) {
       s_cfg_menu = CfgMenu::Off;
     } else if (s_cfg_menu == CfgMenu::Off) {
@@ -2369,10 +2480,15 @@ void loop() {
   }
 
   if (s_cfg_menu == CfgMenu::Off) {
-    // PITCH_MODE / TIME_MODE entry: Pattern Write only.
+    // PITCH_MODE / TIME_MODE entry: Pattern Write only, and never while an
+    // overlay mode owns the keys (direction / scale / step-select). Without
+    // the overlay gate, pressing PITCH or TIME inside an overlay silently
+    // queued a submode that popped up the moment the overlay exited (and in
+    // step-select made bare step presses open the audition gate).
+    const bool overlay_mode = s_dir_mode || s_scale_mode || s_step_sel_mode;
     const bool in_poly_edit = (engine.get_mode() == PITCH_MODE && engine.edit_var_ == 2 && engine.poly_active_);
-    if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode && !in_poly_edit) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
-    if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod) engine.SetMode(PITCH_MODE, !clk_run);
+    if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode && !in_poly_edit && !overlay_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
+    if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod && !overlay_mode) engine.SetMode(PITCH_MODE, !clk_run);
 
     // Keyboard play mode toggle: FN + PITCH_KEY rising while dial is in Pattern Play.
     if (fn_mod && inputs[PITCH_KEY].rising() && (dial == DialMode::PatternPlay) &&
@@ -2381,7 +2497,7 @@ void loop() {
       kb_stack_clear();
       if (!s_keyboard_mode) {
         s_tap_pitch_preview_gate = false;
-        midi_audition_note_off();
+        midi_kb_all_notes_off();
       }
     }
 
@@ -2511,10 +2627,13 @@ void loop() {
         }
       }
       // Every clock tick: MIDI note on/off follows the analog gate (all 3 voices),
-      // so MIDI sustain matches the 303 hardware gate exactly.
+      // so MIDI sustain matches the 303 hardware gate exactly. The tick's sends are
+      // batched and flushed as one burst (USB in a single packet, then DIN) so all
+      // variations' notes land together instead of serializing per voice.
+      midi_tick_begin();
       midi_seq_gate_tick(engine, total_transpose);
       midi_shadows_gate_tick(engine, total_transpose);
-      midi_flush_note_offs(); // send all variations' note-ONs first, then the queued offs
+      midi_tick_flush(); // all variations' note-ONs first, then the queued offs
     }
   }
 
@@ -2599,12 +2718,31 @@ void loop() {
             const uint8_t vel = acc ? 127 : 80;
             s_tap_pitch_preview_cv = clamp_cv(int(auds.get_pitch()) + total_transpose);
             s_tap_pitch_preview_accent = acc;
-            s_tap_pitch_preview_slide = auds.get_slide();
+            s_tap_pitch_preview_slide = false; // previews always trigger clean, never slide
             s_tap_pitch_preview_gate = true;
             midi_audition_note_on(uint8_t(mn), vel);
           }
         } else if (engine.get_mode() == TIME_MODE) {
-          engine.AdvanceEditCursor(true);
+          engine.AdvanceEditCursor();
+          // Preview the note at the new cursor step (NOTE steps only).
+          const Sequence &ts = engine.edit_seq_view();
+          const uint8_t tp = uint8_t(ts.time_pos & (MAX_STEPS - 1));
+          if (tp < ts.length && ts.time(tp) == 1) {
+            const uint8_t slot = ts.pitch_index_for_note(tp);
+            if (slot < ts.get_pitch_count() && ts.pitch[slot] != PITCH_EMPTY) {
+              const uint8_t pb  = ts.pitch[slot];
+              const uint8_t lin = unpack_pitch_linear(pb & 0x3f);
+              const bool    acc = (pb & (1 << 6)) != 0;
+              uint16_t mn = uint16_t(36 + lin) + total_transpose;
+              if (mn > 127) mn = 127;
+              if (s_tap_pitch_preview_gate) s_tap_pitch_preview_retrig = 2;
+              s_tap_pitch_preview_cv     = clamp_cv(int(lin) + total_transpose);
+              s_tap_pitch_preview_accent = acc;
+              s_tap_pitch_preview_slide  = false; // previews never slide
+              s_tap_pitch_preview_gate   = true;
+              midi_audition_note_on(uint8_t(mn), acc ? 127 : 80);
+            }
+          }
         }
       }
     }
@@ -2633,12 +2771,18 @@ void loop() {
     if (inputs[TAP_NEXT].falling() && !engine.in_poly_pitch_edit()) {
       s_tap_pitch_preview_gate = false;
       midi_audition_note_off(); // close any open audition note
-      // PITCH_MODE write: advance to the next NOTE step (skipping REST/TIE) on release,
-      // exit after a full loop. Linear advance was leaving the cursor on REST/TIE slots
-      // whose pitch byte is empty (PITCH_EMPTY), so the next audition played nothing.
+      // PITCH_MODE: on release, step to the next pitch-stream slot and exit
+      // after a full pass. Wrap at the stream's end (pitch_count), not at
+      // pattern length: REST/TIE steps own no pitch slot, so wrapping at
+      // length made every note past the last one a silent blank TAP press.
       if (!clk_run && write_mode && engine.get_mode() == PITCH_MODE) {
         Sequence &es = engine.get_edit_sequence();
-        es.advance_pitch_to_next_note();
+        es.first_step = false;
+        const uint8_t epc = es.get_pitch_count();
+        ++es.pitch_pos;
+        if (es.pitch_pos >= int(epc) || es.pitch_pos >= int(es.length))
+          es.pitch_pos = 0;
+        es.sync_time_pos_to_pitch_pos();
         if (es.pitch_pos == 0 && !es.first_step)
           engine.SetMode(NORMAL_MODE, true);
       }

@@ -86,23 +86,25 @@ static inline uint8_t unpack_pitch_linear(uint8_t e) {
 }
 
 // =============================================================================
-// Sequence -- one pattern. EEPROM bytes first (56), then runtime state.
+// Sequence -- one pattern. Persisted bytes first (PATTERN_SIZE = 92), then
+// runtime state.
 // =============================================================================
 struct Sequence {
-  // ----- EEPROM-persisted layout (56 bytes, must match OS-303 byte-for-byte) -----
-  uint8_t pitch[MAX_STEPS];           // 32 bytes
-  uint8_t time_data[MAX_STEPS / 4];   // 8 bytes (2-bit cells, 4 steps/byte)
-  uint8_t reserved[METADATA_SIZE - 3]; // 9 bytes (reserved[0]=direction, [1..8]=unused padding)
+  // ----- Persisted layout (92 bytes, serialized as one flash record) -----
+  uint8_t pitch[MAX_STEPS];           // 64 bytes
+  uint8_t time_data[MAX_STEPS / 4];   // 16 bytes (2-bit cells, 4 steps/byte)
+  uint8_t reserved[METADATA_SIZE - 3]; // 9 bytes (reserved[0]=direction, [1..2]=scale, [3..8]=free)
   uint8_t transpose     = 0;
   uint8_t engine_select = 0;
   uint8_t length        = 16;
-  // ----- Runtime state (NOT persisted) -----
-  int pitch_pos = 0;
-  int time_pos  = 0;
+  // ----- Runtime state (NOT persisted). Playheads hold 0..MAX_STEPS-1 (63);
+  // int8_t is wide enough and saves 2 bytes on each of the 18 resident copies.
+  int8_t pitch_pos = 0;
+  int8_t time_pos  = 0;
   bool reset      = true;
   bool first_step = true;
   uint8_t pitch_count_runtime = 0;        // rebuilt on Load via sequence_rebuild_pitch_count
-  uint8_t step_lock_ram[MAX_STEPS / 8] = {0,0,0,0}; // 32 bits, RAM-only live lockout
+  uint8_t step_lock_ram[MAX_STEPS / 8] = {}; // 64 bits, RAM-only live lockout
 
   // ---------------------------------------------------------------------------
   // Reserved-byte accessors. reserved[0] layout: bits[2:0] = direction (0..5),

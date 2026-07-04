@@ -89,12 +89,19 @@ namespace Leds {
     const uint8_t row = ledidx >> 3;
     front_dim[row] = (front_dim[row] & ~(1 << bit_idx)) | (enable << bit_idx);
   }
+  // Status-line snapshot (PINB bits 0-3 = PA0-3: RUN/TAP/-/CLOCK), captured
+  // at the end of the all-selects-high settle below. A dedicated status
+  // sampler would have to recreate exactly this electrical state with its
+  // own PORTF write + busy-wait; consumers read a ~2 kHz sample for free.
+  static volatile uint8_t last_status_pinb = 0;
+
   void SetLedSelection(uint8_t select_pin, uint8_t enable_mask) {
     const uint8_t switched_pins[4] = {
       PG0_PIN, PG1_PIN, PG2_PIN, PG3_PIN,
     };
     PORTF = 0x0f;
     delayMicroseconds(SWITCH_DELAY);
+    last_status_pinb = PINB;
     digitalWriteFast(select_pin, LOW);
     for (uint8_t i = 0; i < 4; ++i) {
       digitalWriteFast(switched_pins[i], (enable_mask & (1 << i))?HIGH:LOW);
@@ -116,7 +123,10 @@ namespace Leds {
   // Called from Timer3 ISR at a fixed rate. Drives one matrix row per call.
   void SendISR() {
     const uint8_t tick = isr_tick++;
-    if ((tick & 0x3) == 0) pwm_phase = (pwm_phase + 1) & 0x7;
+    // Advance the PWM phase every 2 ticks (was 4): keeps the dim-PWM cycle
+    // above flicker (~61 Hz) when the ISR runs at the emulator's halved
+    // 977 Hz rate; at stock rates it just doubles the PWM frequency.
+    if ((tick & 0x1) == 0) pwm_phase = (pwm_phase + 1) & 0x7;
     const bool lit     = (pwm_phase < brightness);
     const bool dim_lit = (pwm_phase < 1);
 

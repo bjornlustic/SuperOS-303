@@ -6,12 +6,12 @@
  *
  * Pattern commands:
  *   10h  Host→303  Request one pattern: <pat:0..15>
- *   11h  303→Host  Pattern data: <pat> <xor_lo7> <xor_hi1> <packed 128 bytes>
- *   12h  Host→303  Set pattern: same as 11h body; XOR over raw 128 bytes must match.
+ *   11h  303→Host  Pattern data: <pat> <xor_lo7> <xor_hi1> <packed 106 bytes> <var>
+ *   12h  Host→303  Set pattern: same as 11h body; XOR over raw 92 bytes must match.
  *   13h  Host→303  Request all 16 patterns (303 sends sixteen 11h messages, queued).
- *   14h  303→Host  ACK/NAK: <status> 0=ok 1=bad_checksum 2=bad_pattern 3=blocked_clock
- *   15h  303→Host  Step position: <pat:0..15> <step:0..63>  (sent each 16th while running)
- *   19h  303→Host  Step lock: <pat:0..15> <step:0..63> <locked:0|1>
+ *   14h  303→Host  ACK/NAK: <status> 0=ok 1=bad_checksum 2=bad_pattern
+ *   15h  303→Host  Step position: <pat:0..15> <step:0..63> <group>  (sent at pattern wrap)
+ *   19h  Host→303  Step lock: <pat:0..15> <step:0..63> <locked:0|1>  (RAM only)
  *
  * Config commands:
  *   20h  Host→303  Request config
@@ -37,7 +37,9 @@ struct SuperOsMidiSettings {
   static const bool UseRunningStatus = true;
   static const bool HandleNullVelocityNoteOnAsNoteOff = true;
   static const bool Use1ByteParsing = true;
-  static const unsigned SysExMaxSize = 288; // fits the ~264-byte poly blob set (0x26)
+  // Largest inbound message is the 0x26 poly-blob set: F0 + 5 header + 260
+  // packed + F7 = 267 bytes (the library buffers F0..F7 inclusive).
+  static const unsigned SysExMaxSize = 268;
   static const bool UseSenderActiveSensing = false;
   static const bool UseReceiverActiveSensing = false;
   static const uint16_t SenderActiveSensingPeriodicity = 0;
@@ -51,17 +53,45 @@ MIDI_CREATE_CUSTOM_INSTANCE(HardwareSerial, Serial1, MIDI, SuperOsMidiSettings);
 // 303 and play it from USB. All MIDI.sendNoteOn/Off/Clock/Start/Stop/Continue call
 // sites below route through these. SysEx (the web-editor protocol) stays DIN-only
 // for now — USB SysEx is Phase 2.
-static inline void out_note_on(byte n, byte v, byte ch) {
+// --- Per-tick note batching -------------------------------------------------------
+// Between midi_tick_begin() and midi_tick_flush() (the sequencer gate-ticks), note
+// on/offs are collected instead of sent. The flush then writes USB first -- all of
+// the tick's events back-to-back plus send_now(), so they leave in ONE USB packet
+// and every voice lands on the same host timestamp -- then DIN as one contiguous
+// burst (ons first, offs after). Sending DIN inline per note (the old path) blocked
+// 320us/byte between USB writes whenever the UART FIFO was congested, splitting the
+// tick's USB events across 1ms frames: that was the audible per-note delay.
+// Outside a batch (live play, audition, metronome, stop paths) sends are immediate.
+static bool    s_tick_batch = false;
+static uint8_t s_on_note[8], s_on_vel[8], s_on_ch[8], s_on_n = 0;
+static uint8_t s_off_note[12], s_off_ch[12], s_off_n = 0;
+
+static void out_note_on_now(byte n, byte v, byte ch) {
   MIDI.sendNoteOn(n, v, ch);
 #ifdef SUPEROS_USB_MIDI
   usbMIDI.sendNoteOn(n, v, ch);
 #endif
 }
-static inline void out_note_off(byte n, byte v, byte ch) {
+static void out_note_off_now(byte n, byte v, byte ch) {
   MIDI.sendNoteOff(n, v, ch);
 #ifdef SUPEROS_USB_MIDI
   usbMIDI.sendNoteOff(n, v, ch);
 #endif
+}
+static void queue_off(byte note, byte ch) {
+  if (s_off_n < sizeof(s_off_note)) { s_off_note[s_off_n] = note; s_off_ch[s_off_n] = ch; ++s_off_n; }
+  else out_note_off_now(note, 0, ch); // overflow safety
+}
+static inline void out_note_on(byte n, byte v, byte ch) {
+  if (s_tick_batch && s_on_n < sizeof(s_on_note)) {
+    s_on_note[s_on_n] = n; s_on_vel[s_on_n] = v; s_on_ch[s_on_n] = ch; ++s_on_n;
+    return;
+  }
+  out_note_on_now(n, v, ch);
+}
+static inline void out_note_off(byte n, byte v, byte ch) {
+  if (s_tick_batch) { queue_off(n, ch); return; }
+  out_note_off_now(n, v, ch);
 }
 static inline void out_clock() {
   MIDI.sendClock();
@@ -165,16 +195,26 @@ static void midi_tx_drain() {
   }
 }
 
+// Per-transport host presence: set when a SysEx arrives on that transport (the web
+// editor sends 0x20 on connect). Telemetry/replies go only to transports where an
+// editor has actually talked to us. Without this, standalone playback queued the
+// editor broadcasts into the DIN ring anyway -- in Track mode ~210 bytes (0x23 +
+// 0x15) per pattern wrap = ~70ms of 31250-baud wire time -- filling the Serial1 TX
+// FIFO ahead of note bytes, so notes queued behind SysEx and their sends blocked.
+static bool s_din_host_seen = false;
+static bool s_usb_host_seen = false;
+
 static bool tx_push_message(const uint8_t *inner, uint16_t inner_len) {
 #ifdef SUPEROS_USB_MIDI
-  // Send to USB FIRST and unconditionally. The web editor (USB host) handshakes far
-  // faster than the 31250-baud Serial1 ring drains, so the DIN ring fills after a
-  // handful of replies. Gating USB on ring space dropped replies mid-dump (the
-  // "stalls at ~6/48" bug). USB is its own transport — independent of the ring.
-  // hasTerm=false -> the core wraps F0..F7 around `inner`. Non-blocking / dropped
-  // when no USB host is configured.
-  usbMIDI.sendSysEx(inner_len, inner, false);
+  // USB before the DIN ring, and never gated on ring space: the web editor (USB
+  // host) handshakes far faster than the 31250-baud Serial1 ring drains, so the
+  // DIN ring fills after a handful of replies. Gating USB on ring space dropped
+  // replies mid-dump (the "stalls at ~6/48" bug). hasTerm=false -> the core wraps
+  // F0..F7 around `inner`. Non-blocking / dropped when no USB host is configured.
+  if (s_usb_host_seen)
+    usbMIDI.sendSysEx(inner_len, inner, false);
 #endif
+  if (!s_din_host_seen) return true;
   // DIN (Serial1) ring: check space first so we never leave a partial F0..no-F7.
   uint16_t avail = (s_tx_r + kTxCap - s_tx_w - 1) % kTxCap;
   if (avail < inner_len + 2) return false; // ring full -> DIN drops it (USB already sent)
@@ -631,6 +671,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
 
 static void sysex_cb(byte *data, unsigned sz) {
   if (sz < 4 || data[0] != 0xF0 || data[sz - 1] != 0xF7) return;
+  s_din_host_seen = true;
   handle_sysex_body(reinterpret_cast<const uint8_t *>(data + 1),
                     static_cast<unsigned>(sz - 2));
 }
@@ -641,7 +682,9 @@ static void sysex_cb(byte *data, unsigned sz) {
 // run to ~266 bytes. So we register the CHUNKED (partial) handler: the core hands us
 // the message in <=60-byte pieces (complete=0) plus a final piece (complete=1), and
 // we reassemble the whole F0..F7 message here, then dispatch like the DIN path.
-static uint8_t  usb_sysex_buf[320];
+// Largest inbound message is the 0x26 poly-blob set: F0 + 5 header + 260 packed
+// + F7 = 267 bytes. Oversized messages are dropped via usb_sysex_drop below.
+static uint8_t  usb_sysex_buf[5 + kPackedPolyLen + 2];
 static uint16_t usb_sysex_len  = 0;
 static bool     usb_sysex_drop = false;   // overflow guard: skip rest of an oversized msg
 static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complete) {
@@ -659,6 +702,7 @@ static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complet
   if (complete) {
     if (!usb_sysex_drop && usb_sysex_len >= 4 &&
         usb_sysex_buf[0] == 0xF0 && usb_sysex_buf[usb_sysex_len - 1] == 0xF7) {
+      s_usb_host_seen = true;
       handle_sysex_body(usb_sysex_buf + 1, usb_sysex_len - 2);
     }
     usb_sysex_len = 0;
@@ -817,16 +861,18 @@ static uint8_t audition_ch() {
 
 void midi_audition_note_on(uint8_t note, uint8_t vel) {
   const byte ch = static_cast<byte>(audition_ch());
-  if (s_audition_on && (s_audition_note != note || s_audition_ch != ch)) {
-    out_note_off(s_audition_note, 0, s_audition_ch); // close prev on its channel
-    s_audition_on = false;
-  }
-  if (!s_audition_on) {
-    out_note_on(note, vel, ch);
-    s_audition_note = note;
-    s_audition_ch   = ch;
-    s_audition_on   = true;
-  }
+  if (s_audition_on && s_audition_note == note && s_audition_ch == ch) return;
+  const bool    was_on    = s_audition_on;
+  const uint8_t prev_note = s_audition_note;
+  const uint8_t prev_ch   = s_audition_ch;
+  // New Note On BEFORE the previous Note Off: overlapping auditions read as
+  // legato (slide) on external mono synths, same convention as the sequencer
+  // and live-play outputs.
+  out_note_on(note, vel, ch);
+  s_audition_note = note;
+  s_audition_ch   = ch;
+  s_audition_on   = true;
+  if (was_on) out_note_off(prev_note, 0, prev_ch);
 }
 
 void midi_audition_note_off() {
@@ -834,6 +880,56 @@ void midi_audition_note_off() {
     out_note_off(s_audition_note, 0, s_audition_ch);
     s_audition_on = false;
   }
+}
+
+// --- Keyboard-play notes (live keyboard mode, per-key MIDI out) ------------------
+// Each held key keeps its own Note On open until that key is released, so the
+// MIDI output overlaps exactly like the player's fingers: external mono synths
+// slide on the overlap, and a DAW records every note's true length instead of
+// notes stopping when the next one starts. Duplicate pitches (two keys mapping
+// to the same MIDI note) are refcounted so releasing one key cannot cut a
+// still-held twin.
+static uint8_t s_kb_out_note[8];
+static uint8_t s_kb_out_ch[8];
+static uint8_t s_kb_out_n = 0;
+
+void midi_kb_note_on(uint8_t note, uint8_t vel) {
+  if (s_kb_out_n >= 8) return;
+  const uint8_t ch = static_cast<uint8_t>(audition_ch());
+  bool already = false;
+  for (uint8_t i = 0; i < s_kb_out_n; ++i)
+    if (s_kb_out_note[i] == note && s_kb_out_ch[i] == ch) { already = true; break; }
+  s_kb_out_note[s_kb_out_n] = note;
+  s_kb_out_ch[s_kb_out_n]   = ch;
+  ++s_kb_out_n;
+  if (!already) out_note_on(note, vel, ch);
+}
+
+void midi_kb_note_off(uint8_t note) {
+  for (uint8_t i = 0; i < s_kb_out_n; ++i) {
+    if (s_kb_out_note[i] != note) continue;
+    const uint8_t ch = s_kb_out_ch[i];
+    for (uint8_t j = i; j < s_kb_out_n - 1; ++j) {
+      s_kb_out_note[j] = s_kb_out_note[j + 1];
+      s_kb_out_ch[j]   = s_kb_out_ch[j + 1];
+    }
+    --s_kb_out_n;
+    bool remaining = false;
+    for (uint8_t j = 0; j < s_kb_out_n; ++j)
+      if (s_kb_out_note[j] == note && s_kb_out_ch[j] == ch) { remaining = true; break; }
+    if (!remaining) out_note_off(note, 0, ch);
+    return;
+  }
+}
+
+void midi_kb_all_notes_off() {
+  for (uint8_t i = 0; i < s_kb_out_n; ++i) {
+    bool dup = false;
+    for (uint8_t j = 0; j < i; ++j)
+      if (s_kb_out_note[j] == s_kb_out_note[i] && s_kb_out_ch[j] == s_kb_out_ch[i]) { dup = true; break; }
+    if (!dup) out_note_off(s_kb_out_note[i], 0, s_kb_out_ch[i]);
+  }
+  s_kb_out_n = 0;
 }
 
 // --- Audition chord (variation-3 poly edit: sound the whole chord, MIDI only) ----
@@ -993,12 +1089,6 @@ void midi_metronome_stop() {
 // Used after hardware edits that change the whole pattern (e.g. Clear).
 void midi_send_pattern_update(uint8_t pat) {
   enqueue_pattern_reply(pat & 0x0F);
-}
-
-// --- Step lock broadcast (SysEx 0x19) -------------------------------------------
-void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked) {
-  const uint8_t inner[5] = {0x7D, 0x19, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), uint8_t(locked)};
-  tx_push_message(inner, 5);
 }
 
 // --- Step edit broadcast (SysEx 0x16) -------------------------------------------
@@ -1161,19 +1251,28 @@ void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave
   if (clocked && clk_run) out_clock();
 }
 
-// Note-off coalescing. Gate-tick note-offs are queued and flushed (midi_flush_note_offs)
-// only AFTER all three voices have sent their note-ONs for the tick, so a new step's
-// onsets across var1/var2/var3 leave the port as one tight cluster (running status
-// then compresses same-channel runs) instead of being spread by interleaved offs.
-// Stop paths (midi_shadows_all_notes_off, transport stop) close notes immediately and
-// never use this queue, so nothing is left stranded when the gate-ticks stop running.
-static uint8_t s_off_note[12], s_off_ch[12], s_off_n = 0;
-static void queue_off(byte note, byte ch) {
-  if (s_off_n < 12) { s_off_note[s_off_n] = note; s_off_ch[s_off_n] = ch; ++s_off_n; }
-  else out_note_off(note, 0, ch); // overflow safety
+// Per-tick batch flush (state + collection in out_note_on/off near the top).
+// Ons before offs preserves slide legato (new-on precedes old-off) and keeps a
+// step's onsets across var1/var2/var3 as one tight cluster (running status then
+// compresses same-channel runs). Stop paths (midi_shadows_all_notes_off, transport
+// stop) run outside a batch and close notes immediately, so nothing is left
+// stranded when the gate-ticks stop running.
+void midi_tick_begin() {
+  s_tick_batch = true;
 }
-void midi_flush_note_offs() {
-  for (uint8_t i = 0; i < s_off_n; ++i) out_note_off(s_off_note[i], 0, s_off_ch[i]);
+void midi_tick_flush() {
+  s_tick_batch = false;
+  if (s_on_n == 0 && s_off_n == 0) return;
+#ifdef SUPEROS_USB_MIDI
+  // USB first: all events written back-to-back, then committed as one packet so
+  // the host timestamps every voice of this tick identically.
+  for (uint8_t i = 0; i < s_on_n; ++i)  usbMIDI.sendNoteOn(s_on_note[i], s_on_vel[i], s_on_ch[i]);
+  for (uint8_t i = 0; i < s_off_n; ++i) usbMIDI.sendNoteOff(s_off_note[i], 0, s_off_ch[i]);
+  usbMIDI.send_now();
+#endif
+  for (uint8_t i = 0; i < s_on_n; ++i)  MIDI.sendNoteOn(s_on_note[i], s_on_vel[i], s_on_ch[i]);
+  for (uint8_t i = 0; i < s_off_n; ++i) MIDI.sendNoteOff(s_off_note[i], 0, s_off_ch[i]);
+  s_on_n = 0;
   s_off_n = 0;
 }
 

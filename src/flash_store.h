@@ -15,14 +15,14 @@ typedef uint8_t (*FlashServiceFn)(uint16_t page, const uint8_t *buf);
 static const FlashServiceFn kFlashService = (FlashServiceFn)(FLASH_SERVICE_ENTRY >> 1);
 
 static constexpr uint32_t FLASH_PAGE_SIZE  = 256;
-static constexpr uint32_t FLASH_ARENA_BASE = 0x10000UL;  // first arena byte (56 KB arena; base raised from 0xE000 to make room for the USB-MIDI app)
-static constexpr uint32_t FLASH_ARENA_END  = 0x1E000UL;  // one past the last arena byte
+// Arena = 0x10000..0x1DFFF (56 KB; base raised from 0xE000 to make room for
+// the USB-MIDI app). Bank geometry lives in flash_eeprom.h.
+static constexpr uint32_t FLASH_ARENA_BASE = 0x10000UL;
 static constexpr uint16_t FLASH_ARENA_FIRST_PAGE = FLASH_ARENA_BASE / FLASH_PAGE_SIZE;        // 0x100
-static constexpr uint16_t FLASH_ARENA_LAST_PAGE  = (FLASH_ARENA_END / FLASH_PAGE_SIZE) - 1;   // 0x1DF
 
-// Status codes returned by flash_write_page (0 = ok).
+// Status codes returned by flash_write_page: 0 = ok; the service returns 1
+// when it refuses a page outside the arena.
 static constexpr uint8_t FLASH_OK            = 0;
-static constexpr uint8_t FLASH_ERR_REJECTED  = 1;     // service refused the page (out of arena)
 static constexpr uint8_t FLASH_ERR_NO_SERVICE = 0xFE; // SPM service not installed
 
 // True if the SPM service trampoline is installed at the entry address. The

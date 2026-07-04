@@ -187,7 +187,7 @@ const uint8_t status_pins[] = {
 // Debounced digital input (4-bit shift register → edges)
 // =============================================================================
 struct MatrixPin {
-  uint8_t select, led, pitch;
+  uint8_t select, led;
   InputIndex button;
 };
 
@@ -254,32 +254,32 @@ inline DialMode dial_mode_of(const InputState &s) {
 // Matrix cell table: mux select, LED pin, button index (16 cells + 4 direct LEDs)
 // =============================================================================
 const MatrixPin switched_leds[16 + 4] = {
-  // select,  LED,   pitch, Button,
-  {PH0_PIN, PG0_PIN,  1, C_KEY}, // [1] key, C
-  {PH0_PIN, PG1_PIN,  3, D_KEY}, // [2] key, D
-  {PH0_PIN, PG2_PIN,  5, E_KEY}, // [3] key, E
-  {PH0_PIN, PG3_PIN,  6, F_KEY}, // [4] key, F
+  // select,  LED,   Button,
+  {PH0_PIN, PG0_PIN, C_KEY}, // [1] key, C
+  {PH0_PIN, PG1_PIN, D_KEY}, // [2] key, D
+  {PH0_PIN, PG2_PIN, E_KEY}, // [3] key, E
+  {PH0_PIN, PG3_PIN, F_KEY}, // [4] key, F
 
-  {PH1_PIN, PG0_PIN,  8, G_KEY}, // [5] key, G
-  {PH1_PIN, PG1_PIN, 10, A_KEY}, // [6] key, A
-  {PH1_PIN, PG2_PIN, 12, B_KEY}, // [7] key, B
-  {PH1_PIN, PG3_PIN, 13, C_KEY2}, // [8] key, C2
+  {PH1_PIN, PG0_PIN, G_KEY}, // [5] key, G
+  {PH1_PIN, PG1_PIN, A_KEY}, // [6] key, A
+  {PH1_PIN, PG2_PIN, B_KEY}, // [7] key, B
+  {PH1_PIN, PG3_PIN, C_KEY2}, // [8] key, C2
 
-  {PH2_PIN, PG0_PIN,  0, DOWN_KEY}, // [9] or [DOWN]
-  {PH2_PIN, PG1_PIN,  0, UP_KEY}, // [0] or [UP]
-  {PH2_PIN, PG2_PIN,  0, ACCENT_KEY}, // [100] or [ACCENT]
-  {PH2_PIN, PG3_PIN,  0, SLIDE_KEY}, // [200] or [SLIDE]
+  {PH2_PIN, PG0_PIN, DOWN_KEY}, // [9] or [DOWN]
+  {PH2_PIN, PG1_PIN, UP_KEY}, // [0] or [UP]
+  {PH2_PIN, PG2_PIN, ACCENT_KEY}, // [100] or [ACCENT]
+  {PH2_PIN, PG3_PIN, SLIDE_KEY}, // [200] or [SLIDE]
 
-  {PH3_PIN, PG0_PIN,  2, CSHARP_KEY}, // [DEL] or C#
-  {PH3_PIN, PG1_PIN,  4, DSHARP_KEY}, // [INS] or D#
-  {PH3_PIN, PG2_PIN,  7, FSHARP_KEY}, // F#
-  {PH3_PIN, PG3_PIN,  9, GSHARP_KEY}, // G#
+  {PH3_PIN, PG0_PIN, CSHARP_KEY}, // [DEL] or C#
+  {PH3_PIN, PG1_PIN, DSHARP_KEY}, // [INS] or D#
+  {PH3_PIN, PG2_PIN, FSHARP_KEY}, // F#
+  {PH3_PIN, PG3_PIN, GSHARP_KEY}, // G#
 
   // direct LEDs that don't need a select pin
-  {0,       PC0_PIN,  0, TIME_KEY},
-  {0,       PC1_PIN, 11, ASHARP_KEY},
-  {0,       PC2_PIN,  0, PITCH_KEY},
-  {0,       PC3_PIN,  0, FUNCTION_KEY},
+  {0,       PC0_PIN, TIME_KEY},
+  {0,       PC1_PIN, ASHARP_KEY},
+  {0,       PC2_PIN, PITCH_KEY},
+  {0,       PC3_PIN, FUNCTION_KEY},
 };
 const InputIndex pitched_keys[] = {
   C_KEY, CSHARP_KEY, D_KEY, DSHARP_KEY, E_KEY, F_KEY, FSHARP_KEY,

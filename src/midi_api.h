@@ -18,9 +18,12 @@ void midi_seq_gate_tick(Engine &engine, int16_t transpose);
 /// Shadow voices (variations 2/3) MIDI: call EVERY clock tick while running, after
 /// Engine::AdvanceShadows() ran at the 16th boundary. Gate-follows like the main voice.
 void midi_shadows_gate_tick(Engine &engine, int16_t transpose);
-/// Flush note-offs queued by the gate-ticks this tick. Call once per clock tick AFTER
-/// midi_seq_gate_tick + midi_shadows_gate_tick so all voices' note-ONs cluster first.
-void midi_flush_note_offs();
+/// Start collecting this clock tick's note on/offs. Call BEFORE the gate-ticks.
+void midi_tick_begin();
+/// Send the collected tick as one burst: USB first (single packet via send_now, so
+/// all voices land on the same host timestamp), then DIN; note-ONs before note-OFFs.
+/// Call once per clock tick AFTER midi_seq_gate_tick + midi_shadows_gate_tick.
+void midi_tick_flush();
 /// Send Note Off for any open shadow-voice notes (transport stop / pattern switch).
 void midi_shadows_all_notes_off(Engine &engine);
 /// Set MIDI output channels (1-16) for multitimbral variations 2 and 3.
@@ -43,6 +46,14 @@ bool midi_live_slide();
 void midi_audition_note_on(uint8_t note, uint8_t vel);
 /// Send Note Off for the currently-open audition note (TAP_NEXT / BACK_KEY falling).
 void midi_audition_note_off();
+/// Keyboard-play (live keyboard mode): open a per-key Note On on the edit
+/// variation's channel. Held keys keep their notes open so the MIDI output
+/// overlaps (legato/slide on mono synths, true note lengths in a DAW).
+void midi_kb_note_on(uint8_t note, uint8_t vel);
+/// Close the keyboard-play note opened for `note` (key release).
+void midi_kb_note_off(uint8_t note);
+/// Close every open keyboard-play note (keyboard mode exit).
+void midi_kb_all_notes_off();
 /// Audition a full variation-3 poly chord during edit: Note On per voice on the
 /// var3 channel (MIDI only, no 303 CV). Closes any open audition chord first.
 void midi_audition_chord_on(const uint8_t *voices, bool accent, int16_t transpose);
@@ -95,10 +106,6 @@ void midi_send_poly_step(uint8_t pat, uint8_t step);
 /// so the web can resync even if its hwGroup state is stale.
 /// Format: F0 7D 1E <pat:0-15> <group:0-3> F7
 void midi_send_active_pattern(uint8_t pat);
-
-/// Broadcast a single step-lock toggle to host (SysEx 0x19).
-/// Format: F0 7D 19 <pat:0-15> <step:0-63> <locked:0|1> F7
-void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
 
 /// Per-pattern scale update (SysEx 0x2A). Bidirectional: device broadcasts after
 /// a hardware scale edit; host sends the same format to set a pattern's scale.

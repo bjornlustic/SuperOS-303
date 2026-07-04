@@ -83,7 +83,6 @@ struct PolyVoice {
 
   // ---- chord stream size ----
   uint8_t get_chord_count() const { return chord_count; }
-  void set_chord_count(uint8_t n) { chord_count = (n <= POLY_CHORDS) ? n : POLY_CHORDS; }
   // Grow the chord stream so every NOTE event has a chord; new chords default to a
   // single centre-C note (audible) with no accent/slide. Never shrinks (a removed
   // NOTE keeps its chord queued so re-adding replays it -- matches the mono streams).
@@ -167,24 +166,6 @@ struct PolyVoice {
       if (v[k] == packed) { v[k] = POLY_EMPTY; return true; }
     return false;
   }
-  // Move one voice's octave by d (-1/+1), keeping its semitone. Blocked (false) if
-  // the new octave is out of range [0..3] or the destination pitch already exists
-  // in this chord (no two voices on the same pitch).
-  bool move_note_octave(uint8_t i, uint8_t packed, int8_t d) {
-    packed &= 0x3F;
-    uint8_t *v = chord(i);
-    for (uint8_t k = 0; k < POLY_VOICES; ++k) {
-      if (v[k] != packed) continue;
-      const int oct = int((packed >> 4) & 0x03) + d;
-      if (oct < 0 || oct > 3) return false;
-      const uint8_t dst = uint8_t((packed & 0x0F) | (uint8_t(oct) << 4));
-      if (has_note(i, dst)) return false;
-      v[k] = dst;
-      return true;
-    }
-    return false;
-  }
-
   // ---- flash blob (POLY_BLOB_SIZE bytes, fits one record) ----
   void serialize(uint8_t *b) const {
     for (uint8_t i = 0; i < POLY_CHORDS; ++i) {

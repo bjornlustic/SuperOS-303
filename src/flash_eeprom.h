@@ -17,8 +17,7 @@
 // USB-MIDI app below it. Split into two equal banks; page 0 of each bank is its
 // header, the rest hold one record each.
 static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x100;
-static constexpr uint16_t FE_BANK_PAGES       = 112;          // pages per bank
-static constexpr uint16_t FE_NUM_BANKS        = 2;
+static constexpr uint16_t FE_BANK_PAGES       = 112;          // pages per bank (2 banks)
 static constexpr uint16_t FE_RECORD_PAGES     = FE_BANK_PAGES - 1; // 127 usable
 static constexpr uint16_t FE_PAGE             = 256;
 
@@ -275,4 +274,17 @@ public:
   uint8_t active_bank() const { return active_bank_; }
   uint32_t active_gen() const { return active_gen_; }
   uint8_t append_page() const { return append_; }
+
+  // Free record pages left in the active bank (0 = the next write must GC).
+  uint8_t free_pages() const {
+    return (append_ > FE_RECORD_PAGES) ? 0 : (uint8_t)(FE_RECORD_PAGES + 1 - append_);
+  }
+  // Run GC now if fewer than min_free record pages remain. GC reprograms every
+  // live record page in one call (a long CPU stall on AVR), so a real-time
+  // caller can pay that cost at an idle moment of its choosing instead of
+  // inside a later write(). Returns false only if GC itself fails (more live
+  // blocks than one bank holds); nothing is lost in that case.
+  bool maintain(uint8_t min_free) {
+    return (free_pages() >= min_free) ? true : gc();
+  }
 };
