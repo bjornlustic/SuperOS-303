@@ -176,6 +176,10 @@ void midi_byte(uint8_t b) {
 }
 
 int main(void) {
+  // After a watchdog reset, WDRF forces WDE on and wdt_disable() alone cannot
+  // clear it: the chip reset-loops every 15 ms until power-off. Clear MCUSR
+  // first. (The combined firmware's G# switch reboots via the watchdog.)
+  MCUSR = 0;
   wdt_disable();
 
   // -nostartfiles: .bss is never zeroed, so parser state is set explicitly

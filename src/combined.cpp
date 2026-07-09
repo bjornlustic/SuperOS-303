@@ -21,6 +21,11 @@ void emu_setup();     void emu_loop();
 static uint8_t g_fw = FW_SUPEROS;
 
 void setup() {
+  // Defense in depth against the WDT reset loop (see bootload.c main): if an
+  // older bootloader is on the chip, clear WDRF here before the 15 ms window
+  // ends. Harmless on a normal boot.
+  MCUSR = 0;
+  wdt_disable();
   const uint8_t sel = eeprom_read_byte(EE_FW_SELECT);
   g_fw = (sel == FW_D650) ? FW_D650 : FW_SUPEROS;
   if (g_fw == FW_D650) emu_setup(); else superos_setup();

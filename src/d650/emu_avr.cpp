@@ -669,6 +669,12 @@ static void usb_sysex_msg(const uint8_t *data, unsigned int sz) {
   case 0x4A:
     enter_bootloader();          // does not return
     break;
+#ifdef SUPEROS_COMBINED
+  case 0x4D:   // switch firmware to SuperOS (reboots; no reply)
+    while (s_save_pending) patt_save_step();
+    combined_switch_firmware(FW_SUPEROS);   // does not return
+    break;
+#endif
   case 0x47:
     if (n >= 3 + PATT_WIRE_LEN && p[2] < PATT_BLK_N) {
       const uint8_t blk = p[2];
@@ -792,9 +798,10 @@ static void process_menu() {
   }
 
 #ifdef SUPEROS_COMBINED
-  // G# = boot the SuperOS firmware. Dim G# marks the option; flush the
-  // uPD444 store to EEPROM first (bounded: changed bytes only), then reboot.
-  Leds::SetDim(GSHARP_KEY_LED, true);
+  // G# = boot the SuperOS firmware. Blinking G# = the D650C is the running
+  // firmware (SuperOS's menu shows it solid). On press: flush the uPD444
+  // store to EEPROM first (bounded: changed bytes only), then reboot.
+  Leds::Set(GSHARP_KEY_LED, (millis() >> 8) & 1);
   if (g_inputs[GSHARP_KEY].rising()) {
     while (s_save_pending) patt_save_step();
     combined_switch_firmware(FW_SUPEROS);   // does not return

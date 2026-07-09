@@ -31,6 +31,11 @@ PersistentSettings GlobalSettings;
 // Globals — timing, debounced inputs, engine, UI timers
 // =============================================================================
 static uint8_t clk_count = 0;
+// TEMP clock diagnostics (SysEx 0x2E), see loop(); read by midi.cpp.
+uint8_t  g_dbg_clk_level = 0;
+uint16_t g_dbg_clk_edges = 0;
+uint8_t  g_dbg_clk_count = 0;
+uint8_t  g_dbg_clk_run   = 0;
 static uint8_t transpose = 12; // global performance transpose, 0..47 (12 = no transpose)
 // Effective transpose = global performance + per-pattern transpose (-24..+24) + track
 // step. Signed so per-pattern down-transpose can pull the note below the baseline.
@@ -406,9 +411,10 @@ static void process_config_menu() {
   }
 
 #ifdef SUPEROS_COMBINED
-  // G# = boot the D650C firmware (original mask-ROM 303). Dim G# marks the
-  // option; flush pending saves (same set as transport stop), then reboot.
-  Leds::SetDim(GSHARP_KEY_LED, true);
+  // G# = boot the D650C firmware (original mask-ROM 303). Solid G# = SuperOS
+  // is the running firmware (the d650c menu blinks it). On press: flush
+  // pending saves (same set as transport stop), then reboot.
+  Leds::Set(GSHARP_KEY_LED, true);
   if (inputs[GSHARP_KEY].rising()) {
     if (engine.stale) engine.Save();
     if (engine.track_stale) engine.SaveTrack();
@@ -2039,6 +2045,13 @@ void loop() {
     input_scan_timer = 0;
     Leds::PauseRefresh();
     PollInputs(inputs);
+    // Phase-lock the LED refresh to the scan (same fix as the d650c port's
+    // third audit): the scan blanks the matrix, and without resetting the
+    // Timer3 phase the dark tail's length beats against the scan cadence
+    // (visible shimmer). Re-light the matrix NOW and restart the period.
+    TCNT3 = 0;
+    TIFR3 = (1 << OCF3A);
+    Leds::SendISR();
     Leds::ResumeRefresh();
   } else {
     for (uint8_t i = 0; i < INPUT_COUNT; ++i) inputs[i].push(inputs[i].read());
@@ -2153,6 +2166,13 @@ void loop() {
     clock_ticks = inputs[CLOCK].rising() ? 1 : 0;
   }
   const bool clocked = (clock_ticks > 0);
+
+  // TEMP clock diagnostics (SysEx 0x2E): raw CLOCK level, rising-edge count,
+  // clk_count, clk_run. Remove after the DIN-sync LED investigation.
+  g_dbg_clk_level = inputs[CLOCK].read();
+  if (inputs[CLOCK].rising()) ++g_dbg_clk_edges;
+  g_dbg_clk_count = clk_count;
+  g_dbg_clk_run   = clk_run;
 
   // Save pattern data on transport stop or dial-mode change.
   // Dial-mode change covers PatternWrite -> any other dial position (replaces

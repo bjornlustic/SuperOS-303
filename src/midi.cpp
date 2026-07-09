@@ -29,6 +29,9 @@
 #include "engine.h"
 #include "pins.h"
 #include "midi_api.h"
+#ifdef SUPEROS_COMBINED
+#include "combined.h"
+#endif
 
 struct SuperOsMidiSettings {
   // Running status compresses back-to-back same-channel messages (e.g. the variation-3
@@ -609,6 +612,30 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     }
     break;
   }
+#ifdef SUPEROS_COMBINED
+  case 0x2F: { // switch firmware to the D650C emulator (reboots; no reply)
+    if (g_eng) {
+      if (g_eng->stale) g_eng->Save();
+      if (g_eng->track_stale) g_eng->SaveTrack();
+      midi_flush_pending_saves();
+      midi_flush_pending_pattern_saves(*g_eng);
+    }
+    combined_switch_firmware(FW_D650);   // does not return
+    break;
+  }
+#endif
+
+  case 0x2E: { // TEMP clock diag: level, edges(14b), clk_count, clk_run
+    extern uint8_t g_dbg_clk_level, g_dbg_clk_count, g_dbg_clk_run;
+    extern uint16_t g_dbg_clk_edges;
+    const uint8_t inner[7] = {0x7D, 0x2E, g_dbg_clk_level,
+                              uint8_t(g_dbg_clk_edges & 0x7F),
+                              uint8_t((g_dbg_clk_edges >> 7) & 0x7F),
+                              g_dbg_clk_count, g_dbg_clk_run};
+    tx_push_message(inner, 7);
+    break;
+  }
+
   case 0x20: { // request config
     const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                               (GlobalSettings.midi_thru          ? 2 : 0));
