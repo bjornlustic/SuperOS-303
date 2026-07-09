@@ -625,17 +625,6 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
   }
 #endif
 
-  case 0x2E: { // TEMP clock diag: level, edges(14b), clk_count, clk_run
-    extern uint8_t g_dbg_clk_level, g_dbg_clk_count, g_dbg_clk_run;
-    extern uint16_t g_dbg_clk_edges;
-    const uint8_t inner[7] = {0x7D, 0x2E, g_dbg_clk_level,
-                              uint8_t(g_dbg_clk_edges & 0x7F),
-                              uint8_t((g_dbg_clk_edges >> 7) & 0x7F),
-                              g_dbg_clk_count, g_dbg_clk_run};
-    tx_push_message(inner, 7);
-    break;
-  }
-
   case 0x20: { // request config
     const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
                                               (GlobalSettings.midi_thru          ? 2 : 0));

@@ -31,11 +31,6 @@ PersistentSettings GlobalSettings;
 // Globals — timing, debounced inputs, engine, UI timers
 // =============================================================================
 static uint8_t clk_count = 0;
-// TEMP clock diagnostics (SysEx 0x2E), see loop(); read by midi.cpp.
-uint8_t  g_dbg_clk_level = 0;
-uint16_t g_dbg_clk_edges = 0;
-uint8_t  g_dbg_clk_count = 0;
-uint8_t  g_dbg_clk_run   = 0;
 static uint8_t transpose = 12; // global performance transpose, 0..47 (12 = no transpose)
 // Effective transpose = global performance + per-pattern transpose (-24..+24) + track
 // step. Signed so per-pattern down-transpose can pull the note below the baseline.
@@ -2167,13 +2162,6 @@ void loop() {
   }
   const bool clocked = (clock_ticks > 0);
 
-  // TEMP clock diagnostics (SysEx 0x2E): raw CLOCK level, rising-edge count,
-  // clk_count, clk_run. Remove after the DIN-sync LED investigation.
-  g_dbg_clk_level = inputs[CLOCK].read();
-  if (inputs[CLOCK].rising()) ++g_dbg_clk_edges;
-  g_dbg_clk_count = clk_count;
-  g_dbg_clk_run   = clk_run;
-
   // Save pattern data on transport stop or dial-mode change.
   // Dial-mode change covers PatternWrite -> any other dial position (replaces
   // the prior WRITE_MODE.falling() trigger and additionally handles the
@@ -2689,6 +2677,28 @@ void loop() {
       midi_seq_gate_tick(engine, total_transpose);
       midi_shadows_gate_tick(engine, total_transpose);
       midi_tick_flush(); // all variations' note-ONs first, then the queued offs
+    }
+  }
+
+  // Idle tempo blink (matches the d650c's stopped-transport fallback): DIN and
+  // MIDI masters gate their clock while stopped, which froze clk_count and the
+  // pattern LED. When the transport is stopped and no clock tick has arrived
+  // for a while, free-run the blink counter at 120 BPM (24 ppqn = 20.833 ms)
+  // so the selected pattern LED keeps flashing like a real 303. Blink only:
+  // sequencing still runs exclusively off real ticks.
+  {
+    static uint32_t s_last_real_tick_ms = 0;
+    static uint32_t s_idle_blink_us = 0;
+    if (clocked) {
+      s_last_real_tick_ms = millis();
+    } else if (!clk_run && (uint32_t)(millis() - s_last_real_tick_ms) > 400) {
+      const uint32_t now_us = micros();
+      if ((int32_t)(now_us - s_idle_blink_us) >= 20833) {
+        // resync after a long gap instead of bursting the backlog
+        if ((uint32_t)(now_us - s_idle_blink_us) > 41666u) s_idle_blink_us = now_us;
+        else s_idle_blink_us += 20833;
+        ++clk_count %= 24;
+      }
     }
   }
 
