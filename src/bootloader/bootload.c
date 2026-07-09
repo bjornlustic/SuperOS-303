@@ -179,6 +179,9 @@ int main(void) {
   // After a watchdog reset, WDRF forces WDE on and wdt_disable() alone cannot
   // clear it: the chip reset-loops every 15 ms until power-off. Clear MCUSR
   // first. (The combined firmware's G# switch reboots via the watchdog.)
+  // Stash the reset cause in GPIOR1 first so the app can tell a watchdog
+  // recovery from a normal power-on (MCUSR must be cleared here).
+  GPIOR1 = MCUSR;
   MCUSR = 0;
   wdt_disable();
 
