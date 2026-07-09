@@ -788,8 +788,8 @@ void ProcessEditVarPicker(bool clk_run) {
   Leds::Set(E_KEY_LED, ev == 2 && blink); Leds::SetDim(E_KEY_LED, ev != 2);
 
   // Variation 3 only: SLIDE_KEY toggles poly/mono for the active slot (stopped
-  // only -- it does a settings write + shadow reload). SLIDE_KEY_LED bright =
-  // poly, dim = mono (toggle available).
+  // only -- it does a settings write + shadow reload). SLIDE_KEY_LED lit =
+  // poly, off = mono.
   const uint8_t slot = engine.abs_slot(pat);
   if (ev == 2 && !clk_run && inputs[SLIDE_KEY].rising()) {
     engine.persist_shadows();                                       // flush pending var2/3 edits
@@ -799,7 +799,6 @@ void ProcessEditVarPicker(bool clk_run) {
     midi_send_poly_flag(pat, GlobalSettings.var3_is_poly(slot));     // tell the web editor
   }
   Leds::Set(SLIDE_KEY_LED, ev == 2 && GlobalSettings.var3_is_poly(slot));
-  Leds::SetDim(SLIDE_KEY_LED, ev == 2 && !GlobalSettings.var3_is_poly(slot));
 }
 
 // ---------------------------------------------------------------------------
