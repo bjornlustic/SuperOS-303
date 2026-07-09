@@ -1105,10 +1105,11 @@ void midi_send_active_pattern(uint8_t pat) {
 // --- Metronome MIDI notes --------------------------------------------------------
 static uint8_t s_metro_note_on = 0;
 
-void midi_metronome_tick(bool first_beat) {
-  // E5 = MIDI 76 (accented downbeat), E6 = MIDI 88 (all other beats)
-  const uint8_t note = first_beat ? 76 : 88;
-  const uint8_t vel  = first_beat ? 127 : 80;
+void midi_metronome_tick() {
+  // Original D650C time-write metronome (measured on the emulator): low C
+  // (note 48), uniform velocity 80, no accent. Note-off comes one step later
+  // via midi_metronome_stop() at the in-between step boundary.
+  const uint8_t note = 48, vel = 80;
   if (s_metro_note_on) {
     out_note_off(s_metro_note_on, 0, static_cast<byte>(out_ch()));
   }

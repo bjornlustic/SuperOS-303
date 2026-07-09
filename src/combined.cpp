@@ -4,6 +4,9 @@
 #include <Arduino.h>
 #include <avr/eeprom.h>
 #include <avr/wdt.h>
+#define DRIVERS_NO_ISR   // main.cpp owns the Timer3 vector
+#include "pins.h"
+#include "drivers.h"
 #include "combined.h"
 #include "engine.h"
 extern "C" {
@@ -37,6 +40,38 @@ void loop() {
 
 void combined_switch_firmware(uint8_t fw) {
   eeprom_update_byte(EE_FW_SELECT, fw);
+  // Input lockout before the reboot: a key still held through the reset lands
+  // in the bootloader's stay-resident window (the TAP line is sampled 40 ms
+  // after reset, and the diode-less matrix can ghost other held keys onto it)
+  // and the unit sits in the bootloader looking crashed until power-off.
+  // Wait until every momentary key (incl. the G#/switch key itself) has read
+  // released for 250 ms straight. Dial lines are levels and are ignored.
+  // Hard 4 s timeout so a stuck line can't block the switch forever.
+  {
+    static const uint8_t kMomentary[] = {
+      C_KEY, D_KEY, E_KEY, F_KEY, G_KEY, A_KEY, B_KEY, C_KEY2,
+      DOWN_KEY, UP_KEY, ACCENT_KEY, SLIDE_KEY,
+      FSHARP_KEY, GSHARP_KEY, ASHARP_KEY, BACK_KEY,
+      CSHARP_KEY, DSHARP_KEY,
+      CLEAR_KEY, FUNCTION_KEY, PITCH_KEY, TIME_KEY,
+      RUN, TAP_NEXT,
+    };
+    PinState keys[INPUT_COUNT];
+    const uint32_t t0 = millis();
+    uint32_t idle_since = millis();
+    while (millis() - t0 < 4000) {
+      Leds::PauseRefresh();
+      PollInputs(keys);
+      Leds::ResumeRefresh();
+      bool any = false;
+      for (uint8_t i = 0; i < sizeof(kMomentary); ++i)
+        any |= keys[kMomentary[i]].read();
+      const uint32_t now = millis();
+      if (any) idle_since = now;
+      else if (now - idle_since >= 250) break;
+      delay(2);
+    }
+  }
   // Hardware reset via watchdog: full peripheral reset, then the bootloader
   // (which wdt_disable()s on entry) falls through to the app, and setup()
   // reads the new select byte.

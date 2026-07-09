@@ -245,15 +245,9 @@ static void dg_watch_scan() {
 #endif
 
 static void hook_cv(void *, uint8_t pitch, uint8_t gate, uint8_t accent, uint8_t slide) {
-#ifdef SUPEROS_COMBINED
-  // Measured on hardware (SysEx key injection, 0x41 H.pitch): the ROM's DAC
-  // codes sit exactly one below SuperOS's for the same key (C = 23 vs 24,
-  // intervals identical). One tuning trim must serve both firmwares and the
-  // instrument is tuned to SuperOS, so shift the d650c voice up one code.
-  // MIDI out sees the same shifted value (pitch_base 24 completes the
-  // SuperOS parity: note = 24 + code, C key = 48/C3 both modes).
-  if (pitch < 63) pitch++;
-#endif
+  // No pitch shim: the mask ROM's DAC codes ARE the factory standard (Service
+  // Notes CV adjustment: low C key = 1.000 V = code 23; measured identical
+  // here). SuperOS is aligned to the same codes via its clamp_cv.
 #ifdef EMU_USB_DIAG
   if (dg_dac_off) { dg_cv_commits++; return; }
 #endif

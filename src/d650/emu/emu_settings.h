@@ -34,7 +34,7 @@ static inline void emu_settings_defaults(EmuSettings *s) {
   s->midi_thru      = 0;
   s->led_brightness = 8;
 #ifdef SUPEROS_COMBINED
-  s->pitch_base     = 24;      // SuperOS MIDI parity: note = base + DAC code
+  s->pitch_base     = 25;      // SuperOS MIDI parity: key C (code 23) = note 48
 #else
   s->pitch_base     = 36;      // C2
 #endif

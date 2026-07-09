@@ -37,7 +37,14 @@ static uint8_t transpose = 12; // global performance transpose, 0..47 (12 = no t
 static int16_t total_transpose = 12;
 // Clamp a transposed 6-bit CV value to the DAC range so a down-transpose floors at 0
 // instead of wrapping to the top of the range.
-static inline uint8_t clamp_cv(int v) { return uint8_t(v < 0 ? 0 : (v > 63 ? 63 : v)); }
+//
+// Factory pitch standard (TB-303 Service Notes p.6, CV adjustment): the
+// untransposed low C key must emit 1.000 V at the CV jack = DAC code 23
+// (transfer V = (code-11)/12), which is what the original D650C mask ROM
+// emits (measured: key C = 23). SuperOS's linear+transpose baseline lands one
+// code above that, so every DAC value is shifted down one here. MIDI mapping
+// is untouched (key C = note 48 both firmwares, both directions).
+static inline uint8_t clamp_cv(int v) { --v; return uint8_t(v < 0 ? 0 : (v > 63 ? 63 : v)); }
 
 #ifdef SUPEROS_COMBINED
 static Engine &engine = *(Engine *)g_fw_arena;  // overlays the d650 machine;
@@ -1953,8 +1960,9 @@ static void OutputDAC(bool clk_run, bool write_mode, bool track_mode, bool edit_
                  (s_tap_pitch_preview_retrig == 0));
     if (s_tap_pitch_preview_retrig) --s_tap_pitch_preview_retrig;
   } else if (clk_run) {
-    // Expire short metronome gate pulse after 25 ms
-    if (s_metro_gate_pulse && s_metro_gate_timer > 25) s_metro_gate_pulse = false;
+    // Metronome gate is cleared at the next step boundary (one-step click,
+    // like the original); this is only a stuck-gate guard if the clock dies.
+    if (s_metro_gate_pulse && s_metro_gate_timer > 500) s_metro_gate_pulse = false;
     // Metronome click: override pitch with fixed CV (no transpose); accent on downbeat
     const uint8_t pitch_cv = s_metro_gate_pulse
         ? s_metro_pitch_cv
@@ -2461,6 +2469,7 @@ void loop() {
   // Metronome: auto-exit if transport stopped or write mode released
   if (s_metronome_active && (!clk_run || !write_mode)) {
     s_metronome_active = false;
+    s_metro_gate_pulse = false;
     midi_metronome_stop();
   }
   // Per-frame: latch TAP state for metronome recording at next beat boundary
@@ -2653,15 +2662,18 @@ void loop() {
             }
             midi_send_step_update(engine.get_patsel(), write_step, pb, tval);
           }
-          // Hardware gate pulse so the 303 clicks on every beat
-          s_metro_gate_pulse = true;
-          s_metro_gate_timer = 0;
-          // Downbeat every 8 steps: accent + E3 (DAC 44); offbeats: E4 (DAC 56).
-          // Fixed hardware values — not affected by performance transpose.
-          const bool is_beat_zero = (engine.get_time_pos() % 8 == 0);
-          s_metro_is_downbeat = is_beat_zero;
-          s_metro_pitch_cv = is_beat_zero ? 44 : 56;  // E3/E4 in standard 303 DAC range
-          midi_metronome_tick(is_beat_zero);
+          // Original D650C time-write metronome (measured over MIDI on the
+          // emulator): low C (DAC code 23) every 8th note (every 2nd step),
+          // uniform velocity, no accent, gate held for one full step.
+          if ((engine.get_time_pos() % 2) == 0) {
+            s_metro_gate_pulse = true;
+            s_metro_gate_timer = 0;
+            s_metro_pitch_cv = 23;   // untransposed low C (factory code)
+            midi_metronome_tick();
+          } else {
+            s_metro_gate_pulse = false;   // gate off on the in-between step
+            midi_metronome_stop();
+          }
           // Exit at pattern wrap (step 0) if any TAP activity occurred this pass
           if (engine.get_time_pos() == 0 && s_metro_has_activity) {
             s_metronome_active = false;
