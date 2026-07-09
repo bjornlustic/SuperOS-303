@@ -1964,9 +1964,12 @@ static void OutputDAC(bool clk_run, bool write_mode, bool track_mode, bool edit_
                  (s_tap_pitch_preview_retrig == 0));
     if (s_tap_pitch_preview_retrig) --s_tap_pitch_preview_retrig;
   } else if (clk_run) {
-    // Metronome gate is cleared at the next step boundary (one-step click,
-    // like the original); this is only a stuck-gate guard if the clock dies.
-    if (s_metro_gate_pulse && s_metro_gate_timer > 500) s_metro_gate_pulse = false;
+    // Short click like the d650c: expire the metronome gate after 25 ms and
+    // close the MIDI note with it.
+    if (s_metro_gate_pulse && s_metro_gate_timer > 25) {
+      s_metro_gate_pulse = false;
+      midi_metronome_stop();
+    }
     // Metronome click: override pitch with fixed CV (no transpose); accent on downbeat
     const uint8_t pitch_cv = s_metro_gate_pulse
         ? s_metro_pitch_cv
@@ -2669,16 +2672,14 @@ void loop() {
           // Original 303 time-write metronome, measured on the d650c: bar
           // start rings ~327 Hz (E4) and every other 8th ~656 Hz (E5). On
           // the factory trim (code 23 = C2) that is DAC 51 and 63 -- the
-          // high click is the DAC's top code. Gate holds one step.
+          // high click is the DAC's top code. Short 25 ms click (expired in
+          // the DAC section below, matching the d650c's brief gate).
           if ((engine.get_time_pos() % 2) == 0) {
             s_metro_gate_pulse = true;
             s_metro_gate_timer = 0;
             const bool bar_start = (engine.get_time_pos() == 0);
             s_metro_pitch_cv = bar_start ? 51 : 63;
             midi_metronome_tick(bar_start);
-          } else {
-            s_metro_gate_pulse = false;   // gate off on the in-between step
-            midi_metronome_stop();
           }
           // Exit at pattern wrap (step 0) if any TAP activity occurred this pass
           if (engine.get_time_pos() == 0 && s_metro_has_activity) {
