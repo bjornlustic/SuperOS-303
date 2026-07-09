@@ -87,8 +87,8 @@ static bool s_metro_tap_released_since_last_beat = false; // TAP fell during thi
 static bool s_metro_prev_note                   = false;
 static bool s_metro_has_activity                = false;  // any TAP seen this pass; exit at wrap if true
 static bool s_metro_gate_pulse                  = false;
-static bool s_metro_is_downbeat                 = false;  // downbeat accent flag (every 8 steps)
-static uint8_t s_metro_pitch_cv                 = 0;      // final DAC pitch for metronome click
+static uint8_t s_metro_pitch_cv                 = 63;     // final DAC pitch for metronome click
+static uint8_t s_metro_gate_ticks               = 0;      // click length in clock ticks (tempo-scaled)
 static elapsedMillis s_metro_gate_timer;
 
 // Direction mode (FN + TIME_KEY)
@@ -1964,19 +1964,12 @@ static void OutputDAC(bool clk_run, bool write_mode, bool track_mode, bool edit_
                  (s_tap_pitch_preview_retrig == 0));
     if (s_tap_pitch_preview_retrig) --s_tap_pitch_preview_retrig;
   } else if (clk_run) {
-    // Short click like the d650c: expire the metronome gate after 25 ms and
-    // close the MIDI note with it.
-    if (s_metro_gate_pulse && s_metro_gate_timer > 25) {
+    // Stuck-gate guard only: the click normally ends via the clock-tick
+    // counter in the tick loop; this fires if the external clock dies mid-click.
+    if (s_metro_gate_pulse && s_metro_gate_timer > 500) {
       s_metro_gate_pulse = false;
       midi_metronome_stop();
     }
-    // Metronome click: override pitch with fixed CV (no transpose); accent on downbeat
-    const uint8_t pitch_cv = s_metro_gate_pulse
-        ? s_metro_pitch_cv
-        : clamp_cv(int(engine.get_pitch_scaled()) + total_transpose);
-    DAC::SetPitch(pitch_cv);
-    DAC::SetSlide(engine.get_slide_dac() || force_slide_live);
-    DAC::SetAccent(engine.get_accent() || force_accent_live || (s_metro_gate_pulse && s_metro_is_downbeat));
     // Force-slide-live: gate stays HIGH across all non-rest steps so the
     // envelope doesn't retrigger between notes. Combined with the slide pin
     // held high, this makes every transition a continuous portamento -- the
@@ -1985,6 +1978,20 @@ static void OutputDAC(bool clk_run, bool write_mode, bool track_mode, bool edit_
     const bool gate_running = force_slide_live
         ? !engine.resting
         : engine.get_gate();
+    // Metronome click: override pitch with the fixed click CV, and KEEP it
+    // there through the envelope's decay tail after the gate drops (until
+    // the sequencer itself gates a note). Snapping the pitch latch back to
+    // the pattern's low resting pitch mid-decay played the tail low: an
+    // audible low-end thump the d650c doesn't have (its ROM leaves the
+    // pitch latch at the click pitch until the next event).
+    uint8_t pitch_cv;
+    if (s_metro_gate_pulse || (s_metronome_active && !gate_running))
+      pitch_cv = s_metro_pitch_cv;
+    else
+      pitch_cv = clamp_cv(int(engine.get_pitch_scaled()) + total_transpose);
+    DAC::SetPitch(pitch_cv);
+    DAC::SetSlide(engine.get_slide_dac() || force_slide_live);
+    DAC::SetAccent(engine.get_accent() || force_accent_live);
     DAC::SetGate(gate_running || s_metro_gate_pulse);
   } else {
     bool gate = midi_live_gate();
@@ -2617,6 +2624,13 @@ void loop() {
   for (uint8_t ct = 0; ct < clock_ticks; ++ct) {
     ++clk_count %= 24;
 
+    // Metronome click length counts CLOCK TICKS (2 = shorter than the 3-tick
+    // step gate) so it scales with tempo like the d650c's.
+    if (s_metro_gate_ticks && --s_metro_gate_ticks == 0) {
+      s_metro_gate_pulse = false;
+      midi_metronome_stop();
+    }
+
     if (clk_run) {
       const bool step_boundary = engine.Clock();
       if (step_boundary) {
@@ -2676,6 +2690,7 @@ void loop() {
           // the DAC section below, matching the d650c's brief gate).
           if ((engine.get_time_pos() % 2) == 0) {
             s_metro_gate_pulse = true;
+            s_metro_gate_ticks = 2;
             s_metro_gate_timer = 0;
             const bool bar_start = (engine.get_time_pos() == 0);
             s_metro_pitch_cv = bar_start ? 51 : 63;
