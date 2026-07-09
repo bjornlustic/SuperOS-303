@@ -26,6 +26,7 @@
 #include <Arduino.h>
 #include <MIDI.h>
 #include <string.h>
+#include <util/delay.h>
 #include "engine.h"
 #include "pins.h"
 #include "midi_api.h"
@@ -612,6 +613,27 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     }
     break;
   }
+  case 0x4A: { // reboot into the SysEx bootloader (same command as the d650c
+    // side): flush pending saves, park BOOT_MAGIC in GPIOR0 so the bootloader
+    // stays resident (bootload.c), detach USB first for a clean re-enumerate.
+    if (g_eng) {
+      if (g_eng->stale) g_eng->Save();
+      if (g_eng->track_stale) g_eng->SaveTrack();
+      midi_flush_pending_saves();
+      midi_flush_pending_pattern_saves(*g_eng);
+    }
+    cli();
+#ifdef SUPEROS_USB_MIDI
+    UDCON |= (1 << DETACH);
+    _delay_ms(30);                 // host must register the drop first
+    USBCON = 0;
+    PLLCSR = 0;
+#endif
+    GPIOR0 = 0xB7;                 // BOOT_MAGIC, keep in sync with bootload.c
+    asm volatile("jmp 0x1F000");   // boot section (BOOTRST, BOOTSZ=01)
+    break;
+  }
+
 #ifdef SUPEROS_COMBINED
   case 0x2F: { // switch firmware to the D650C emulator (reboots; no reply)
     if (g_eng) {
