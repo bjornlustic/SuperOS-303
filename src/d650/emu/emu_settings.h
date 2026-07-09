@@ -33,7 +33,11 @@ static inline void emu_settings_defaults(EmuSettings *s) {
   s->midi_out       = 1;
   s->midi_thru      = 0;
   s->led_brightness = 8;
+#ifdef SUPEROS_COMBINED
+  s->pitch_base     = 24;      // SuperOS MIDI parity: note = base + DAC code
+#else
   s->pitch_base     = 36;      // C2
+#endif
   s->internal_bpm   = 120;
 }
 

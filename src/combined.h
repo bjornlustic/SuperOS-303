@@ -22,7 +22,9 @@
 
 static constexpr uint8_t FW_SUPEROS = 0;   // also 0xFF (virgin EEPROM)
 static constexpr uint8_t FW_D650    = 1;
-static constexpr uint8_t EE_EMU_MAGIC_VAL = 0x65;
+// Bump when d650 settings defaults/semantics change (0x66: pitch_base 24 for
+// SuperOS MIDI parity). Mismatch re-defaults settings AND re-seeds the store.
+static constexpr uint8_t EE_EMU_MAGIC_VAL = 0x66;
 
 // Select the other firmware and reboot through the bootloader's app entry.
 // Defined in combined.cpp; callable from either firmware's config menu.
