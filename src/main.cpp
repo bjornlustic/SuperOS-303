@@ -2666,16 +2666,15 @@ void loop() {
             }
             midi_send_step_update(engine.get_patsel(), write_step, pb, tval);
           }
-          // Original 303 time-write metronome (OM p.36/37): clicks at 8th
-          // note intervals; "the lower sound of the metronome is the first
-          // step of the pattern", every other click rings higher. Voiced one
-          // octave above the keyboard's C pair (35/47) per user preference.
-          // Gate holds one step.
+          // Original 303 time-write metronome, measured on the d650c: bar
+          // start rings ~327 Hz (E4) and every other 8th ~656 Hz (E5). On
+          // the factory trim (code 23 = C2) that is DAC 51 and 63 -- the
+          // high click is the DAC's top code. Gate holds one step.
           if ((engine.get_time_pos() % 2) == 0) {
             s_metro_gate_pulse = true;
             s_metro_gate_timer = 0;
             const bool bar_start = (engine.get_time_pos() == 0);
-            s_metro_pitch_cv = bar_start ? 35 : 47;
+            s_metro_pitch_cv = bar_start ? 51 : 63;
             midi_metronome_tick(bar_start);
           } else {
             s_metro_gate_pulse = false;   // gate off on the in-between step
