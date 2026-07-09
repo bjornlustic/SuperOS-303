@@ -113,8 +113,9 @@ void midi_send_active_pattern(uint8_t pat);
 ///   F0 7D 2A <pat:0-15> <mask_lo7> <mask_hi5> <enabled:0|1> <var:0-2> F7
 void midi_send_scale_update(uint8_t pat, uint16_t mask, bool enabled, uint8_t var);
 
-/// Play a metronome click via MIDI (low C, matching the original D650C).
-void midi_metronome_tick();
+/// Metronome click via MIDI: low C (48) on the pattern's first step, high C
+/// (60) otherwise, matching the original 303 (OM p.36).
+void midi_metronome_tick(bool bar_start);
 /// Stop the open metronome note (on mode exit / clock stop).
 void midi_metronome_stop();
 

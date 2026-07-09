@@ -2667,14 +2667,17 @@ void loop() {
             }
             midi_send_step_update(engine.get_patsel(), write_step, pb, tval);
           }
-          // Original D650C time-write metronome (measured over MIDI on the
-          // emulator): low C (DAC code 23) every 8th note (every 2nd step),
-          // uniform velocity, no accent, gate held for one full step.
+          // Original 303 time-write metronome (OM p.36/37): clicks at 8th
+          // note intervals; "the lower sound of the metronome is the first
+          // step of the pattern", every other click rings higher. Low = low
+          // C (code 23, measured on the ROM), high = high C (code 35), the
+          // keyboard's octave pair. Gate holds one step.
           if ((engine.get_time_pos() % 2) == 0) {
             s_metro_gate_pulse = true;
             s_metro_gate_timer = 0;
-            s_metro_pitch_cv = 23;   // untransposed low C (factory code)
-            midi_metronome_tick();
+            const bool bar_start = (engine.get_time_pos() == 0);
+            s_metro_pitch_cv = bar_start ? 23 : 35;
+            midi_metronome_tick(bar_start);
           } else {
             s_metro_gate_pulse = false;   // gate off on the in-between step
             midi_metronome_stop();

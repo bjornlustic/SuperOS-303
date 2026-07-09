@@ -1105,15 +1105,15 @@ void midi_send_active_pattern(uint8_t pat) {
 // --- Metronome MIDI notes --------------------------------------------------------
 static uint8_t s_metro_note_on = 0;
 
-void midi_metronome_tick() {
-  // Original D650C time-write metronome (measured on the emulator): low C
-  // (note 48), uniform velocity 80, no accent. Note-off comes one step later
-  // via midi_metronome_stop() at the in-between step boundary.
-  const uint8_t note = 48, vel = 80;
+void midi_metronome_tick(bool bar_start) {
+  // Original 303 metronome (OM p.36): the first step of the pattern rings
+  // the LOWER sound (low C = 48), other clicks the higher (high C = 60).
+  // Note-off comes one step later via midi_metronome_stop().
+  const uint8_t note = bar_start ? 48 : 60;
   if (s_metro_note_on) {
     out_note_off(s_metro_note_on, 0, static_cast<byte>(out_ch()));
   }
-  out_note_on(note, vel, static_cast<byte>(out_ch()));
+  out_note_on(note, 80, static_cast<byte>(out_ch()));
   s_metro_note_on = note;
 }
 
