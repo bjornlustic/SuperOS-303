@@ -141,7 +141,13 @@ namespace Leds {
     // 977 Hz rate; at stock rates it just doubles the PWM frequency.
     if ((tick & 0x1) == 0) pwm_phase = (pwm_phase + 1) & 0x7;
     const bool lit     = (pwm_phase < brightness);
-    const bool dim_lit = (pwm_phase < 1);
+    // Dim window = phases 0..1 = 4 CONSECUTIVE ticks, so it covers every
+    // matrix row (tick&3) exactly once per PWM cycle. With the old 1-phase
+    // window (2 ticks) only two of the four rows ever coincided with it --
+    // which two depended on drifting tick/phase alignment -- so dim LEDs on
+    // the other rows were invisible or flickered. Duty is 4/16 (was 4/32);
+    // dim reads a bit brighter but stays clearly below full.
+    const bool dim_lit = (pwm_phase < 2);
 
     const uint8_t ri = (tick >> 1) & 1;
     const uint8_t sh = 4 * ((tick >> 0) & 1);

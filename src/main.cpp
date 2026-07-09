@@ -780,12 +780,16 @@ void ProcessEditVarPicker(bool clk_run) {
   if (inputs[D_KEY].rising() && engine.SetEditVar(1)) midi_send_edit_variation(pat, 1);
   if (inputs[E_KEY].rising() && engine.SetEditVar(2)) midi_send_edit_variation(pat, 2);
   const uint8_t ev = engine.get_edit_var();
-  Leds::Set(C_KEY_LED, ev == 0); Leds::SetDim(C_KEY_LED, ev != 0);
-  Leds::Set(D_KEY_LED, ev == 1); Leds::SetDim(D_KEY_LED, ev != 1);
-  Leds::Set(E_KEY_LED, ev == 2); Leds::SetDim(E_KEY_LED, ev != 2);
+  // Selected variation flashes; the other two show dim (selectable targets).
+  // The blink mask works while stopped too: clk_count free-runs at 120 BPM.
+  const bool blink = bool(clk_count & 4);
+  Leds::Set(C_KEY_LED, ev == 0 && blink); Leds::SetDim(C_KEY_LED, ev != 0);
+  Leds::Set(D_KEY_LED, ev == 1 && blink); Leds::SetDim(D_KEY_LED, ev != 1);
+  Leds::Set(E_KEY_LED, ev == 2 && blink); Leds::SetDim(E_KEY_LED, ev != 2);
 
   // Variation 3 only: SLIDE_KEY toggles poly/mono for the active slot (stopped
-  // only -- it does a settings write + shadow reload). SLIDE_KEY_LED = poly.
+  // only -- it does a settings write + shadow reload). SLIDE_KEY_LED bright =
+  // poly, dim = mono (toggle available).
   const uint8_t slot = engine.abs_slot(pat);
   if (ev == 2 && !clk_run && inputs[SLIDE_KEY].rising()) {
     engine.persist_shadows();                                       // flush pending var2/3 edits
@@ -795,6 +799,7 @@ void ProcessEditVarPicker(bool clk_run) {
     midi_send_poly_flag(pat, GlobalSettings.var3_is_poly(slot));     // tell the web editor
   }
   Leds::Set(SLIDE_KEY_LED, ev == 2 && GlobalSettings.var3_is_poly(slot));
+  Leds::SetDim(SLIDE_KEY_LED, ev == 2 && !GlobalSettings.var3_is_poly(slot));
 }
 
 // ---------------------------------------------------------------------------
