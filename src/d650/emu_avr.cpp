@@ -425,6 +425,10 @@ static void clock_in_poll() {
 // Settings persistence (flash block; internal EEPROM in the combined build)
 // ---------------------------------------------------------------------------
 #ifdef SUPEROS_COMBINED
+// Fresh EEPROM (magic missing) at boot: patt_load_ must NOT read the erased
+// 0xFF area into the store; it keeps the zeroed SRAM store and lets the idle
+// sweeper seed the EEPROM area with it in the background.
+static bool s_ee_virgin = false;
 static void settings_save() {
   uint8_t b[EMU_SETTINGS_LEN]; emu_settings_serialize(&g_set, b);
   eeprom_update_block(b, EE_EMU_SETTINGS, EMU_SETTINGS_LEN);
@@ -436,8 +440,9 @@ static void settings_load() {
     eeprom_read_block(b, EE_EMU_SETTINGS, EMU_SETTINGS_LEN);
     emu_settings_deserialize(&g_set, b);
   } else {
+    s_ee_virgin = true;
     emu_settings_defaults(&g_set);
-    settings_save();   // stamps the magic; pattern area stays 0xFF (virgin)
+    settings_save();   // stamps the magic
   }
 }
 #else
@@ -975,7 +980,7 @@ void setup() {
 static uint16_t s_ee_cursor = 0;
 
 static void patt_load_() {
-  if (eeprom_read_byte(EE_EMU_MAGIC) != EE_EMU_MAGIC_VAL) return; // virgin: keep zeroed store
+  if (s_ee_virgin) { s_save_pending = true; return; }  // keep zeroed store, seed EEPROM
   eeprom_read_block(H.ext, EE_EMU_PATT, D650_EXT_BYTES);
 }
 static bool patt_save_step() {
