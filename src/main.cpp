@@ -2668,14 +2668,14 @@ void loop() {
           }
           // Original 303 time-write metronome (OM p.36/37): clicks at 8th
           // note intervals; "the lower sound of the metronome is the first
-          // step of the pattern", every other click rings higher. Low = low
-          // C (code 23, measured on the ROM), high = high C (code 35), the
-          // keyboard's octave pair. Gate holds one step.
+          // step of the pattern", every other click rings higher. Voiced one
+          // octave above the keyboard's C pair (35/47) per user preference.
+          // Gate holds one step.
           if ((engine.get_time_pos() % 2) == 0) {
             s_metro_gate_pulse = true;
             s_metro_gate_timer = 0;
             const bool bar_start = (engine.get_time_pos() == 0);
-            s_metro_pitch_cv = bar_start ? 23 : 35;
+            s_metro_pitch_cv = bar_start ? 35 : 47;
             midi_metronome_tick(bar_start);
           } else {
             s_metro_gate_pulse = false;   // gate off on the in-between step

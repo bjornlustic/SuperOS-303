@@ -1106,10 +1106,10 @@ void midi_send_active_pattern(uint8_t pat) {
 static uint8_t s_metro_note_on = 0;
 
 void midi_metronome_tick(bool bar_start) {
-  // Original 303 metronome (OM p.36): the first step of the pattern rings
-  // the LOWER sound (low C = 48), other clicks the higher (high C = 60).
-  // Note-off comes one step later via midi_metronome_stop().
-  const uint8_t note = bar_start ? 48 : 60;
+  // Metronome clicks (one octave above the keyboard C pair): bar start rings
+  // the lower C (60), other clicks the higher (72). Note-off comes one step
+  // later via midi_metronome_stop().
+  const uint8_t note = bar_start ? 60 : 72;
   if (s_metro_note_on) {
     out_note_off(s_metro_note_on, 0, static_cast<byte>(out_ch()));
   }
