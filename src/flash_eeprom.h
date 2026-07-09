@@ -16,9 +16,19 @@
 // (below the 0x1E000 NRWW edge). Base raised from 0xE0 to 0x100 to fit the
 // USB-MIDI app below it. Split into two equal banks; page 0 of each bank is its
 // header, the rest hold one record each.
+//
+// Combined build: the SuperOS+D650C image is ~81 KB, so the arena starts at
+// 0x14000 instead (pages 0x140..0x1DF, 160 pages, 80/bank -> 79 live records
+// per bank). Keep FLASH_ARENA_BASE in tools/makesyx.py in sync. First boot of
+// a different layout finds no valid bank header at its base and formats.
+#ifdef SUPEROS_COMBINED
+static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x140;
+static constexpr uint16_t FE_BANK_PAGES       = 80;           // pages per bank (2 banks)
+#else
 static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x100;
 static constexpr uint16_t FE_BANK_PAGES       = 112;          // pages per bank (2 banks)
-static constexpr uint16_t FE_RECORD_PAGES     = FE_BANK_PAGES - 1; // 127 usable
+#endif
+static constexpr uint16_t FE_RECORD_PAGES     = FE_BANK_PAGES - 1; // usable records/bank
 static constexpr uint16_t FE_PAGE             = 256;
 
 // Logical block-id space: 64 pair blocks + 32 mono-var3 blocks + 64 poly-var3

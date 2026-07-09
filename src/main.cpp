@@ -14,6 +14,16 @@
 #include "midi_api.h"
 #include "flash_store.h"
 
+#ifdef SUPEROS_COMBINED
+// Combined build: combined.cpp owns the real setup/loop and dispatches here
+// or to the d650c emulator per the EEPROM firmware-select byte.
+#include "combined.h"
+// avr-gcc ships no <new>; placement new for the g_fw_arena Engine.
+inline void *operator new(size_t, void *p) noexcept { return p; }
+#define setup superos_setup
+#define loop  superos_loop
+#endif
+
 FlashEeprom g_flash;
 PersistentSettings GlobalSettings;
 
@@ -28,6 +38,11 @@ static int16_t total_transpose = 12;
 // Clamp a transposed 6-bit CV value to the DAC range so a down-transpose floors at 0
 // instead of wrapping to the top of the range.
 static inline uint8_t clamp_cv(int v) { return uint8_t(v < 0 ? 0 : (v > 63 ? 63 : v)); }
+
+#ifdef SUPEROS_COMBINED
+static Engine &engine = *(Engine *)g_fw_arena;  // overlays the d650 machine;
+                                                // placement-new'ed in setup
+#endif
 
 static PinState inputs[INPUT_COUNT];
 
@@ -148,7 +163,9 @@ static bool    s_len_extended     = false;
 static uint8_t s_len_black_base   = 0;
 static bool    s_len_black_pressed = false;
 
+#ifndef SUPEROS_COMBINED
 static Engine engine;
+#endif
 
 // Pattern chain: while stopped, hold anchor key + tap adjacent keys to build a chain
 // (same bank, consecutive, max 4).  While playing, hold any chain key to loop that pattern.
@@ -388,6 +405,19 @@ static void process_config_menu() {
     }
   }
 
+#ifdef SUPEROS_COMBINED
+  // G# = boot the D650C firmware (original mask-ROM 303). Dim G# marks the
+  // option; flush pending saves (same set as transport stop), then reboot.
+  Leds::SetDim(GSHARP_KEY_LED, true);
+  if (inputs[GSHARP_KEY].rising()) {
+    if (engine.stale) engine.Save();
+    if (engine.track_stale) engine.SaveTrack();
+    midi_flush_pending_saves();
+    midi_flush_pending_pattern_saves(engine);
+    combined_switch_firmware(FW_D650);   // does not return
+  }
+#endif
+
   if (inputs[CLEAR_KEY].rising()) {
     if (s_cfg_suppress_clear_exit)
       s_cfg_suppress_clear_exit = false;
@@ -535,6 +565,11 @@ static void usb_shutdown_hw() {
 #endif
 
 void setup() {
+#ifdef SUPEROS_COMBINED
+  // Run the constructor (NSDMI defaults) over the zeroed shared arena; net
+  // state matches what `static Engine engine;` produced.
+  new (g_fw_arena) Engine;
+#endif
   // Keep USB alive when built for USB MIDI; otherwise tear it down as before
   // (the stock app left USB detached to avoid the idle PLL/noise).
 #if !DEBUG && !defined(SUPEROS_USB_MIDI)
