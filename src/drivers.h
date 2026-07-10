@@ -99,6 +99,11 @@ namespace Leds {
   // own PORTF write + busy-wait; consumers read a ~2 kHz sample for free.
   inline volatile uint8_t last_status_pinb = 0;
 
+  // Last matrix / mode-LED port images actually driven by SendISR. Redraw()
+  // re-asserts them after an input scan blanks the matrix.
+  inline uint8_t last_portf    = 0x0f;
+  inline uint8_t last_portd_hi = 0;
+
   inline void SetLedSelection(uint8_t select_pin, uint8_t enable_mask) {
     const uint8_t switched_pins[4] = {
       PG0_PIN, PG1_PIN, PG2_PIN, PG3_PIN,
@@ -158,12 +163,33 @@ namespace Leds {
     PORTF = 0x0f;                          // all rows deselected, columns off
     delayMicroseconds(SWITCH_DELAY);
     last_status_pinb = PINB;               // status snapshot (see above)
-    PORTF = (uint8_t)((0x0f & ~(1 << (tick & 0x3))) | ((mask & 0x0f) << 4));
+    const uint8_t pf = (uint8_t)((0x0f & ~(1 << (tick & 0x3))) | ((mask & 0x0f) << 4));
+    PORTF = pf;
 
     uint8_t direct = 0;                    // mode LEDs 16-19 on PD4-7
     if (lit)     direct |= back[2];
     if (dim_lit) direct |= back_dim[2];
-    PORTD = (uint8_t)((PORTD & 0x0f) | ((direct & 0x0f) << 4));
+    const uint8_t pd_hi = (uint8_t)((direct & 0x0f) << 4);
+    PORTD = (uint8_t)((PORTD & 0x0f) | pd_hi);
+
+    last_portf = pf; last_portd_hi = pd_hi;   // for Redraw() after an input scan
+  }
+
+  // Re-assert the last frame SendISR drove, filling the matrix-dark gap left by
+  // an input scan (PollInputs). It does NOT advance the PWM/row counters and
+  // does NOT touch Timer3, so the free-running refresh cadence stays uniform and
+  // independent of the scan cadence. The previous fix reset TCNT3 and forced a
+  // counter-advancing SendISR on every scan, which pinned the LED-refresh phase
+  // to the scan; a note (SuperOS) or clock step (d650c) that lengthened a loop
+  // pass delayed the scan and thus re-phased the whole matrix -- a brightness
+  // blip locked to the note/clock rate. Holding the last frame instead removes
+  // that coupling while still killing the dark-tail shimmer the scan would leave.
+  inline void Redraw() {
+    PORTF = 0x0f;
+    delayMicroseconds(SWITCH_DELAY);
+    last_status_pinb = PINB;
+    PORTF = last_portf;
+    PORTD = (uint8_t)((PORTD & 0x0f) | last_portd_hi);
   }
 
   // Start Timer3-driven LED refresh. Call once from setup().

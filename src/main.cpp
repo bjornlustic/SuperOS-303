@@ -605,6 +605,17 @@ void setup() {
   midi_set_var_channels(GlobalSettings.var2_channel, GlobalSettings.var3_channel);
   Leds::brightness = GlobalSettings.led_brightness;
   Leds::BeginRefresh();
+  // Quarter the ISR rate (3.9 kHz -> 977 Hz), same as the d650c side. The panel
+  // scan blanks the shared matrix pins and is gated on the ISR tick counter to
+  // phase-lock it to the multiplex frame. At the fast 256 us tick the frame is
+  // only 1024 us, so the main loop's ~150 us per-iteration granularity is a big
+  // fraction of it: the scan phase can't lock tightly and the residual jitter
+  // beats (visible flicker when stopped, rate tracking loop speed). At 1024 us
+  // per tick the frame is 4096 us and the same jitter is a small fraction, so
+  // the scan locks cleanly and the beat disappears (this is exactly why the
+  // d650c LEDs are steady). Row multiplex 244 Hz, dim-PWM ~61 Hz (SendISR
+  // advances the PWM phase every 2 ticks), both above visible flicker.
+  OCR3A = 255;
 }
 
 // =============================================================================
@@ -2049,26 +2060,26 @@ static void OutputDAC(bool clk_run, bool write_mode, bool track_mode, bool edit_
 // loop: poll, MIDI/clock, UI dispatch, DAC output every iteration
 // =============================================================================
 void loop() {
-  // Scan the button matrix at a fixed 1 kHz, not once per loop iteration.
-  // PollInputs blanks the LED matrix for its whole scan (~100-200us), so
-  // per-iteration scanning ties the LED duty cycle to the loop period. Note
-  // ticks lengthen the loop (MIDI note TX, DAC latch), which made every NOTE
-  // step visibly pulse the LEDs. A fixed scan cadence keeps the blanking
-  // fraction constant regardless of loop timing. Between scans, re-push the
-  // last raw samples so PinState debounce/edge semantics stay per-iteration
-  // (rising()/falling() still fire for exactly one loop pass).
-  static elapsedMicros input_scan_timer;
-  if (input_scan_timer >= 1000) {
-    input_scan_timer = 0;
+  // Scan the button matrix once per LED-refresh ISR tick (~1 ms at the 977 Hz
+  // rate), gated on the refresh's own tick counter -- NOT a free-running
+  // microsecond timer. PollInputs blanks the matrix for its whole scan
+  // (~150-200us) and Redraw() then holds the last-driven row until the next ISR
+  // tick. Gating on EVERY tick means that held row is (isr_tick & 3), which
+  // advances 0,1,2,3 on consecutive scans -- every row gets the same brief hold
+  // once per 4 scans (~244 Hz, invisible). Gating on 2+ ticks would land the
+  // scan on a fixed subset of ticks, so Redraw would favour some rows over
+  // others (static dimming, and a beat when loop jitter flips which rows) --
+  // that was the residual SuperOS flicker. Between scans, re-push the last raw
+  // samples so PinState debounce/edge semantics stay per-iteration.
+  static uint8_t s_last_scan_tick = 0;
+  const uint8_t now_tick = Leds::isr_tick;
+  if ((uint8_t)(now_tick - s_last_scan_tick) >= 1) {
+    s_last_scan_tick = now_tick;
     Leds::PauseRefresh();
     PollInputs(inputs);
-    // Phase-lock the LED refresh to the scan (same fix as the d650c port's
-    // third audit): the scan blanks the matrix, and without resetting the
-    // Timer3 phase the dark tail's length beats against the scan cadence
-    // (visible shimmer). Re-light the matrix NOW and restart the period.
-    TCNT3 = 0;
-    TIFR3 = (1 << OCF3A);
-    Leds::SendISR();
+    // Re-light the matrix immediately with the last frame so the scan leaves no
+    // dark tail, without re-phasing Timer3 or advancing the row/PWM counters.
+    Leds::Redraw();
     Leds::ResumeRefresh();
   } else {
     for (uint8_t i = 0; i < INPUT_COUNT; ++i) inputs[i].push(inputs[i].read());

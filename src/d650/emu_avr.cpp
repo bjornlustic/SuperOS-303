@@ -866,21 +866,18 @@ static void fast_poll_inputs(PinState *in) {
 static void refresh_inputs() {
   Leds::PauseRefresh();
   fast_poll_inputs(g_inputs);
-  // Re-light the matrix NOW and restart the ISR period. The scan blanks the
-  // matrix (all selects high, columns low) and used to leave it dark until
-  // the next free-running Timer3 tick, 0..1024 us away at a phase drifting
-  // 48 us per 2 ms frame (2000 us scan vs 1024 us tick): the dark tail swept
-  // 8%..58% of every frame at ~23 Hz: the visible matrix-LED flicker (the
-  // direct-drive mode LEDs were immune). One manual refresh plus a timer
-  // phase reset pins the scan and the row multiplex to a fixed phase: the
-  // blanking becomes a constant ~150 us per 2 ms frame (uniform ~7% duty
-  // cost, invisible), zero beat.
-  TCNT3 = 0;
-  TIFR3 = (1 << OCF3A);          // drop any tick that came due during the scan
+  // Re-light the matrix NOW with the last frame so the scan (all selects high,
+  // columns low) leaves no dark tail. Redraw() holds the last SendISR image
+  // without advancing the row/PWM counters or re-phasing Timer3, so the refresh
+  // free-runs at a fixed cadence. The earlier version reset TCNT3 and forced a
+  // counter-advancing SendISR here, which pinned the LED-refresh phase to the
+  // scan: a clock step that lengthened a loop pass delayed the scan and thus
+  // re-phased the whole matrix, so LED brightness modulated in time with the
+  // tempo (the visible flicker).
 #ifdef EMU_USB_DIAG
-  if (!dg_led_off) { Leds::SendISR(); Leds::ResumeRefresh(); }
+  if (!dg_led_off) { Leds::Redraw(); Leds::ResumeRefresh(); }
 #else
-  Leds::SendISR();
+  Leds::Redraw();
   Leds::ResumeRefresh();
 #endif
 
@@ -1134,18 +1131,21 @@ void loop() {
   if (dg_watch) { dg_watch_scan(); return; }   // mapping mode: raw scans only
 #endif
 
-  // 1) I/O: MIDI in, DIN sync; panel matrix + LED frame at 2 ms, matching the
-  // ROM's own 555 Hz input sampler so a fresh sample is available for nearly
-  // every ISR tick. (Was 4 ms; the extra PollInputs busy-wait costs ~1.9% CPU,
-  // paid from the ~9% real-time margin to halve press->LED latency.)
+  // 1) I/O: MIDI in, DIN sync; panel matrix + LED frame gated on the LED-refresh
+  // tick counter (every 2 ISR ticks ~= 2 ms), NOT wall-clock micros. The scan
+  // blanks the matrix; a wall-clock cadence is asynchronous to the multiplex
+  // frame, so the blanking beats against it (a light tempo-independent flicker).
+  // Tying the scan to the frame counter lands it at a fixed cycle phase, so the
+  // blanking is uniform. 2 ticks keeps the ROM's ~555 Hz-matched sample rate.
   midi_in_poll();
 #ifdef SUPEROS_USB_MIDI
   usb_midi_poll();
 #endif
   clock_in_poll();
-  static uint32_t next_poll_us = 0;
+  static uint8_t s_last_scan_tick = 0;
   bool frame = false;
-  if ((int32_t)(now - next_poll_us) >= 0) { next_poll_us = now + 2000; refresh_inputs(); frame = true; }
+  const uint8_t now_tick = Leds::isr_tick;
+  if ((uint8_t)(now_tick - s_last_scan_tick) >= 2) { s_last_scan_tick = now_tick; refresh_inputs(); frame = true; }
 
   // 2) clock router: CLOCK tempo line. (emu_sync still schedules its
   // wall-clock int_pending flag, but the AVR loop no longer consumes it: /INT
