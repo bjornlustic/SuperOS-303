@@ -539,6 +539,14 @@
     .poly-flags { display: flex; gap: 2px; }
     .poly-tie-hint { text-align: center; font-size: 9px; font-weight: 900; letter-spacing: 0.1em;
       text-transform: uppercase; color: var(--gray-4); padding: 14px 0; }
+
+    /* ── D650C mode: pattern editing is SuperOS-only, so show just the MIDI
+       connection, the D650C backup strip, the Library, and Device Config. ── */
+    #d650Strip { display: none; }
+    body.mode-d650 #d650Strip { display: flex; }
+    body.mode-d650 .app > :not(.header):not(#midiStrip):not(#d650Strip):not(#libPanel):not(#configPanel):not(#d650Banner):not(#httpBanner):not(#syncOverlay):not(#downloadToast):not(#errorToast) { display: none; }
+    body.mode-d650 #cfgSuperos { display: none; }
+    body.mode-d650 #cfgD650 { display: flex !important; }
   </style>
 </head>
 <body>
@@ -565,14 +573,24 @@
     &#9632;&nbsp; Serve over HTTP for Web MIDI — run: python3 -m http.server 8080 --directory tools/web-pattern-edit
   </div>
 
+  <div class="banner" id="d650Banner">
+    &#9632;&nbsp; Device is running the D650C emulator firmware — pattern editing is unavailable here. Use &quot;Switch to SuperOS&quot; below, or the unit's FUNCTION+CLEAR config menu (G#).
+  </div>
+
   <div id="errorToast"></div>
 
   <!-- MIDI Connection -->
-  <div class="strip">
+  <div class="strip" id="midiStrip">
     <div class="group">
       <div class="group-inner">
         <button class="btn-ghost" id="btnMidi">Connect MIDI</button>
         <span id="midiStatus">Not connected</span>
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-inner">
+        <button class="btn" id="btnFwSwitch" disabled>Switch firmware</button>
+        <span id="fwModeStatus">Firmware: unknown</span>
       </div>
     </div>
     <div class="group">
@@ -588,6 +606,19 @@
       <div class="group-inner">
         <select id="selKbd" disabled></select>
         <span id="kbdStatus" style="font-size:11px;font-weight:600;color:#aaa;padding-left:8px;">Off</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- D650C-mode pattern backup (native uPD444 store over SysEx 0x46/0x47) -->
+  <div class="strip" id="d650Strip">
+    <div class="group">
+      <span class="lbl">D650C Patterns</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnD650Backup">&#8595; Backup to file</button>
+        <button class="btn" id="btnD650Restore">&#8593; Restore from file</button>
+        <input type="file" id="d650FileInput" accept=".json,application/json" style="display:none" />
+        <span id="d650BackupStatus" style="font-size:11px;font-weight:600;color:var(--gray-4)"></span>
       </div>
     </div>
   </div>
@@ -860,14 +891,14 @@
   </div>
 
   <!-- Config panel -->
-  <div class="config-panel">
+  <div class="config-panel" id="configPanel">
     <div class="config-bar" id="configBar">
       <span class="config-bar-arrow">&#9658;</span>
       <span class="config-bar-label">Device Config</span>
       <span style="margin-left:auto;font-size:10px;font-weight:600;color:var(--gray-3);" id="configStatus">Not synced</span>
     </div>
     <div class="config-body" id="configBody">
-      <div class="config-inner">
+      <div class="config-inner" id="cfgSuperos">
         <div class="config-field">
           <label>MIDI Channel</label>
           <select id="cfgMidiCh">
@@ -900,6 +931,33 @@
           <button class="btn btn-primary" id="btnCfgWrite" disabled>Write to 303</button>
         </div>
         <span class="config-status" id="cfgFeedback"></span>
+      </div>
+      <!-- D650C emulator config (SysEx 0x42/0x43/0x44, acked by 0x41 status) -->
+      <div class="config-inner" id="cfgD650" style="display:none">
+        <div class="config-field">
+          <label>Clock Source</label>
+          <select id="cfgD650Clk">
+            <option value="0">Internal</option>
+            <option value="1">MIDI clock</option>
+            <option value="2">DIN sync</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label>Internal BPM</label>
+          <input type="number" id="cfgD650Bpm" min="20" max="300" value="120" style="width:70px" />
+        </div>
+        <div class="config-field">
+          <label>MIDI Channel</label>
+          <select id="cfgD650Ch">
+            <option value="0">Omni (all)</option>
+            <script>for(var _d=1;_d<=16;_d++) document.write('<option value="'+_d+'">Ch '+_d+'</option>');</script>
+          </select>
+        </div>
+        <div class="group-inner" style="gap:6px">
+          <button class="btn" id="btnD650CfgRead">Read from unit</button>
+          <button class="btn btn-primary" id="btnD650CfgWrite">Write to unit</button>
+        </div>
+        <span class="config-status" id="cfgD650Feedback"></span>
       </div>
     </div>
   </div>
@@ -1679,6 +1737,11 @@
   var midiAccess = null, midiOut = null, midiIn = null, midiKbd = null;
   var autoPatternDumpTimer = null;
   var autoConnectDone = false;
+  // Guards the initial bulk pattern request per connection: fired from the confirmed
+  // 0x21 (SuperOS) reply rather than a fixed delay, so it never fires against a
+  // D650C-firmware device (which never sends 0x21 and would otherwise hang the sync
+  // overlay forever waiting on unanswered 0x10 requests).
+  var autoBulkStarted = false;
   var rxBuf = [];
   var expectDump = 0;
   var bulkNextPat = -1; // next pattern index to request (-1 = not in bulk)
@@ -1687,6 +1750,16 @@
   var saveAckPending = false;
   var liveTimer = null;
   var liveEnabled = true;
+  // 'unknown' until a 0x21 (SuperOS config reply) or 0x41 (D650C status reply) is seen.
+  // Combined-firmware builds run one image at a time; the web editor only understands
+  // and edits SuperOS patterns, so D650C mode locks out pattern I/O and surfaces a
+  // "Switch to SuperOS" action instead of hanging on unanswered SysEx.
+  var deviceMode     = 'unknown';
+  var hwVersion      = '';     // firmware version string from the 0x21 reply tail ('' = not reported)
+  // True from the moment the user sends 0x2F/0x4D until the device is re-identified
+  // (or we give up). Widens the config-read retry budget so the reboot + USB
+  // re-enumerate window doesn't trip the normal fast-fail "wrong device" disconnect.
+  var fwSwitchPending = false;
   var hwGroup        = -1;     // pattern group currently loaded on hardware (0-3); -1 = not yet synced
   var hwMidiChannel  = 0;      // 0 = omni / unknown; 1..16 = 303's configured MIDI input channel
   var hwVar2Channel  = 2;      // variation 2 MIDI output channel (device global)
@@ -2024,11 +2097,29 @@
 
   function updateButtons() {
     var ok = !!midiOut && !!midiIn;
-    document.getElementById('btnReq').disabled     = !ok;
-    document.getElementById('btnReqAll').disabled  = !ok;
-    document.getElementById('btnCfgRead').disabled  = !ok;
-    document.getElementById('btnCfgWrite').disabled = !ok;
+    var d650 = deviceMode === 'd650';
+    document.getElementById('btnReq').disabled     = !ok || d650;
+    document.getElementById('btnReqAll').disabled  = !ok || d650;
+    document.getElementById('btnCfgRead').disabled  = !ok || d650;
+    document.getElementById('btnCfgWrite').disabled = !ok || d650;
+    var fwBtn = document.getElementById('btnFwSwitch');
+    fwBtn.disabled = !ok || deviceMode === 'unknown';
+    fwBtn.textContent = deviceMode === 'd650' ? 'Switch to SuperOS' : 'Switch to D650C';
+    document.getElementById('d650Banner').classList.toggle('visible', ok && d650);
     recomputeDirty();
+  }
+
+  /** Update the known firmware mode ('superos' | 'd650' | 'unknown') and its UI. */
+  function setDeviceMode(mode) {
+    deviceMode = mode;
+    if (mode !== 'unknown') fwSwitchPending = false; // device re-identified: reconnect done
+    if (mode === 'unknown') hwVersion = '';
+    document.body.classList.toggle('mode-d650', mode === 'd650');
+    var el = document.getElementById('fwModeStatus');
+    el.textContent = 'Firmware: ' + (mode === 'superos' ? 'SuperOS' + (hwVersion ? ' v' + hwVersion : '')
+                                    : mode === 'd650'    ? 'D650C emulator'
+                                    : 'unknown');
+    updateButtons();
   }
 
   function currentPatLen() {
@@ -3072,18 +3163,29 @@
     cfgReadAttempts = 0;
   }
   function sendCfgRead() {
-    if (!midiOut) return;
+    if (!midiOut || deviceMode === 'd650') return;
     sendSysex(new Uint8Array([0x7d, 0x20]));
+    // Re-probe for D650C firmware (0x41 reply) alongside every config request:
+    // SuperOS silently ignores 0x40, and a D650C-mode unit silently ignores 0x20,
+    // so pairing them means whichever firmware is running answers something.
+    // Sending the probe only once (as before) hung the sync overlay whenever that
+    // single message was lost — e.g. connecting while the unit was mid-boot.
+    sendSysex(new Uint8Array([0x7d, 0x40]));
     updateSyncOverlayConfig(cfgIsSynced() ? 'ok' : 'pending', cfgReadAttempts + 1);
     if (cfgReadRetryTimer) clearTimeout(cfgReadRetryTimer);
     cfgReadAttempts++;
+    // Patient budget while reconnecting after a firmware switch; short budget otherwise
+    // (wrong/no device selected should fail fast, not hammer for 30 s).
+    var maxAttempts = fwSwitchPending ? 20 : 3;
     cfgReadRetryTimer = setTimeout(function() {
       cfgReadRetryTimer = null;
       if (!midiOut) { cfgReadAttempts = 0; return; }
+      if (deviceMode === 'd650') { cfgReadAttempts = 0; return; } // 0x20 unanswered there
       if (cfgIsSynced()) { cfgReadAttempts = 0; return; }
-      if (cfgReadAttempts >= 3) {
+      if (cfgReadAttempts >= maxAttempts) {
         log('Config read: no 0x21 reply after ' + cfgReadAttempts + ' attempts — disconnecting', 'log-err');
         cfgReadAttempts = 0;
+        fwSwitchPending = false;
         disconnectPorts();
         showErrorToast('MIDI connection failed');
         return;
@@ -3703,7 +3805,63 @@
       return;
     }
 
+    if (cmd === 0x41) {
+      // D650C emulator status reply (combined-firmware only): the device is
+      // running the d650 side, which silently ignores all pattern SysEx
+      // (0x10-0x2A). Stop the config retry loop before it times out and
+      // disconnects, and surface the firmware-switch UI instead.
+      clearCfgReadRetry();
+      expectDump = 0; bulkNextPat = -1;
+      hideSyncOverlay();
+      var wasD650 = deviceMode === 'd650';
+      setDeviceMode('d650');
+      // Status doubles as the config read/write ack: clock source, channel, BPM.
+      if (bytes.length >= 6) {
+        document.getElementById('cfgD650Clk').value = String(bytes[2] <= 2 ? bytes[2] : 0);
+        if (bytes[3] <= 16) document.getElementById('cfgD650Ch').value = String(bytes[3]);
+        var d650bpm = bytes[4] | (bytes[5] << 7);
+        if (d650bpm >= 20 && d650bpm <= 300) document.getElementById('cfgD650Bpm').value = String(d650bpm);
+        document.getElementById('cfgD650Feedback').textContent = 'Synced with unit';
+      }
+      if (!wasD650) log('D650C emulator firmware detected (0x41) — pattern editing unavailable', 'log-ack');
+      return;
+    }
+
+    if (cmd === 0x47) { // D650C pattern-RAM block reply: <blk> <220 packed> = 192 raw
+      if (bytes.length < 3 + D650_BLOCK_WIRE) { log('0x47 too short (' + bytes.length + ')', 'log-err'); return; }
+      var dblk = bytes[2];
+      if (dblk < 8 && d650ReadPending) {
+        var draw = unpack7(bytes.subarray(3), D650_BLOCK_RAW);
+        if (!draw) { log('0x47 block ' + dblk + ' unpack failed', 'log-err'); return; }
+        d650Blocks[dblk] = draw;
+        d650ReadNext(dblk);
+      }
+      return;
+    }
+
+    if (cmd === 0x48 && bytes.length >= 4) { // D650C block write ack: <blk> <0=ok 1=err>
+      if (d650WritePending) d650WriteNext(bytes[2], bytes[3]);
+      return;
+    }
+
     if (cmd === 0x21 && bytes.length >= 4) {
+      // Bytes 8+ are the firmware version as ASCII (older firmware sends none).
+      if (bytes.length > 8) {
+        var vs = '';
+        for (var vi = 8; vi < bytes.length; vi++) {
+          var vc = bytes[vi];
+          if (vc >= 0x20 && vc < 0x7f) vs += String.fromCharCode(vc);
+        }
+        hwVersion = vs;
+      }
+      setDeviceMode('superos');
+      // First confirmed SuperOS reply this connection: kick off the bulk pattern
+      // dump. If the 0x1C reply below reveals a different hardware group, that
+      // handler aborts and restarts the bulk for the right group.
+      if (!autoBulkStarted && expectDump === 0) {
+        autoBulkStarted = true;
+        startBulkRequest(activeGroup, true);
+      }
       var ch = bytes[2], fl = bytes[3];
       hwMidiChannel = (ch <= 16) ? ch : 0;
       document.getElementById('cfgMidiCh').value   = String(ch);
@@ -3724,7 +3882,7 @@
         syncVariationUI();
       }
       document.getElementById('configStatus').textContent = 'Synced';
-      document.getElementById('cfgFeedback').textContent  = 'Loaded from 303';
+      document.getElementById('cfgFeedback').textContent  = 'Loaded from 303' + (hwVersion ? ' (v' + hwVersion + ')' : '');
       var _cb = document.getElementById('configBar'), _cy = document.getElementById('configBody');
       _cb.classList.add('is-open'); _cy.classList.add('is-open');
       updateSyncOverlayConfig('ok', 0);
@@ -3817,6 +3975,29 @@
     sel.disabled = !ports.length;
   }
 
+  // Remembered port choice (survives USB re-enumeration and page reloads).
+  // WebMIDI port ids can change when a device re-attaches, so the name is the
+  // durable key; the id is tried first as a fast path.
+  var LS_PORTS_KEY = 'superos303_midi_ports_v1';
+  function savedPorts() {
+    try { return JSON.parse(localStorage.getItem(LS_PORTS_KEY)) || {}; } catch (e) { return {}; }
+  }
+  function rememberPorts() {
+    if (!midiOut || !midiIn) return;
+    try {
+      localStorage.setItem(LS_PORTS_KEY, JSON.stringify({
+        outId: midiOut.id, outName: midiOut.name || '',
+        inId:  midiIn.id,  inName:  midiIn.name  || ''
+      }));
+    } catch (e) {}
+  }
+  /** Resolve a remembered port against a live port list: id match, then name match. */
+  function findRemembered(ports, id, name) {
+    return ports.find(function(p){ return id && p.id === id; })
+        || (name ? ports.find(function(p){ return p.name === name; }) : null)
+        || null;
+  }
+
   // Rebuild the <select> options. Called on init and MIDIAccess statechange only.
   // NEVER call this from an onchange handler -- innerHTML='' drops the user's pick.
   function populatePortSelects(access) {
@@ -3839,9 +4020,32 @@
     });
     selKbd.disabled = !ins.length;
 
-    if (prevOutId && outs.some(function(p){ return p.id === prevOutId; })) selOut.value = prevOutId;
-    if (prevInId  && ins.some(function(p){ return p.id === prevInId;  })) selIn.value  = prevInId;
+    // Restore selection from the remembered device (by id, then name — a
+    // re-enumerated device keeps its name but usually gets a new id). The
+    // remembered choice is authoritative, NOT the select's current value: when
+    // a device unplugs, the browser silently snaps the select to the first
+    // remaining item, so trusting the DOM value here "forgets" the real pick.
+    // While the remembered device is absent, show a placeholder instead of
+    // letting a wrong device sit selected.
+    var mem = savedPorts();
+    restoreSel(selOut, outs, mem.outId, mem.outName, prevOutId);
+    restoreSel(selIn,  ins,  mem.inId,  mem.inName,  prevInId);
     if (prevKbdId && ins.some(function(p){ return p.id === prevKbdId; })) selKbd.value = prevKbdId;
+  }
+  function restoreSel(sel, ports, memId, memName, liveId) {
+    var remembered = findRemembered(ports, memId, memName);
+    if (remembered) { sel.value = remembered.id; return; }
+    if (memName) {
+      // Remembered device currently absent: park on a disabled placeholder so
+      // the select never displays (or later binds) an unintended device.
+      var o = document.createElement('option');
+      o.value = '__waiting__'; o.textContent = 'Waiting: ' + memName; o.disabled = true;
+      sel.insertBefore(o, sel.firstChild);
+      sel.value = '__waiting__';
+      sel.disabled = false;
+      return;
+    }
+    if (liveId && ports.some(function(p){ return p.id === liveId; })) sel.value = liveId;
   }
 
   function bindPorts(access) {
@@ -3854,20 +4058,36 @@
     if (midiIn)  midiIn.onmidimessage  = null;
     if (midiKbd) midiKbd.onmidimessage = null;
 
-    var newOut = outs.find(function(p){ return p.id === selOut.value; }) || outs[0] || null;
-    var newIn  = ins.find(function(p) { return p.id === selIn.value;  }) || ins[0]  || null;
+    var mem = savedPorts();
+    var newOut = outs.find(function(p){ return p.id === selOut.value; })
+              || findRemembered(outs, mem.outId, mem.outName);
+    var newIn  = ins.find(function(p) { return p.id === selIn.value;  })
+              || findRemembered(ins, mem.inId, mem.inName);
+    // Fall back to the first port ONLY when nothing was ever remembered. If a
+    // remembered device is just absent (mid-reboot after a firmware switch),
+    // bind nothing and wait for its statechange reattach — grabbing whatever is
+    // first in the list sent SysEx to the wrong device and "forgot" the choice.
+    if (!newOut && !mem.outName) newOut = outs[0] || null;
+    if (!newIn  && !mem.inName)  newIn  = ins[0]  || null;
     // Reset hardware sync only when the actual port identity changes.
     if ((newOut && newOut.id) !== (midiOut && midiOut.id) ||
         (newIn  && newIn.id)  !== (midiIn  && midiIn.id)) {
       hwGroup = -1;
       initialSyncDone = false;
       autoConnectDone = false;
+      autoBulkStarted = false;
       expectDump = 0;
       bulkNextPat = -1;
       hideSyncOverlay();
+      setDeviceMode('unknown');
     }
     midiOut = newOut;
     midiIn  = newIn;
+    // Keep the selects showing what actually got bound (a name-based rebind
+    // after re-enumeration may resolve to a different id than the select held).
+    if (midiOut) selOut.value = midiOut.id;
+    if (midiIn)  selIn.value  = midiIn.id;
+    rememberPorts();
     var kbdId = selKbd.value;
     midiKbd = kbdId ? (ins.find(function(p){ return p.id === kbdId; }) || null) : null;
 
@@ -3899,22 +4119,27 @@
           autoConnectDone = true;
           log('Auto-connect: requesting config + patterns', 'log-syx');
           showSyncOverlay('Requesting device config...');
+          setDeviceMode('unknown');
+          sendSysex(new Uint8Array([0x7d, 0x40])); // probe: only a D650C-firmware device replies (0x41)
           sendCfgRead();
-          // Kick off bulk for the currently displayed group. If the 0x1C reply
-          // reveals a different hardware group, the 0x1C handler will abort
-          // this bulk and restart for the right group. startBulkRequest is
-          // idempotent for the same group, so duplicates are harmless.
-          setTimeout(function() {
-            if (expectDump === 0) startBulkRequest(activeGroup, true);
-          }, 250);
+          // Bulk pattern request is kicked from the confirmed 0x21 (SuperOS) reply
+          // handler below, not a fixed delay — see autoBulkStarted.
         }, 500);
       }
     }
-    if (!ok) { autoConnectDone = false; }
+    if (!ok) { autoConnectDone = false; autoBulkStarted = false; }
     if (!ok && midiOut && !midiIn) {
       statusEl.textContent = midiOut.name + ' — select input'; statusEl.className = 'is-warn';
     } else if (!ok) {
-      statusEl.textContent = 'No ports found'; statusEl.className = '';
+      var memGone = savedPorts();
+      if (memGone.outName || memGone.inName) {
+        statusEl.textContent = 'Waiting for ' + (memGone.outName || memGone.inName) + '…';
+        statusEl.className = 'is-warn';
+        btn.textContent = 'Connect MIDI';
+        btn.classList.remove('is-connected');
+      } else {
+        statusEl.textContent = 'No ports found'; statusEl.className = '';
+      }
     }
     updateButtons();
   }
@@ -4813,9 +5038,12 @@
     if (midiKbd) midiKbd.onmidimessage = null;
     midiOut = null; midiIn = null; midiKbd = null;
     autoConnectDone = false;
+    autoBulkStarted = false;
+    fwSwitchPending = false;
     expectDump = 0; bulkNextPat = -1;
     if (autoPatternDumpTimer) { clearTimeout(autoPatternDumpTimer); autoPatternDumpTimer = null; }
     hideSyncOverlay();
+    setDeviceMode('unknown');
     var btn = document.getElementById('btnMidi');
     btn.textContent = 'Connect MIDI';
     btn.classList.remove('is-connected');
@@ -4848,6 +5076,148 @@
       bindPorts(midiAccess);
     };
     bindPorts(midiAccess);
+  };
+
+  // Switch the combined-firmware image between SuperOS and the D650C emulator.
+  // 0x2F (SuperOS -> D650C) and 0x4D (D650C -> SuperOS) reboot the device; no reply
+  // follows, so drop to 'unknown' and let the next auto-connect probe re-identify it
+  // once the port re-enumerates (bindPorts' port-identity check already retriggers
+  // the auto-connect probe on reattach).
+  document.getElementById('btnFwSwitch').onclick = function() {
+    if (!midiOut || deviceMode === 'unknown') return;
+    var goingTo = deviceMode === 'd650' ? 'SuperOS' : 'D650C';
+    if (deviceMode === 'superos' && !confirm('Switch this unit to D650C emulator mode? It will reboot and pattern editing will be unavailable until you switch back.')) return;
+    clearCfgReadRetry();
+    expectDump = 0; bulkNextPat = -1;
+    hideSyncOverlay();
+    fwSwitchPending = true;
+    sendSysex(new Uint8Array([0x7d, deviceMode === 'd650' ? 0x4d : 0x2f]));
+    setDeviceMode('unknown');
+    log('→ Switching firmware to ' + goingTo + ' (device will reboot)', 'log-syx');
+    showErrorToast('Switching to ' + goingTo + '…');
+  };
+
+  // ── D650C native pattern store backup/restore (SysEx 0x46/0x47/0x48) ────
+  // The d650 side exposes its full uPD444 pattern memory (3072 nibbles packed
+  // 2/byte = 1536 bytes) as 8 raw blocks of 192 bytes, 7-bit packed to 220
+  // wire bytes. Backup pulls all 8 sequentially; restore pushes them back and
+  // waits for each 0x48 ack. This is the NATIVE 303 memory image — it restores
+  // onto a D650C-mode unit; it is not a SuperOS pattern format.
+  var D650_BLOCK_RAW = 192, D650_BLOCK_WIRE = 220, D650_BLOCKS = 8;
+  var d650Blocks = new Array(D650_BLOCKS);
+  var d650ReadPending = false, d650WritePending = false;
+  var d650WriteData = null, d650Timer = null;
+  function d650Status(msg) { document.getElementById('d650BackupStatus').textContent = msg; }
+  function d650Arm(onTimeout) { if (d650Timer) clearTimeout(d650Timer); d650Timer = setTimeout(onTimeout, 2500); }
+  function d650Disarm() { if (d650Timer) { clearTimeout(d650Timer); d650Timer = null; } }
+  function d650Hex(u8) {
+    var s = '';
+    for (var i = 0; i < u8.length; i++) s += (u8[i] < 16 ? '0' : '') + u8[i].toString(16);
+    return s;
+  }
+  function d650Unhex(s) {
+    if (typeof s !== 'string' || s.length !== D650_BLOCK_RAW * 2 || /[^0-9a-fA-F]/.test(s)) return null;
+    var out = new Uint8Array(D650_BLOCK_RAW);
+    for (var i = 0; i < D650_BLOCK_RAW; i++) out[i] = parseInt(s.substr(i * 2, 2), 16);
+    return out;
+  }
+
+  document.getElementById('btnD650Backup').onclick = function() {
+    if (!midiOut || deviceMode !== 'd650' || d650ReadPending || d650WritePending) return;
+    d650Blocks = new Array(D650_BLOCKS);
+    d650ReadPending = true;
+    d650Status('Reading block 1/' + D650_BLOCKS + '…');
+    sendSysex(new Uint8Array([0x7d, 0x46, 0]));
+    d650Arm(d650ReadFail);
+  };
+  function d650ReadFail() {
+    d650ReadPending = false; d650Disarm();
+    d650Status('Backup failed — no reply from unit');
+    showErrorToast('D650C backup failed');
+  }
+  function d650ReadNext(gotBlk) {
+    d650Disarm();
+    var next = gotBlk + 1;
+    if (next < D650_BLOCKS) {
+      d650Status('Reading block ' + (next + 1) + '/' + D650_BLOCKS + '…');
+      sendSysex(new Uint8Array([0x7d, 0x46, next]));
+      d650Arm(d650ReadFail);
+      return;
+    }
+    d650ReadPending = false;
+    var obj = {
+      version: 1, type: 'd650-store', saved_at: nowISO(),
+      note: 'Native TB-303 (D650C) pattern memory image, 8 x 192-byte blocks, hex',
+      blocks: d650Blocks.map(d650Hex)
+    };
+    saveJSON(obj, 'd650c-patterns-' + nowISO().replace(/[:.]/g,'-') + '.json');
+    d650Status('Backup saved (' + D650_BLOCKS + ' blocks)');
+    log('D650C backup: all ' + D650_BLOCKS + ' blocks read and saved', 'log-ack');
+  }
+
+  document.getElementById('btnD650Restore').onclick = function() {
+    if (!midiOut || deviceMode !== 'd650' || d650ReadPending || d650WritePending) return;
+    document.getElementById('d650FileInput').click();
+  };
+  document.getElementById('d650FileInput').addEventListener('change', function(ev) {
+    var file = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function() {
+      var obj;
+      try { obj = JSON.parse(reader.result); } catch (e) { d650Status('Not a valid JSON file'); return; }
+      if (!obj || obj.type !== 'd650-store' || !Array.isArray(obj.blocks) || obj.blocks.length !== D650_BLOCKS) {
+        d650Status('Not a D650C backup file'); return;
+      }
+      var blocks = obj.blocks.map(d650Unhex);
+      if (blocks.some(function(b){ return !b; })) { d650Status('Corrupt block data in file'); return; }
+      if (!confirm('Restore this backup to the unit? This overwrites ALL pattern memory in D650C mode.')) return;
+      d650WriteData = blocks;
+      d650WritePending = true;
+      d650WriteSend(0);
+    };
+    reader.readAsText(file);
+  });
+  function d650WriteSend(blk) {
+    d650Status('Writing block ' + (blk + 1) + '/' + D650_BLOCKS + '…');
+    var packed = pack7(d650WriteData[blk]);
+    var inner = new Uint8Array(3 + packed.length);
+    inner[0] = 0x7d; inner[1] = 0x47; inner[2] = blk;
+    inner.set(packed, 3);
+    sendSysex(inner);
+    d650Arm(d650WriteFail);
+  }
+  function d650WriteFail() {
+    d650WritePending = false; d650WriteData = null; d650Disarm();
+    d650Status('Restore failed — no ack from unit');
+    showErrorToast('D650C restore failed');
+  }
+  function d650WriteNext(blk, status) {
+    d650Disarm();
+    if (status !== 0) { d650WriteFail(); return; }
+    var next = blk + 1;
+    if (next < D650_BLOCKS) { d650WriteSend(next); return; }
+    d650WritePending = false; d650WriteData = null;
+    d650Status('Restore complete (' + D650_BLOCKS + ' blocks)');
+    log('D650C restore: all ' + D650_BLOCKS + ' blocks written', 'log-ack');
+  }
+
+  // D650C config (0x42 clock source / 0x43 BPM / 0x44 channel; 0x41 acks each).
+  document.getElementById('btnD650CfgRead').onclick = function() {
+    if (!midiOut || deviceMode !== 'd650') return;
+    sendSysex(new Uint8Array([0x7d, 0x40]));
+  };
+  document.getElementById('btnD650CfgWrite').onclick = function() {
+    if (!midiOut || deviceMode !== 'd650') return;
+    var clk = parseInt(document.getElementById('cfgD650Clk').value, 10) & 3;
+    var bpm = Math.min(300, Math.max(20, parseInt(document.getElementById('cfgD650Bpm').value, 10) || 120));
+    var ch  = parseInt(document.getElementById('cfgD650Ch').value, 10);
+    if (!(ch >= 0 && ch <= 16)) ch = 0;
+    sendSysex(new Uint8Array([0x7d, 0x42, clk]));
+    sendSysex(new Uint8Array([0x7d, 0x43, bpm & 0x7f, (bpm >> 7) & 0x7f]));
+    sendSysex(new Uint8Array([0x7d, 0x44, ch]));
+    document.getElementById('cfgD650Feedback').textContent = 'Written — waiting for ack…';
   };
 
   // Selects have no onchange auto-bind: user picks In/Out, then clicks Connect.

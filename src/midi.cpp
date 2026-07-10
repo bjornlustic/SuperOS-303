@@ -363,6 +363,29 @@ static void dump_try_advance() {
   enqueue_pattern_reply(s_dump_next++);
 }
 
+// --- Config reply (0x21) --------------------------------------------------------
+// Fixed 6 config bytes, then the firmware version as ASCII (7-bit safe). Older
+// hosts read fixed offsets and ignore the trailing bytes.
+#ifndef SUPEROS_VERSION
+#define SUPEROS_VERSION "?"
+#endif
+static void send_config_reply() {
+  static const char kVer[] = SUPEROS_VERSION;
+  const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
+                                            (GlobalSettings.midi_thru          ? 2 : 0));
+  const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
+  uint8_t inner[8 + sizeof(kVer) - 1];
+  inner[0] = 0x7D; inner[1] = 0x21;
+  inner[2] = GlobalSettings.midi_channel;
+  inner[3] = fl;  inner[4] = dir;
+  inner[5] = GlobalSettings.led_brightness;
+  inner[6] = GlobalSettings.var2_channel;
+  inner[7] = GlobalSettings.var3_channel;
+  for (uint8_t i = 0; i < sizeof(kVer) - 1; ++i)
+    inner[8 + i] = static_cast<uint8_t>(kVer[i] & 0x7F);
+  tx_push_message(inner, sizeof(inner));
+}
+
 // --- SysEx parse ----------------------------------------------------------------
 static void handle_sysex_body(const uint8_t *p, unsigned n) {
   if (!g_eng || n < 2) return;
@@ -648,13 +671,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
 #endif
 
   case 0x20: { // request config
-    const uint8_t fl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
-                                              (GlobalSettings.midi_thru          ? 2 : 0));
-    const uint8_t dir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
-    const uint8_t inner[8] = {0x7D, 0x21, GlobalSettings.midi_channel, fl, dir,
-                              GlobalSettings.led_brightness,
-                              GlobalSettings.var2_channel, GlobalSettings.var3_channel};
-    tx_push_message(inner, 8);
+    send_config_reply();
     // Also broadcast current group so web editor syncs on connect
     if (g_eng) {
       const uint8_t grp[3] = {0x7D, 0x1C, g_eng->get_group()};
@@ -692,14 +709,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     s_settings_dirty = true;
     midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
     send_ack(0);
-    // Echo back new config
-    const uint8_t nfl  = static_cast<uint8_t>((GlobalSettings.midi_clock_receive ? 1 : 0) |
-                                               (GlobalSettings.midi_thru          ? 2 : 0));
-    const uint8_t ndir = g_eng ? static_cast<uint8_t>(g_eng->get_direction()) : 0;
-    const uint8_t reply[8] = {0x7D, 0x21, GlobalSettings.midi_channel, nfl, ndir,
-                              GlobalSettings.led_brightness,
-                              GlobalSettings.var2_channel, GlobalSettings.var3_channel};
-    tx_push_message(reply, 8);
+    send_config_reply(); // echo back new config
     break;
   }
   default:
