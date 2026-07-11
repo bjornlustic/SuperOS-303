@@ -137,10 +137,12 @@ static bool     s_gc_dead      = false; // GC failed (over-full arena): stop try
 static const uint16_t SAVE_QUIET_MS       = 1500;  // RAM quiet before any save
 static const uint16_t SAVE_ACT_MS         = 1000;  // recent gate/key edge = active
 #ifdef SUPEROS_COMBINED
-// EEPROM byte programs never halt the CPU, so no spacing is needed: the
-// sweeper self-paces on eeprom_is_ready() (~3.3 ms/byte, ~300 B/s drain).
-static const uint16_t SAVE_SPACING_MS     = 0;
-static const uint16_t SAVE_TRICKLE_GAP_MS = 0;
+// EEPROM byte programs never halt the CPU (the sweeper self-paces on
+// eeprom_is_ready(), ~3.3 ms/byte, ~300 B/s), so this build does not use the
+// flash idle/quiet gating at all: the store drains continuously (see the
+// save site in loop). Only completed sweeps are held apart, so a byte the
+// ROM churns mid-play is rewritten at most once per hold (EEPROM wear).
+static const uint16_t EE_SWEEP_HOLD_MS    = 5000;
 #else
 static const uint16_t SAVE_SPACING_MS     = 150;   // between idle block programs
 static const uint16_t SAVE_TRICKLE_GAP_MS = 1000;  // spacing of mid-play programs
@@ -982,8 +984,8 @@ void setup() {
 // (bounded per call) and programs it only when the EEPROM engine is free, so
 // the CPU never stalls: a byte program runs ~3.3 ms in hardware while the
 // interpreter keeps running. The whole flash save policy (quiet gating, GC
-// headroom) exists to hide multi-ms CPU halts; EEPROM has none, so the same
-// call sites just run with zero spacing.
+// headroom) exists to hide multi-ms CPU halts; EEPROM has none, so the save
+// site in loop drains unconditionally (sweeps spaced EE_SWEEP_HOLD_MS).
 static uint16_t s_ee_cursor = 0;
 
 static void patt_load_() {
@@ -1292,6 +1294,21 @@ void loop() {
 #endif
     s_ram_quiet_ms = ms_now;
   }
+#ifdef SUPEROS_COMBINED
+  // EEPROM byte programs run in hardware without halting the CPU, so none of
+  // the flash build's idle/quiet gating (which exists to hide SPM stalls)
+  // applies: drain the store continuously. The only throttle is a hold
+  // between completed sweeps, bounding a byte the ROM churns mid-play to one
+  // rewrite per EE_SWEEP_HOLD_MS (EEPROM wear). The old gating (no saves
+  // while the WRITE dial was engaged, hands were on the panel, or the
+  // sequencer ran) let a whole session's edits pile up unsaved; they all
+  // landed in the blocking flush of the G#/0x4D firmware switch at 3.4 ms
+  // per byte: the multi-second frozen-panel lag switching d650c -> SuperOS.
+  if (s_save_pending && (int32_t)(ms_now - s_flush_hold_ms) >= 0) {
+    patt_save_step();
+    if (!s_save_pending) s_flush_hold_ms = ms_now + EE_SWEEP_HOLD_MS;
+  }
+#else
   const bool editing    = g_inputs[FUNCTION_KEY].held() || g_inputs[WRITE_MODE].held();
   const bool seq_active = (uint32_t)(ms_now - s_gate_edge_ms) < SAVE_ACT_MS;
   const bool ui_active  = (uint32_t)(ms_now - s_ui_ms)        < SAVE_ACT_MS;
@@ -1306,24 +1323,20 @@ void loop() {
       } else if (!g_menu && !editing && seq_active
                  && ms_now - s_ram_quiet_ms >= SAVE_TRICKLE_MS
                  && H.gate == 0 && (uint32_t)(ms_now - s_gate_fall_ms) < 40
-#ifndef SUPEROS_COMBINED
-                 && g_flash.free_pages() >= 2
-#endif
-                 ) {
+                 && g_flash.free_pages() >= 2) {
         // Mid-play safety net for long unsaved sessions: one block right
         // after a gate fall (farthest from the next note), never into a GC.
         if (patt_save_step()) s_flush_hold_ms = ms_now + SAVE_TRICKLE_GAP_MS;
       }
     }
-#ifndef SUPEROS_COMBINED
     else if (idle && !s_gc_dead && g_flash.free_pages() < SAVE_GC_HEADROOM) {
       // Pay the long GC stall now, while nobody is listening or editing, so
       // it can never land inside a save while the sequencer runs.
       if (!g_flash.maintain(SAVE_GC_HEADROOM)) s_gc_dead = true;
       s_flush_hold_ms = ms_now + 5000;
     }
-#endif
   }
+#endif
 
   // 1 Hz perf counters (always on; surfaced via SysEx status in production)
   g_pass_cnt++;
