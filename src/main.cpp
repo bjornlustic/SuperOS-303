@@ -290,6 +290,12 @@ static bool    s_scale_fn_entry   = false; // FN still held from the entry gestu
 static uint8_t s_scale_cycle_root = 0xFF;  // last FN+note root this FN-hold (0xFF = none)
 static uint8_t s_scale_cycle_idx  = 0;     // preset index within the cycle
 
+// Per-step probability editor (FN + SLIDE in Pattern Write).
+static bool    s_prob_mode = false;
+static uint8_t s_prob_base = 0;    // 0,8,16,24 (+32 in extended half)
+static bool    s_prob_ext  = false;
+static int8_t  s_prob_step = -1;   // selected step, -1 = none
+
 // Per-pattern scale editor. Entered by FN + ACCENT in Pattern Write; edits the
 // active edit pattern's scale (stored in its reserved metadata, saved with the
 // pattern). Non-destructive quantization applies live to playback.
@@ -348,6 +354,129 @@ void ProcessScaleMode() {
     engine.stale = true;
     midi_send_scale_update(engine.get_patsel(), s.scale_mask(), s.scale_enabled(),
                            engine.get_edit_var());
+  }
+}
+
+// Per-step probability editor. One characteristic per step (accent / slide /
+// octave down / up / double down / double up) with a probability level 1..13
+// (13 = 100%, the arming default). Rolled once per step at playback.
+//   Picker layer (TAP_NEXT not held): black keys pick the 8-step bank (A# =
+//     extended 32-63), white keys 1-8 select a step, BACK deselects. With a
+//     step selected: ACCENT/SLIDE toggle those characteristics; DOWN tap
+//     cycles none -> down -> double down; UP tap cycles none -> up -> double
+//     up (DOWN LED solid = down, blink = double down; same for UP).
+//   Level layer (TAP_NEXT held with a step selected): note keys C..high C set
+//     the level 1..13; the pitch LEDs bar-display the current level.
+//   FN exits (shared FN exit chain). Edits are RAM-only; flash is deferred.
+static void ProcessProbabilityMode(bool clk_run, bool dial_pattern_write) {
+  Leds::Set(FUNCTION_MODE_LED, true);
+  const uint8_t ev = engine.get_edit_var();
+  if (ev == 2 && engine.poly_active_) return;  // poly var3: no step probabilities
+  const Sequence &seq = engine.edit_seq_view();
+  const uint8_t blen = seq.length;
+  uint8_t *table = engine.prob_table(ev);
+  const bool level_layer = inputs[TAP_NEXT].held() && s_prob_step >= 0;
+  const bool blink = bool((millis() >> 7) & 1);
+
+  if (!level_layer) {
+    if (inputs[ASHARP_KEY].rising()) {
+      s_prob_ext = !s_prob_ext;
+      s_prob_base = uint8_t((s_prob_base & 31) + (s_prob_ext ? 32 : 0));
+    }
+    const uint8_t ext = s_prob_ext ? 32 : 0;
+    if (inputs[CSHARP_KEY].rising()) s_prob_base = uint8_t(ext + 0);
+    if (inputs[DSHARP_KEY].rising()) s_prob_base = uint8_t(ext + 8);
+    if (inputs[FSHARP_KEY].rising()) s_prob_base = uint8_t(ext + 16);
+    if (inputs[GSHARP_KEY].rising()) s_prob_base = uint8_t(ext + 24);
+    // Any step is selectable: a characteristic on a REST/TIE step is legal
+    // and latent (it applies if the step later becomes a NOTE).
+    for (uint8_t wi = 0; wi < 8; ++wi) {
+      if (inputs[kCfgWhiteKeys[wi]].rising()) {
+        const uint8_t cand = uint8_t(s_prob_base + wi);
+        if (cand < blen) s_prob_step = int8_t(cand);
+      }
+    }
+    if (inputs[BACK_KEY].rising()) s_prob_step = -1;
+
+    if (dial_pattern_write && s_prob_step >= 0) {
+      const uint8_t si = uint8_t(s_prob_step);
+      const uint8_t ch = prob_char_of(table[si]);
+      uint8_t lvl = prob_level_of(table[si]);
+      if (lvl < 1 || lvl > PROB_LEVEL_MAX) lvl = PROB_LEVEL_MAX; // arming default 100%
+      uint8_t nch = 0xFF;
+      if (inputs[ACCENT_KEY].rising()) nch = (ch == PROB_ACCENT) ? PROB_NONE : PROB_ACCENT;
+      if (inputs[SLIDE_KEY].rising())  nch = (ch == PROB_SLIDE)  ? PROB_NONE : PROB_SLIDE;
+      if (inputs[DOWN_KEY].rising())
+        nch = (ch == PROB_DOWN) ? PROB_DOUBLE_DOWN
+            : (ch == PROB_DOUBLE_DOWN) ? PROB_NONE : PROB_DOWN;
+      if (inputs[UP_KEY].rising())
+        nch = (ch == PROB_UP) ? PROB_DOUBLE_UP
+            : (ch == PROB_DOUBLE_UP) ? PROB_NONE : PROB_UP;
+      if (nch != 0xFF) {
+        const uint8_t val = (nch == PROB_NONE) ? 0 : prob_pack(nch, lvl);
+        engine.prob_set_resident(ev, si, val);
+        midi_send_prob_step(engine.get_patsel(), si, val, ev);
+      }
+    }
+  } else if (dial_pattern_write) {
+    // Level layer: note keys C..high C = level 1..13.
+    const uint8_t si = uint8_t(s_prob_step);
+    const uint8_t ch = prob_char_of(table[si]);
+    if (ch != PROB_NONE) {
+      for (uint8_t i = 0; i <= 12; ++i) {
+        if (!inputs[pitched_keys[i]].rising()) continue;
+        const uint8_t val = prob_pack(ch, uint8_t(i + 1));
+        engine.prob_set_resident(ev, si, val);
+        midi_send_prob_step(engine.get_patsel(), si, val, ev);
+        break;
+      }
+    }
+  }
+
+  // -- LEDs --
+  // Step LEDs: armed = bright, unarmed NOTE step = dim (orientation).
+  for (uint8_t wi = 0; wi < 8; ++wi) {
+    const uint8_t idx = uint8_t(s_prob_base + wi);
+    if (idx >= blen) break;
+    if (table[idx]) Leds::Set(OutputIndex(wi), true);
+    else if (seq.time(idx) == 1) Leds::SetDim(OutputIndex(wi), true);
+  }
+  // Playhead chase within the visible bank.
+  if (clk_run) {
+    const uint8_t tp = engine.get_edit_time_pos();
+    if ((tp & ~uint8_t(7)) == s_prob_base)
+      Leds::Set(OutputIndex(tp & 0x7), bool(clk_count & 4));
+  }
+  // Bank cover LEDs (selected bank blinks) + A# extended state.
+  const bool blinkb = bool((millis() >> 8) & 1);
+  const uint8_t ext = s_prob_ext ? 32 : 0;
+  const uint8_t base_off = uint8_t(s_prob_base & 31);
+  const OutputIndex sel_base_led =
+      (base_off == 0)  ? CSHARP_KEY_LED :
+      (base_off == 8)  ? DSHARP_KEY_LED :
+      (base_off == 16) ? FSHARP_KEY_LED : GSHARP_KEY_LED;
+  Leds::Set(CSHARP_KEY_LED, (blen > ext + 0)  && (sel_base_led == CSHARP_KEY_LED ? blinkb : true));
+  Leds::Set(DSHARP_KEY_LED, (blen > ext + 8)  && (sel_base_led == DSHARP_KEY_LED ? blinkb : true));
+  Leds::Set(FSHARP_KEY_LED, (blen > ext + 16) && (sel_base_led == FSHARP_KEY_LED ? blinkb : true));
+  Leds::Set(GSHARP_KEY_LED, (blen > ext + 24) && (sel_base_led == GSHARP_KEY_LED ? blinkb : true));
+  Leds::Set(ASHARP_KEY_LED, s_prob_ext ? true : (blen > 32 ? blinkb : false));
+  // Selection flash.
+  if (s_prob_step >= 0 && (uint8_t(s_prob_step) & ~uint8_t(7)) == s_prob_base)
+    Leds::Set(OutputIndex(s_prob_step & 0x7), blink);
+
+  if (s_prob_step >= 0) {
+    const uint8_t pb = table[uint8_t(s_prob_step)];
+    const uint8_t ch = prob_char_of(pb);
+    // Characteristic LEDs for the selected step.
+    Leds::Set(ACCENT_KEY_LED, ch == PROB_ACCENT);
+    Leds::Set(SLIDE_KEY_LED,  ch == PROB_SLIDE);
+    Leds::Set(DOWN_KEY_LED, ch == PROB_DOWN || (ch == PROB_DOUBLE_DOWN && blink));
+    Leds::Set(UP_KEY_LED,   ch == PROB_UP   || (ch == PROB_DOUBLE_UP   && blink));
+    // Level bar on the pitch LEDs while the level layer is active.
+    if (level_layer && ch != PROB_NONE) {
+      const uint8_t lvl = prob_level_of(pb);
+      for (uint8_t i = 0; i < 13 && i < lvl; ++i) Leds::Set(pitch_leds[i], true);
+    }
   }
 }
 
@@ -2243,6 +2372,10 @@ void loop() {
     s_step_sel_ext  = false;
     s_dir_mode      = false;
     s_scale_mode    = false;
+    s_prob_mode     = false;
+    s_prob_step     = -1;
+    s_prob_ext      = false;
+    s_prob_base     = 0;
     if (s_keyboard_mode) {
       s_keyboard_mode = false;
       s_tap_pitch_preview_gate = false;
@@ -2400,12 +2533,20 @@ void loop() {
       s_scale_cycle_root = 0xFF;
       s_scale_cycle_idx = 0;
       engine.SetMode(NORMAL_MODE, !clk_run);
+    } else if (fn_mod && inputs[SLIDE_KEY].rising() && !s_prob_mode && dial_pattern_write) {
+      s_prob_mode = true;
+      s_prob_base = 0;
+      s_prob_ext  = false;
+      s_prob_step = -1;
+      engine.SetMode(NORMAL_MODE, !clk_run);
     } else if (fn_mod && inputs[PITCH_KEY].rising() && !s_step_sel_mode && dial_pattern_write) {
       s_step_sel_mode = true;
       s_step_sel_chain_view = 0; // always default to first chain slot on entry
       s_step_sel_base = 0;
       s_step_sel_ext  = false;
       engine.SetMode(NORMAL_MODE, !clk_run);
+    } else if (s_prob_mode) {
+      ProcessProbabilityMode(clk_run, dial_pattern_write);
     } else if (s_step_sel_mode) {
       ProcessStepSelect(clk_run, dial_pattern_write);
     } else if (s_keyboard_mode && (dial == DialMode::PatternPlay)) {
@@ -2544,6 +2685,9 @@ void loop() {
       s_step_sel_edit = false;
       s_step_sel_time = false;
       engine.SetMode(NORMAL_MODE, !clk_run);
+    } else if (s_prob_mode) {
+      s_prob_mode = false;
+      s_prob_step = -1;
     } else if (s_dir_mode) {
       s_dir_mode = false;
     } else if (s_scale_mode) {
@@ -2562,7 +2706,7 @@ void loop() {
     // the overlay gate, pressing PITCH or TIME inside an overlay silently
     // queued a submode that popped up the moment the overlay exited (and in
     // step-select made bare step presses open the audition gate).
-    const bool overlay_mode = s_dir_mode || s_scale_mode || s_step_sel_mode;
+    const bool overlay_mode = s_dir_mode || s_scale_mode || s_step_sel_mode || s_prob_mode;
     const bool in_poly_edit = (engine.get_mode() == PITCH_MODE && engine.edit_var_ == 2 && engine.poly_active_);
     if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode && !in_poly_edit && !overlay_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
     if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod && !overlay_mode) engine.SetMode(PITCH_MODE, !clk_run);
@@ -2754,9 +2898,11 @@ void loop() {
     if (engine.get_group() != s_prev_group) {
       s_prev_group = engine.get_group();
       s_display_group = engine.get_group();
+      // 0x1C only: the web editor reacts by bulk-requesting all 48 variation
+      // slots itself (paced 0x10/0x11 round trips). Broadcasting 16 unsolicited
+      // pattern dumps here overflowed the 512-byte DIN ring (most were dropped)
+      // and mis-counted the editor's bulk-reply tracker.
       midi_send_group_update(engine.get_group());
-      for (uint8_t _pi = 0; _pi < NUM_PATTERNS; ++_pi)
-        midi_send_pattern_update(_pi);
     }
   }
 

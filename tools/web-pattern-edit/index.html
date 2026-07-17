@@ -403,6 +403,9 @@
     .f-btn:disabled { opacity: 0.15; cursor: default; }
     .f-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
     .f-btn.f-on { background: var(--black); border-color: var(--black); color: var(--white); }
+    .step-prob { display: flex; gap: 0; margin-top: 2px; }
+    .step-prob .p-char { flex: 1.2; height: 18px; font-size: 8px; }
+    .step-prob .p-lvl  { flex: 1; height: 18px; font-size: 8px; letter-spacing: 0; }
     .is-note .f-btn { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.4); }
     .is-note .f-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
     .is-note .f-btn.f-on { background: var(--white); border-color: var(--white); color: var(--black); }
@@ -1053,6 +1056,31 @@
   var POLY_LEN_OFF   = 226;
   var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 260
 
+  // Per-step characteristic probability (SysEx 0x2B step / 0x2C req / 0x2D table).
+  // One byte per step: bits[2:0] = characteristic, bits[6:3] = level 1..13
+  // (13 = 100%). 0x00 = unarmed. 64 raw -> 74 packed.
+  var PACKED_PROB    = 64 + Math.ceil(64 / 7); // 74
+  var PROB_LEVEL_MAX = 13;
+  var PROB_CHARS     = ['–', 'A', 'S', '-12', '+12', '-24', '+24'];
+  var PROB_DELTAS    = [0, 0, 0, -12, 12, -24, 24];
+  function probCharOf(b)  { return b & 7; }
+  function probLevelOf(b) { return (b >> 3) & 15; }
+  function probPack(c, l) { return (c & 7) | ((l & 15) << 3); }
+  function probPct(l)     { return Math.round(l * 100 / PROB_LEVEL_MAX); }
+  // Firmware's graceful octave degrade (sequence.h prob_degrade_transpose):
+  // double shifts fall back to single, single shifts fall back to unchanged.
+  // Range is -12..52: the CV DAC spans an octave below bottom C and 4
+  // semitones above double-up high C (the top E = DAC code 63).
+  function probDegrade(baseLin, t) {
+    var v = baseLin + t;
+    if (v >= -12 && v <= 52) return t;
+    if (t === 24 || t === -24) {
+      t = t / 2; v = baseLin + t;
+      if (v >= -12 && v <= 52) return t;
+    }
+    return 0;
+  }
+
   var PITCH_PACK_MASK = 0x3F;
   var PITCH_MAX       = 0x3C; // semi=12 | (oct=3 << 4)
   var PITCH_DEFAULT   = 0x10; // semi=0, oct=1 (centre C)
@@ -1481,6 +1509,7 @@
   var varMidiCh = [];
   var varMode   = [];
   var polyStore = []; // [g][p] -> Uint8Array(POLY_BLOB_SIZE) or null (variation-3 poly data)
+  var probStore = []; // [g][p][v] -> Uint8Array(64) per-step probability tables
   var groups = []; // [4][16] -> reference into varStore[g][p][slotVar[g][p]]
   var LS_KEY = 'superos303_groups_v8'; // bumped for per-slot variations; old key dropped
   var LS_SCALE_LOCK = 'superos303_scale_lock';
@@ -1567,17 +1596,24 @@
   // The 303 CV/gate always plays variation 1, so variation 1 is the variation
   // mirrored to/from the device. Variations 2 & 3 are separate MIDI-only tracks.
   function cvBlob(g, p) { return varStore[g][p][VAR_303]; }
+  function getProb(g, p, v) {
+    if (!probStore[g]) probStore[g] = [];
+    if (!probStore[g][p]) probStore[g][p] = [new Uint8Array(64), new Uint8Array(64), new Uint8Array(64)];
+    if (!probStore[g][p][v & 3]) probStore[g][p][v & 3] = new Uint8Array(64);
+    return probStore[g][p][v & 3];
+  }
   function activeIsCvVar() { return slotVar[activeGroup][activePat] === VAR_303; }
 
   function initGroups() {
-    groups = []; varStore = []; slotVar = []; slotCvVar = []; varMidiCh = []; varMode = []; polyStore = [];
+    groups = []; varStore = []; slotVar = []; slotCvVar = []; varMidiCh = []; varMode = []; polyStore = []; probStore = [];
     for (var g = 0; g < NUM_GROUPS; g++) {
-      groups[g] = []; varStore[g] = []; slotVar[g] = []; slotCvVar[g] = []; varMidiCh[g] = []; varMode[g] = []; polyStore[g] = [];
+      groups[g] = []; varStore[g] = []; slotVar[g] = []; slotCvVar[g] = []; varMidiCh[g] = []; varMode[g] = []; polyStore[g] = []; probStore[g] = [];
       for (var p = 0; p < PATS_PER_GROUP; p++) {
         varStore[g][p] = [];
         varMidiCh[g][p] = [];
         varMode[g][p] = [];
         polyStore[g][p] = null;
+        probStore[g][p] = [new Uint8Array(64), new Uint8Array(64), new Uint8Array(64)];
         for (var v = 0; v < NUM_VARIATIONS; v++) {
           varStore[g][p][v] = makeBlankPat();
           varMidiCh[g][p][v] = v + 1;     // variation 1->ch1, 2->ch2, 3->ch3
@@ -1610,7 +1646,8 @@
             cv:   slotCvVar[g][p],
             ch:   varMidiCh[g][p].slice(),
             mode: varMode[g][p].slice(),
-            poly: polyStore[g][p] ? Array.from(polyStore[g][p]) : null
+            poly: polyStore[g][p] ? Array.from(polyStore[g][p]) : null,
+            prob: probStore[g][p].map(function(t){ return Array.from(t); })
           };
         }
       }
@@ -1636,6 +1673,11 @@
           slotVar[g][p]   = s.sel | 0;
           slotCvVar[g][p] = s.cv | 0;
           polyStore[g][p] = (s.poly && s.poly.length === POLY_BLOB_SIZE) ? new Uint8Array(s.poly) : null;
+          if (Array.isArray(s.prob) && s.prob.length === NUM_VARIATIONS) {
+            for (var pv = 0; pv < NUM_VARIATIONS; pv++)
+              if (Array.isArray(s.prob[pv]) && s.prob[pv].length === 64)
+                probStore[g][p][pv] = new Uint8Array(s.prob[pv]);
+          }
           repointSlot(g, p);
         }
       }
@@ -1745,6 +1787,32 @@
   var rxBuf = [];
   var expectDump = 0;
   var bulkNextPat = -1; // next pattern index to request (-1 = not in bulk)
+  // Bulk watchdog: re-request the awaited slot if its reply never arrives (a
+  // dropped SysEx used to hang the sync overlay forever); give up after 5 tries.
+  var bulkWatchdogTimer = null;
+  var bulkRetries = 0;
+  function bulkRequestIndex(idx) {
+    sendSysex(new Uint8Array([0x7d, 0x10, idx % 16, (idx / 16) | 0]));
+    if (bulkWatchdogTimer) clearTimeout(bulkWatchdogTimer);
+    bulkWatchdogTimer = setTimeout(function() {
+      bulkWatchdogTimer = null;
+      if (expectDump <= 0) return;
+      var awaited = bulkNextPat - 1;
+      if (bulkRetries < 5) {
+        bulkRetries++;
+        log('Bulk: no reply for slot ' + awaited + ' — retry ' + bulkRetries, 'log-err');
+        bulkRequestIndex(awaited);
+      } else {
+        log('Bulk: giving up on slot ' + awaited + ' after ' + bulkRetries + ' retries', 'log-err');
+        expectDump = 0; bulkNextPat = -1; bulkRetries = 0;
+        hideSyncOverlay();
+      }
+    }, 1000);
+  }
+  function bulkStopWatchdog() {
+    if (bulkWatchdogTimer) { clearTimeout(bulkWatchdogTimer); bulkWatchdogTimer = null; }
+    bulkRetries = 0;
+  }
   /** Group index (0–3) to store patterns during a 0x13 bulk read; set when dump starts. */
   var patternBulkTargetGroup = 0;
   var saveAckPending = false;
@@ -2002,6 +2070,7 @@
     if (activeGroup === hwGroup) {
       lastSentBlob = new Uint8Array(activeBlob());
       lastSentPat  = activePat;
+      if (midiOut) requestProbTable(activePat, slotVar[activeGroup][activePat]);
     }
     refreshAllPills();
     recomputeDirty();
@@ -2020,7 +2089,11 @@
     history[activeGroup][activePat] = [cloneU8(groups[activeGroup][activePat])];
     histIdx[activeGroup][activePat] = 0;
     commitIdx[activeGroup][activePat] = 0;
-    if (activeGroup === hwGroup) { lastSentBlob = new Uint8Array(activeBlob()); lastSentPat = activePat; }
+    if (activeGroup === hwGroup) {
+      lastSentBlob = new Uint8Array(activeBlob());
+      lastSentPat = activePat;
+      if (midiOut) requestProbTable(activePat, v);
+    }
     // Tell the 303 which variation to edit (so its hardware edit target follows),
     // unless this switch came FROM the 303 (avoid echo loop).
     if (!fromHw && activeGroup === hwGroup)
@@ -2377,6 +2450,57 @@
       flagRow.appendChild(aBtn);
       flagRow.appendChild(sBtn);
       card.appendChild(flagRow);
+
+      // ── PROB lane: per-step characteristic + probability (SysEx 0x2B) ──
+      // One characteristic per step (accent / slide / octave shift) rolled at
+      // playback with a level 1..13 (13 = 100%). Click cycles characteristic;
+      // the % button cycles the level down (wraps to 100%).
+      var pTable = getProb(activeGroup, patIdx, slotVar[activeGroup][patIdx]);
+      var pb = pTable[s];
+      var pch = probCharOf(pb);
+      var plv = probLevelOf(pb) || PROB_LEVEL_MAX;
+      var probRow = document.createElement('div');
+      probRow.className = 'step-prob';
+      var cBtn = document.createElement('button');
+      cBtn.className = 'f-btn p-char' + (pch ? ' f-on' : '');
+      cBtn.textContent = PROB_CHARS[pch];
+      cBtn.disabled = !editable;
+      if (pch >= 3) {
+        var effT = probDegrade(unpackLinear(dispPacked), PROB_DELTAS[pch]);
+        if (effT !== PROB_DELTAS[pch])
+          cBtn.title = (effT === 0) ? 'Out of range: plays unchanged'
+                                    : ('Out of range: degrades to ' + (effT > 0 ? '+' : '') + effT);
+      }
+      var lBtn = document.createElement('button');
+      lBtn.className = 'f-btn p-lvl';
+      lBtn.textContent = pch ? (probPct(plv) + '%') : '–';
+      lBtn.disabled = !editable || !pch;
+      cBtn.addEventListener('click', (function(si, lvl) {
+        return function() {
+          var t = getProb(activeGroup, patIdx, slotVar[activeGroup][patIdx]);
+          var nch = (probCharOf(t[si]) + 1) % 7;
+          t[si] = nch ? probPack(nch, lvl) : 0;
+          saveGroupsToLS();
+          sendProbStep(patIdx, si, t[si], slotVar[activeGroup][patIdx]);
+          renderGrid();
+        };
+      })(s, plv));
+      lBtn.addEventListener('click', (function(si) {
+        return function() {
+          var t = getProb(activeGroup, patIdx, slotVar[activeGroup][patIdx]);
+          var ch = probCharOf(t[si]);
+          if (!ch) return;
+          var lvl = probLevelOf(t[si]) || PROB_LEVEL_MAX;
+          lvl = (lvl > 1) ? lvl - 1 : PROB_LEVEL_MAX; // step down, wrap to 100%
+          t[si] = probPack(ch, lvl);
+          saveGroupsToLS();
+          sendProbStep(patIdx, si, t[si], slotVar[activeGroup][patIdx]);
+          renderGrid();
+        };
+      })(s));
+      probRow.appendChild(cBtn);
+      probRow.appendChild(lBtn);
+      card.appendChild(probRow);
 
       gridEl.appendChild(card);
     }
@@ -3105,6 +3229,23 @@
   function requestPattern(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15])); }
   // Request variation 3 of a slot (device replies 0x25 if poly, else 0x11).
   function requestPoly(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15, 2])); }
+  // Per-step probability tables (0x2B step edit / 0x2C request / 0x2D full table).
+  function requestProbTable(pat, v) { sendSysex(new Uint8Array([0x7d, 0x2c, pat & 15, v & 3])); }
+  function sendProbStep(pat, s, val, v) {
+    if (activeGroup !== hwGroup) return;
+    sendSysex(new Uint8Array([0x7d, 0x2b, pat & 15, s & 0x3f, val & 0x7f, v & 3]));
+  }
+  function sendProbTable(pat, v) {
+    if (activeGroup !== hwGroup) return;
+    var t = getProb(activeGroup, pat, v);
+    var cx = xorN(t, 64), packed = pack7(t);
+    var msg = new Uint8Array(5 + packed.length + 1);
+    msg[0] = 0x7d; msg[1] = 0x2d; msg[2] = pat & 15;
+    msg[3] = cx & 0x7f; msg[4] = (cx >> 7) & 1;
+    msg.set(packed, 5);
+    msg[5 + packed.length] = v & 3;
+    sendSysex(msg);
+  }
   function sendPoly(g, p) {
     var blob = polyStore[g][p];
     if (!blob) return;
@@ -3404,9 +3545,15 @@
       if (!raw)         { log('0x11 unpack failed', 'log-err'); return; }
       if (xorBlob(raw) !== cx) { log('0x11 checksum mismatch', 'log-err'); return; }
 
-      var inBulk = expectDump > 0;
+      // Bulk replies must match the awaited linear index (var*16 + pat). An
+      // unsolicited 0x11 (hardware edit broadcast) arriving mid-bulk used to
+      // decrement the counter and skip a request, ending the bulk with stale
+      // slots silently marked synced.
+      var lin = pat + rVar * 16;
+      var inBulk = expectDump > 0 && lin === bulkNextPat - 1;
       var bulkDone = false;
       if (inBulk) {
+        bulkRetries = 0;
         expectDump--;
         var recvd = 48 - expectDump;
         log('Pattern ' + (pat+1) + ' var ' + (rVar+1) + ' (' + recvd + '/48)', 'log-syx');
@@ -3414,10 +3561,11 @@
         if (expectDump === 0) {
           bulkDone = true;
           bulkNextPat = -1;
+          bulkStopWatchdog();
           hideSyncOverlay();
         } else {
           // bulkNextPat = next linear index 0..47 (var-outer: var*16 + pat).
-          sendSysex(new Uint8Array([0x7d, 0x10, bulkNextPat % 16, (bulkNextPat / 16) | 0]));
+          bulkRequestIndex(bulkNextPat);
           bulkNextPat++;
         }
       } else {
@@ -3473,14 +3621,18 @@
       if (!praw) { log('0x25 unpack failed', 'log-err'); return; }
       if (xorN(praw, POLY_BLOB_SIZE) !== pcx) { log('0x25 checksum mismatch', 'log-err'); return; }
 
-      var pInBulk = expectDump > 0, pBulkDone = false;
+      // A 0x25 substitutes for the 0x11 of a var-3 (index 2) request: linear
+      // index = pat + 32. Same awaited-slot guard as 0x11.
+      var pLin = ppat + 32;
+      var pInBulk = expectDump > 0 && pLin === bulkNextPat - 1, pBulkDone = false;
       if (pInBulk) {
+        bulkRetries = 0;
         expectDump--;
         var prcvd = 48 - expectDump;
         log('Pattern ' + (ppat+1) + ' var 3 poly (' + prcvd + '/48)', 'log-syx');
         updateSyncOverlay(prcvd);
-        if (expectDump === 0) { pBulkDone = true; bulkNextPat = -1; hideSyncOverlay(); }
-        else { sendSysex(new Uint8Array([0x7d, 0x10, bulkNextPat % 16, (bulkNextPat / 16) | 0])); bulkNextPat++; }
+        if (expectDump === 0) { pBulkDone = true; bulkNextPat = -1; bulkStopWatchdog(); hideSyncOverlay(); }
+        else { bulkRequestIndex(bulkNextPat); bulkNextPat++; }
       } else {
         log('Pattern ' + (ppat+1) + ' var 3 poly received', 'log-syx');
       }
@@ -3615,6 +3767,7 @@
           log('Aborting bulk for group ' + (patternBulkTargetGroup + 1) + ' — restarting for group ' + (newGrp + 1), 'log-syx');
           expectDump = 0;
           bulkNextPat = -1;
+          bulkStopWatchdog();
         }
         var wasInitial = !initialSyncDone;
         initialSyncDone = true;
@@ -3737,6 +3890,33 @@
       if (activeGroup === hwGroup && scPat === activePat && scShown) { refreshScaleUI(); renderGrid(); }
       recomputeDirty();
       log('Scale update pat ' + (scPat+1) + ' var ' + (scVar+1) + (scEn ? ' on' : ' off'), 'log-ack');
+      return;
+    }
+
+    if (cmd === 0x2d) { // per-step probability table (reply to 0x2C, or host echo-free set)
+      if (bytes.length < 5 + PACKED_PROB) { log('0x2d too short (' + bytes.length + ')', 'log-err'); return; }
+      var pbPat = bytes[2] & 0x0f;
+      var pbVar = (bytes.length > 5 + PACKED_PROB) ? (bytes[5 + PACKED_PROB] & 0x03) : 0;
+      var pbCx  = bytes[3] | (bytes[4] << 7);
+      var pbRaw = unpack7(bytes.subarray(5), 64);
+      if (!pbRaw || xorN(pbRaw, 64) !== pbCx) { log('0x2d checksum mismatch', 'log-err'); return; }
+      var pbG = (hwGroup >= 0) ? hwGroup : activeGroup;
+      getProb(pbG, pbPat, pbVar).set(pbRaw);
+      saveGroupsToLS();
+      if (activeGroup === pbG && pbPat === activePat && pbVar === slotVar[pbG][pbPat]) renderGrid();
+      log('Prob table pat ' + (pbPat+1) + ' var ' + (pbVar+1) + ' received', 'log-ack');
+      return;
+    }
+
+    if (cmd === 0x2b && bytes.length >= 6) { // one probability step from hardware
+      var psPat = bytes[2] & 0x0f, psStep = bytes[3] & 0x3f;
+      var psVal = bytes[4] & 0x7f, psVar = bytes[5] & 0x03;
+      if (psVar > 2) return;
+      var psG = (hwGroup >= 0) ? hwGroup : activeGroup;
+      getProb(psG, psPat, psVar)[psStep] = psVal;
+      saveGroupsToLS();
+      if (activeGroup === psG && psPat === activePat && psVar === slotVar[psG][psPat]) renderGrid();
+      log('Prob step pat ' + (psPat+1) + ' step ' + (psStep+1) + ' = 0x' + psVal.toString(16), 'log-ack');
       return;
     }
 
@@ -4874,8 +5054,9 @@
     patternBulkTargetGroup = g;
     expectDump = 48;       // 16 patterns x 3 variations
     bulkNextPat = 1;       // next linear index (var*16 + pat); 0 = pat0/var0 sent below
+    bulkRetries = 0;
     if (showOverlay) showSyncOverlay('Loading patterns + variations from 303 (group ' + (g + 1) + ')...');
-    sendSysex(new Uint8Array([0x7d, 0x10, 0x00, 0x00])); // pattern 0, variation 1 first
+    bulkRequestIndex(0);   // pattern 0, variation 1 first (watchdog armed)
   }
   document.getElementById('btnReqAll').onclick = function() {
     if (!midiOut) { log('All 16: no midiOut — connect MIDI first', 'log-err'); return; }

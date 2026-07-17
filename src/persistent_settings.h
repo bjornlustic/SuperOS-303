@@ -171,6 +171,25 @@ inline void WritePatternAt(const Sequence &seq, uint8_t abs_slot, uint8_t var) {
   g_flash.write(block, buf, FB_PATTERN_LEN);
 }
 
+// Per-slot step-probability tables: one block per slot, [0..63] var1,
+// [64..127] var2, [128..191] var3 mono. Missing record = all zeros (unarmed).
+inline void ReadProbAt(uint8_t abs_slot, uint8_t *dst192) {
+  memset(dst192, 0, FB_PROB_LEN);
+  g_flash.read(uint8_t(FB_PROB_BASE + abs_slot), dst192, FB_PROB_LEN);
+}
+inline void WriteProbAt(uint8_t abs_slot, const uint8_t *src192) {
+  // All-zero table with no existing record: skip the write so unarmed slots
+  // never consume a live flash record.
+  bool any = false;
+  for (uint8_t i = 0; i < FB_PROB_LEN; ++i)
+    if (src192[i]) { any = true; break; }
+  if (!any) {
+    uint8_t probe;
+    if (g_flash.read(uint8_t(FB_PROB_BASE + abs_slot), &probe, 1) == 0) return;
+  }
+  g_flash.write(uint8_t(FB_PROB_BASE + abs_slot), src192, FB_PROB_LEN);
+}
+
 // Variation 3 in poly form: its own dedicated block (poly slots only).
 inline void ReadPolyAt(PolyVoice &pv, uint8_t abs_slot) {
   uint8_t buf[POLY_BLOB_SIZE];

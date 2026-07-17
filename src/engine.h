@@ -145,6 +145,45 @@ struct Engine {
   bool      poly_edit_dirty_ = false;
   uint32_t  poly_edit_ms_    = 0;    // millis() of last buffered edit (idle coalescing)
 
+  // Deferred non-resident variation 2/3 mono blob (web SysEx 0x12). Buffered in
+  // RAM and written to flash on the idle save / next persist_shadows -- never
+  // inline in the SysEx handler (a page write halts the CPU long enough to drop
+  // the next incoming message, and live-edit debounce would wear flash per edit).
+  Sequence  shadow_edit_;
+  int16_t   shadow_edit_slot_  = -1; // absolute slot buffered, or -1 if none
+  uint8_t   shadow_edit_var_   = 1;  // 1 = variation 2, 2 = variation 3 (mono)
+  bool      shadow_edit_dirty_ = false;
+  uint32_t  shadow_edit_ms_    = 0;  // millis() of last buffered edit (idle coalescing)
+
+  // --- Per-step characteristic probability (flash-backed, active slot only) ---
+  // One prob byte per step (see ProbChar in sequence.h). Tables for the whole
+  // bank cannot be RAM-resident (18 x 64 B on an 8 KB part); only the active
+  // slot's three variations are cached, loaded in ReloadShadows and flushed in
+  // persist_shadows alongside the shadow lifecycle. Poly var3 is excluded.
+  uint8_t  prob_var1_[MAX_STEPS]      = {};
+  uint8_t  prob_shadow_[2][MAX_STEPS] = {};
+  bool     prob_stale_ = false;       // resident tables edited; persist on save/reload
+  // Deferred non-resident prob edits (SysEx to a slot != active): one (slot,var)
+  // 64-byte region buffered in RAM, flash write deferred (poly 0x27 precedent).
+  uint8_t  prob_edit_[MAX_STEPS] = {};
+  int16_t  prob_edit_slot_  = -1;
+  uint8_t  prob_edit_var_   = 0;
+  bool     prob_edit_dirty_ = false;
+  uint32_t prob_edit_ms_    = 0;
+  // Roll state, latched once per NOTE step in Advance()/ReloadShadows (output
+  // getters are polled every DAC refresh and must never re-roll). TIE steps
+  // hold the source note's latch; REST clears it.
+  uint8_t  prob_armed_     = PROB_NONE;
+  bool     prob_pass_      = false;
+  int8_t   prob_transpose_ = 0;
+  uint8_t  prob_slide_prev_ = 0xFF;   // source-note slide override: 0xFF none, 0 off, 1 on
+  uint8_t  prob_slide_pend_ = 0xFF;   // current note's override, consumed next step
+  uint8_t  prob_sh_armed_[2]     = {PROB_NONE, PROB_NONE};
+  bool     prob_sh_pass_[2]      = {false, false};
+  int8_t   prob_sh_transpose_[2] = {0, 0};
+  uint8_t  prob_sh_slide_prev_[2] = {0xFF, 0xFF};
+  uint8_t  prob_sh_slide_pend_[2] = {0xFF, 0xFF};
+
   uint8_t get_group() const { return group_; }
 
   void QueueGroup(uint8_t g) {
@@ -270,6 +309,21 @@ struct Engine {
     }
     shadow_last_p_     = p_select;
     shadow_last_group_ = group_;
+    // Load this slot's probability tables and re-latch variation 1 for the
+    // step it is already on (a chain switch advances into the new pattern
+    // before the reload, so that roll used the outgoing slot's table).
+    {
+      uint8_t buf[FB_PROB_LEN];
+      ReadProbAt(s, buf);
+      memcpy(prob_var1_,      buf,                 MAX_STEPS);
+      memcpy(prob_shadow_[0], buf + MAX_STEPS,     MAX_STEPS);
+      memcpy(prob_shadow_[1], buf + 2 * MAX_STEPS, MAX_STEPS);
+      prob_stale_ = false;
+      prob_clear_latch();
+      if (!resting)
+        prob_latch_step(get_sequence(), prob_var1_,
+                        prob_armed_, prob_pass_, prob_transpose_, prob_slide_pend_);
+    }
   }
   // True when the active slot or group changed since the last ReloadShadows.
   // Caller must flush open shadow notes before calling ReloadShadows.
@@ -281,7 +335,11 @@ struct Engine {
   // voice, so the shadow MIDI can track the analog gate window.
   void AdvanceShadows() {
     for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
-      if (!shadow_notecount_[i]) { shadow_resting_[i] = true; shadow_slide_gate_[i] = false; continue; }
+      if (!shadow_notecount_[i]) {
+        shadow_resting_[i] = true; shadow_slide_gate_[i] = false;
+        prob_sh_armed_[i] = PROB_NONE; prob_sh_pass_[i] = false;
+        continue;
+      }
       Sequence &s = shadow_[i];
       const uint8_t dir = s.get_direction_stored();   // each variation has its own direction
       bool result;
@@ -298,14 +356,28 @@ struct Engine {
       }
       shadow_step_dir_[i] = step_dir;
       shadow_resting_[i]  = !result;
+      // Probability latch (mirrors the var1 latch in Advance()).
+      prob_sh_slide_prev_[i] = prob_sh_slide_pend_[i];
+      prob_latch_step(s, prob_shadow_[i], prob_sh_armed_[i], prob_sh_pass_[i],
+                      prob_sh_transpose_[i], prob_sh_slide_pend_[i]);
       if (result) {
+        const bool sh_dir_random = (dir == DIR_RANDOM || dir == DIR_HALF_RAND ||
+                                    dir == DIR_BROWNIAN);
+        bool src_slide = false;
+        if (!sh_dir_random) {
+          src_slide = (prob_sh_slide_prev_[i] != 0xFF)
+                        ? (!s.first_step && prob_sh_slide_prev_[i] == 1)
+                        : s.slide_from_prev_dir(dir, step_dir);
+        }
         const bool next_is_tie = s.is_tied_dir(dir, next_step_dir);
-        const bool tie_slide   = s.is_tie() && s.slide_from_prev_dir(dir, step_dir);
+        const bool tie_slide   = s.is_tie() && src_slide;
         const uint8_t len  = s.length ? s.length : 1;
         const uint8_t npos = uint8_t((unsigned(s.time_pos) +
                                       (next_step_dir >= 0 ? 1u : unsigned(len) - 1u)) % unsigned(len));
         const bool next_is_rest = (s.time(npos) == 0);
-        shadow_slide_gate_[i] = (!next_is_rest && s.get_slide()) || next_is_tie || tie_slide;
+        const bool cur_slide = (prob_sh_armed_[i] == PROB_SLIDE) ? prob_sh_pass_[i]
+                                                                 : s.get_slide();
+        shadow_slide_gate_[i] = (!next_is_rest && cur_slide) || next_is_tie || tie_slide;
       } else {
         shadow_slide_gate_[i] = false;
       }
@@ -381,9 +453,113 @@ struct Engine {
   void drop_poly_edit(uint8_t slot) {
     if (poly_edit_slot_ == int16_t(slot)) { poly_edit_slot_ = -1; poly_edit_dirty_ = false; }
   }
+  // Buffer a full poly blob (SysEx 0x26) for a NON-resident slot. RAM only; the
+  // flash write is deferred to flush_poly_edit() like the per-step 0x27 edits.
+  void poly_edit_blob(uint8_t slot, const uint8_t *raw) {
+    if (poly_edit_dirty_ && poly_edit_slot_ != int16_t(slot)) flush_poly_edit();
+    poly_edit_.deserialize(raw);
+    poly_edit_.ensure_chords_for_notes();
+    poly_edit_slot_  = int16_t(slot);
+    poly_edit_dirty_ = true;
+    poly_edit_ms_    = millis();
+  }
+  // Buffer a full var2/3 mono blob (SysEx 0x12) for a NON-resident slot. RAM
+  // only; flushed by flush_shadow_edit(). Caller validates the blob's length.
+  void shadow_edit_blob(uint8_t slot, uint8_t var, const uint8_t *raw) {
+    if (shadow_edit_dirty_ &&
+        (shadow_edit_slot_ != int16_t(slot) || shadow_edit_var_ != var))
+      flush_shadow_edit();
+    deserialize_pattern(shadow_edit_, raw);
+    shadow_edit_.length = raw[PATTERN_SIZE - 1];
+    sequence_rebuild_pitch_count(shadow_edit_);
+    normalize_pattern_times(shadow_edit_);
+    shadow_edit_slot_  = int16_t(slot);
+    shadow_edit_var_   = var;
+    shadow_edit_dirty_ = true;
+    shadow_edit_ms_    = millis();
+  }
+  void flush_shadow_edit() {
+    if (shadow_edit_dirty_ && shadow_edit_slot_ >= 0)
+      WritePatternAt(shadow_edit_, uint8_t(shadow_edit_slot_), shadow_edit_var_);
+    shadow_edit_dirty_ = false;
+  }
+  // --- Probability-table edit paths (mirror the shadow/poly edit buffers) ---
+  // Resident table for a variation of the active slot.
+  uint8_t *prob_table(uint8_t var) {
+    return (var == 0) ? prob_var1_ : prob_shadow_[(var - 1) & 0x1];
+  }
+  void prob_set_resident(uint8_t var, uint8_t step, uint8_t val) {
+    prob_table(var)[step & (MAX_STEPS - 1)] = val;
+    prob_stale_ = true;
+    shadow_dirty_ms_ = millis();
+  }
+  // Buffer one step edit for a NON-resident (slot, var). RAM only; the flash
+  // write (a 192 B read-modify-write of the slot's block) is deferred.
+  void prob_edit_set(uint8_t slot, uint8_t var, uint8_t step, uint8_t val) {
+    if (prob_edit_slot_ != int16_t(slot) || prob_edit_var_ != var) {
+      flush_prob_edit();
+      uint8_t buf[FB_PROB_LEN];
+      ReadProbAt(slot, buf);
+      memcpy(prob_edit_, buf + var * MAX_STEPS, MAX_STEPS);
+      prob_edit_slot_ = int16_t(slot);
+      prob_edit_var_  = var;
+    }
+    prob_edit_[step & (MAX_STEPS - 1)] = val;
+    prob_edit_dirty_ = true;
+    prob_edit_ms_    = millis();
+  }
+  // Buffer a full 64 B table (null = all zeros) for a NON-resident (slot, var).
+  void prob_edit_blob(uint8_t slot, uint8_t var, const uint8_t *src64) {
+    if (prob_edit_dirty_ &&
+        (prob_edit_slot_ != int16_t(slot) || prob_edit_var_ != var))
+      flush_prob_edit();
+    if (src64) memcpy(prob_edit_, src64, MAX_STEPS);
+    else       memset(prob_edit_, 0, MAX_STEPS);
+    prob_edit_slot_  = int16_t(slot);
+    prob_edit_var_   = var;
+    prob_edit_dirty_ = true;
+    prob_edit_ms_    = millis();
+  }
+  void flush_prob_edit() {
+    if (prob_edit_dirty_ && prob_edit_slot_ >= 0) {
+      uint8_t buf[FB_PROB_LEN];
+      ReadProbAt(uint8_t(prob_edit_slot_), buf);
+      memcpy(buf + prob_edit_var_ * MAX_STEPS, prob_edit_, MAX_STEPS);
+      WriteProbAt(uint8_t(prob_edit_slot_), buf);
+    }
+    prob_edit_dirty_ = false;
+  }
+  // Table for the web editor: resident, else the dirty edit buffer, else flash.
+  void export_prob_table(uint8_t idx, uint8_t var, uint8_t *dst64) {
+    idx &= uint8_t(NUM_PATTERNS - 1);
+    if (var >= NUM_VARIATIONS) var = 0;
+    if (idx == p_select) { memcpy(dst64, prob_table(var), MAX_STEPS); return; }
+    const uint8_t s = abs_slot(idx);
+    if (prob_edit_dirty_ && prob_edit_slot_ == int16_t(s) && prob_edit_var_ == var) {
+      memcpy(dst64, prob_edit_, MAX_STEPS);
+      return;
+    }
+    uint8_t buf[FB_PROB_LEN];
+    ReadProbAt(s, buf);
+    memcpy(dst64, buf + var * MAX_STEPS, MAX_STEPS);
+  }
   // Persist edited shadow voices to flash (called on save and before reload).
   void persist_shadows() {
     flush_poly_edit();   // commit buffered non-resident poly edits before reload/save
+    flush_shadow_edit(); // commit buffered non-resident var2/3 blobs too
+    flush_prob_edit();   // commit buffered non-resident probability tables
+    // Flush the active slot's probability tables (uses the slot the tables
+    // were loaded for, like the shadow write below).
+    if (prob_stale_ && shadow_last_p_ != 0xff) {
+      const uint8_t ps = uint8_t(shadow_last_group_ * NUM_PATTERNS
+                                 + (shadow_last_p_ & uint8_t(NUM_PATTERNS - 1)));
+      uint8_t buf[FB_PROB_LEN];
+      memcpy(buf,                 prob_var1_,      MAX_STEPS);
+      memcpy(buf + MAX_STEPS,     prob_shadow_[0], MAX_STEPS);
+      memcpy(buf + 2 * MAX_STEPS, prob_shadow_[1], MAX_STEPS);
+      WriteProbAt(ps, buf);
+      prob_stale_ = false;
+    }
     if (!shadow_stale_ && !poly_stale_) return;
     const uint8_t s = uint8_t(shadow_last_group_ * NUM_PATTERNS
                               + (shadow_last_p_ & uint8_t(NUM_PATTERNS - 1)));
@@ -540,6 +716,33 @@ struct Engine {
   // too heavy to recompute on every main-loop DAC refresh).
   bool get_slide_dac() const { return slide_dac_; }
 
+  // Roll one voice's probability latch for its current step. NOTE = fresh
+  // roll, REST = clear, TIE = hold the source note's latch (a held note must
+  // not change accent/octave mid-tie; matches pitch_pos semantics).
+  static void prob_latch_step(const Sequence &s, const uint8_t *table,
+                              uint8_t &armed, bool &pass, int8_t &transpose,
+                              uint8_t &slide_pend) {
+    const uint8_t t = (s.length && s.time_pos < s.length)
+                        ? s.time(uint8_t(s.time_pos)) : 0;
+    if (t == 1) {
+      const uint8_t pb = table[uint8_t(s.time_pos) & (MAX_STEPS - 1)];
+      armed = prob_char_of(pb);
+      pass  = (armed != PROB_NONE) && (fast_rand(PROB_LEVEL_MAX) < prob_level_of(pb));
+      transpose = 0;
+      if (pass) {
+        const int8_t d = prob_char_delta(armed);
+        // Degrade against the scale-quantized pitch: output composes as
+        // quantized + transpose (octave shifts preserve the pitch class), so
+        // range-checking the same base keeps the sum in -12..52.
+        if (d) transpose = prob_degrade_transpose(
+                   s.scale_quantize_linear(s.get_pitch()), d);
+      }
+      slide_pend = (armed == PROB_SLIDE) ? uint8_t(pass ? 1 : 0) : 0xFF;
+    } else if (t == 0) {
+      armed = PROB_NONE; pass = false; transpose = 0; slide_pend = 0xFF;
+    }
+  }
+
   bool Advance() {
     bool result;
     int8_t step_dir     = 1;
@@ -583,25 +786,25 @@ struct Engine {
       if (advance_count_ >= get_sequence().length) {
         advance_count_ = 0;
         if (direction_change_pending_) {
-          const SequenceDirection old_dir = direction_;
           direction_ = next_direction_;
           direction_change_pending_ = false;
           pp_dir_ = 1;
-          if (old_dir == DIR_PINGPONG) {
-            if (direction_ == DIR_FORWARD) {
-              get_sequence().time_pos  = 0;
-              get_sequence().pitch_pos = 0;
-              get_sequence().first_step = true;
-              result        = get_sequence().time(0) != 0;
-              step_dir      = 1;
-              next_step_dir = 1;
-            } else if (direction_ == DIR_REVERSE) {
-              get_sequence().time_pos  = 0;
-              get_sequence().pitch_pos = 0;
-              get_sequence().first_step = true;
-            } else {
-              get_sequence().Reset();
-            }
+          // Re-anchor to step 0 at the bar boundary for every old direction
+          // (random/half-rand/brownian leave time_pos at an arbitrary step),
+          // so the pattern always hands off in phase with the clock.
+          if (direction_ == DIR_FORWARD) {
+            get_sequence().time_pos  = 0;
+            get_sequence().pitch_pos = 0;
+            get_sequence().first_step = true;
+            result        = get_sequence().time(0) != 0;
+            step_dir      = 1;
+            next_step_dir = 1;
+          } else if (direction_ == DIR_REVERSE) {
+            get_sequence().time_pos  = 0;
+            get_sequence().pitch_pos = 0;
+            get_sequence().first_step = true;
+          } else {
+            get_sequence().Reset();
           }
         }
         apply_pending_group();
@@ -617,19 +820,36 @@ struct Engine {
       }
     }
 
-    slide_dac_ = result &&
-                 get_sequence().slide_from_prev_dir(uint8_t(direction_), step_dir);
+    // Probability latch: consume the source note's slide override, then roll
+    // once for this step (getters below only read the latched result).
+    prob_slide_prev_ = prob_slide_pend_;
+    prob_latch_step(get_sequence(), prob_var1_,
+                    prob_armed_, prob_pass_, prob_transpose_, prob_slide_pend_);
+    const bool dir_random = (direction_ == DIR_RANDOM ||
+                             direction_ == DIR_HALF_RAND ||
+                             direction_ == DIR_BROWNIAN);
+    // Effective "the previous note slides into this step": an armed slide char
+    // on the source note replaces its stored flag with the roll result. A REST
+    // clears the pending override, so rest-cancels-slide is preserved.
+    bool src_slide = false;
+    if (result && !dir_random) {
+      src_slide = (prob_slide_prev_ != 0xFF)
+                    ? (!get_sequence().first_step && prob_slide_prev_ == 1)
+                    : get_sequence().slide_from_prev_dir(uint8_t(direction_), step_dir);
+    }
+    slide_dac_ = src_slide;
 
     if (result) {
       const bool next_is_tie = get_sequence().is_tied_dir(uint8_t(direction_), next_step_dir);
-      const bool tie_slide   = get_sequence().is_tie() &&
-                               get_sequence().slide_from_prev_dir(uint8_t(direction_), step_dir);
+      const bool tie_slide   = get_sequence().is_tie() && src_slide;
       const uint8_t next_pos = uint8_t(
           (unsigned(get_sequence().time_pos) +
            (next_step_dir >= 0 ? 1u : unsigned(get_sequence().length) - 1u)) %
           unsigned(get_sequence().length));
       const bool next_is_rest = (get_sequence().time(next_pos) == 0);
-      slide_gate = (!next_is_rest && get_sequence().get_slide()) || next_is_tie || tie_slide;
+      const bool cur_slide = (prob_armed_ == PROB_SLIDE) ? prob_pass_
+                                                         : get_sequence().get_slide();
+      slide_gate = (!next_is_rest && cur_slide) || next_is_tie || tie_slide;
     }
     resting = !result;
     return result;
@@ -676,6 +896,18 @@ struct Engine {
     resting = true;
     advance_count_ = 0;
     pp_dir_ = 1;
+    prob_clear_latch();
+  }
+
+  // Clear all latched probability roll state (transport reset / slot reload).
+  void prob_clear_latch() {
+    prob_armed_ = PROB_NONE; prob_pass_ = false; prob_transpose_ = 0;
+    prob_slide_prev_ = prob_slide_pend_ = 0xFF;
+    for (uint8_t i = 0; i < 2; ++i) {
+      prob_sh_armed_[i] = PROB_NONE; prob_sh_pass_[i] = false;
+      prob_sh_transpose_[i] = 0;
+      prob_sh_slide_prev_[i] = prob_sh_slide_pend_[i] = 0xFF;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1054,9 +1286,15 @@ struct Engine {
   void ClearPattern(uint8_t idx) {
     pattern[idx].Clear();
     stale = true;
+    // A cleared pattern must not keep ghost step probabilities.
     if (idx == p_select) {
+      memset(prob_var1_, 0, MAX_STEPS);
+      prob_stale_ = true;
+      shadow_dirty_ms_ = millis();
       Reset();
       mode_ = NORMAL_MODE;
+    } else {
+      prob_edit_blob(abs_slot(idx), 0, nullptr); // stage an all-zero var1 table
     }
   }
 
@@ -1113,6 +1351,7 @@ struct Engine {
   }
 
   bool get_accent() const {
+    if (prob_armed_ == PROB_ACCENT) return !resting && prob_pass_;
     return !resting && get_sequence().get_accent();
   }
   uint8_t get_pitch() const {
@@ -1120,9 +1359,13 @@ struct Engine {
   }
   // Playback pitch quantized to the active pattern's scale (identity when the
   // pattern's scale is disabled). Used for CV + MIDI output; non-destructive.
-  uint8_t get_pitch_scaled() const {
+  // The latched probability transpose composes on top of the quantized pitch
+  // (octave shifts preserve the pitch class) and is already range-degraded,
+  // so the result is -12..52: signed, because shifts may reach the DAC
+  // headroom an octave below bottom C / 4 semitones above double-up high C.
+  int8_t get_pitch_scaled() const {
     const Sequence &s = get_sequence();
-    return s.scale_quantize_linear(s.get_pitch());
+    return int8_t(int(s.scale_quantize_linear(s.get_pitch())) + prob_transpose_);
   }
   uint8_t get_midi_note() const {
     return uint8_t(36 + get_sequence().get_pitch());
@@ -1233,6 +1476,12 @@ struct Engine {
     idx &= uint8_t(NUM_PATTERNS - 1);
     if (var == 0 || var >= NUM_VARIATIONS) { memcpy(blob, pattern[idx].pitch, PATTERN_SIZE); return; }
     if (idx == p_select) { memcpy(blob, shadow_[(var - 1) & 0x1].pitch, PATTERN_SIZE); return; }
+    // A buffered (not yet flushed) non-resident edit supersedes the flash copy.
+    if (shadow_edit_dirty_ && shadow_edit_slot_ == int16_t(abs_slot(idx)) &&
+        shadow_edit_var_ == var) {
+      memcpy(blob, shadow_edit_.pitch, PATTERN_SIZE);
+      return;
+    }
     Sequence tmp;
     ReadPatternAt(tmp, abs_slot(idx), var);
     memcpy(blob, tmp.pitch, PATTERN_SIZE);

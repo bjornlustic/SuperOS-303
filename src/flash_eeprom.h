@@ -17,13 +17,15 @@
 // USB-MIDI app below it. Split into two equal banks; page 0 of each bank is its
 // header, the rest hold one record each.
 //
-// Combined build: the SuperOS+D650C image is ~81 KB, so the arena starts at
-// 0x14000 instead (pages 0x140..0x1DF, 160 pages, 80/bank -> 79 live records
-// per bank). Keep FLASH_ARENA_BASE in tools/makesyx.py in sync. First boot of
-// a different layout finds no valid bank header at its base and formats.
+// Combined build: the SuperOS+D650C image is ~86 KB (step probabilities), so
+// the arena starts at 0x15800 (pages 0x158..0x1DF, 136 pages, 68/bank -> 67
+// live records per bank). The SPM service accepts pages 0x100..0x1DF, so no
+// service reflash is needed. Keep FLASH_ARENA_BASE in tools/makesyx.py in
+// sync. First boot of a different layout finds no valid bank header at its
+// base and formats (stored patterns are wiped on the layout change).
 #ifdef SUPEROS_COMBINED
-static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x140;
-static constexpr uint16_t FE_BANK_PAGES       = 80;           // pages per bank (2 banks)
+static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x158;
+static constexpr uint16_t FE_BANK_PAGES       = 68;           // pages per bank (2 banks)
 #else
 static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x100;
 static constexpr uint16_t FE_BANK_PAGES       = 112;          // pages per bank (2 banks)
@@ -32,11 +34,13 @@ static constexpr uint16_t FE_RECORD_PAGES     = FE_BANK_PAGES - 1; // usable rec
 static constexpr uint16_t FE_PAGE             = 256;
 
 // Logical block-id space: 64 pair blocks + 32 mono-var3 blocks + 64 poly-var3
-// blocks + 8 tracks + 1 settings -> ids run 0..168, so the index must span 169.
-// LIVE records still must stay <= FE_RECORD_PAGES (127) for GC to fit: a fully-used
-// device is ~105 live when var3 is mono (fits), rising toward 137 as poly slots
-// accumulate. Past 127 live, GC fails gracefully (write returns false), no corruption.
-static constexpr uint8_t  FE_MAX_BLOCKS = 170;
+// blocks + 8 tracks + 1 settings + 64 per-slot probability tables -> ids run
+// 0..232, so the index must span 233. LIVE records still must stay <=
+// FE_RECORD_PAGES for GC to fit: a fully-used device is ~105 live when var3 is
+// mono, rising toward 137 as poly slots accumulate; probability blocks only
+// exist for slots with armed steps (all-zero tables are never written). Past
+// the cap, GC fails gracefully (write returns false), no corruption.
+static constexpr uint8_t  FE_MAX_BLOCKS = 233;
 
 static constexpr uint8_t  FE_REC_HDR   = 13;                  // record header bytes
 static constexpr uint8_t  FE_MAX_PAYLOAD = FE_PAGE - FE_REC_HDR; // 243

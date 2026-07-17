@@ -24,11 +24,15 @@ static constexpr uint8_t FB_MONOVAR2_BASE  = uint8_t(NUM_SLOTS);                
 static constexpr uint8_t FB_POLY_BASE      = uint8_t(FB_MONOVAR2_BASE + NUM_SLOTS / 2); // 96
 static constexpr uint8_t FB_TRACK_BASE     = uint8_t(FB_POLY_BASE + NUM_SLOTS);        // 160
 static constexpr uint8_t FB_SETTINGS       = uint8_t(FB_TRACK_BASE + 8);               // 168
+// Per-slot step-probability tables, one block per slot (only written when any
+// step is armed): [0..63] var1, [64..127] var2, [128..191] var3 mono.
+static constexpr uint8_t FB_PROB_BASE      = uint8_t(FB_SETTINGS + 1);                 // 169
 
 // Serialized sizes.
 static constexpr uint8_t FB_PATTERN_LEN  = 2 * FB_PATTERN_LEN_ONE; // 184 (a 2-pattern block)
 static constexpr uint8_t FB_TRACK_LEN    = 104;  // p_chain[32] + last[8] + transpose[64]; == TRACK_BYTES (asserted in engine.h)
 static constexpr uint8_t FB_SETTINGS_LEN = 32;   // 24 + 8-byte var3 poly bitmap
+static constexpr uint8_t FB_PROB_LEN     = uint8_t(3 * MAX_STEPS); // 192 <= FE_MAX_PAYLOAD
 
 // Page hooks: the block store addresses absolute flash pages; program via the
 // boot SPM service, read via far program-memory reads.

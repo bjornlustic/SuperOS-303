@@ -14,7 +14,7 @@ syx_path = os.path.join(env["PROJECT_DIR"], "%s-update.syx" % env["PIOENV"])
 # The combined SuperOS+D650C image moves the arena up; keep in sync with
 # FE_ARENA_FIRST_PAGE in src/flash_eeprom.h.
 if "SUPEROS_COMBINED" in env.get("CPPDEFINES", []):
-    FLASH_ARENA_BASE = 0x14000
+    FLASH_ARENA_BASE = 0x15800
 else:
     FLASH_ARENA_BASE = 0x10000
 

@@ -113,6 +113,12 @@ void midi_send_active_pattern(uint8_t pat);
 ///   F0 7D 2A <pat:0-15> <mask_lo7> <mask_hi5> <enabled:0|1> <var:0-2> F7
 void midi_send_scale_update(uint8_t pat, uint16_t mask, bool enabled, uint8_t var);
 
+/// Per-step probability edit (SysEx 0x2B). Bidirectional: device broadcasts
+/// after a hardware probability edit; host sends the same format to set one
+/// step's prob byte (bits[2:0]=characteristic, bits[6:3]=level 1-13).
+/// Format: F0 7D 2B <pat:0-15> <step:0-63> <val> <var:0-2> F7
+void midi_send_prob_step(uint8_t pat, uint8_t step, uint8_t val, uint8_t var);
+
 /// Metronome click via MIDI: low C (48) on the pattern's first step, high C
 /// (60) otherwise, matching the original 303 (OM p.36).
 void midi_metronome_tick(bool bar_start);
