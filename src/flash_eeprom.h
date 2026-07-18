@@ -18,14 +18,18 @@
 // header, the rest hold one record each.
 //
 // Combined build: the SuperOS+D650C image is ~86 KB (step probabilities), so
-// the arena starts at 0x15800 (pages 0x158..0x1DF, 136 pages, 68/bank -> 67
+// the arena starts at 0x16000 (pages 0x160..0x1DF, 128 pages, 64/bank -> 63
 // live records per bank). The SPM service accepts pages 0x100..0x1DF, so no
 // service reflash is needed. Keep FLASH_ARENA_BASE in tools/makesyx.py in
 // sync. First boot of a different layout finds no valid bank header at its
 // base and formats (stored patterns are wiped on the layout change).
+// Moved up from 0x15800 (68/bank) to buy the app 2 KB: the USB-C combined build
+// with the mask-ROM upload had run out of room below the old base. The record
+// budget below is worst-case and unreachable in practice, so trading 4 records
+// per bank for app space is the cheaper side of the deal.
 #ifdef SUPEROS_COMBINED
-static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x158;
-static constexpr uint16_t FE_BANK_PAGES       = 68;           // pages per bank (2 banks)
+static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x160;
+static constexpr uint16_t FE_BANK_PAGES       = 64;           // pages per bank (2 banks)
 #else
 static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x100;
 static constexpr uint16_t FE_BANK_PAGES       = 112;          // pages per bank (2 banks)

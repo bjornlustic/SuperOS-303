@@ -414,7 +414,9 @@ static void rom_rx_feed(uint8_t b) {
     case ROMRX_STARTED: s_rom_busy = true; break;
     case ROMRX_DONE:
       while (s_save_pending) patt_save_step();   // commit pending pattern edits
-      rom_save(s_rom);
+      // ~6.8 s of blocking EEPROM writes: pump the blink so the indicator keeps
+      // moving instead of freezing on whichever LED was last published.
+      rom_save(s_rom, romwait_display);
       combined_switch_firmware(FW_D650);         // soft reboot into the emulator
       break;                                     // (does not return)
     case ROMRX_ERROR:
@@ -819,7 +821,15 @@ static void usb_sysex_msg(const uint8_t *data, unsigned int sz) {
 // USB SysEx reassembly (same reason as SuperOS midi.cpp): the AVR usb_midi
 // core's complete-message buffer is only 60 bytes, but the 0x47 RAM write is
 // F0 + 3 header + 220 packed + F7 = 225 bytes. Oversized messages are dropped.
-static uint8_t  s_usx_buf[3 + 3 + PATT_WIRE_LEN + 2];
+static constexpr uint16_t kUsxCap = 3 + 3 + PATT_WIRE_LEN + 2;
+#ifdef SUPEROS_COMBINED
+// Shared with SuperOS's reassembly buffer (see combined.h): one firmware runs
+// per boot, so they never both need it.
+static_assert(kUsxCap <= FW_USB_SYSEX_SCRATCH, "USB SysEx scratch too small");
+static uint8_t *const s_usx_buf = g_usb_sysex_scratch;
+#else
+static uint8_t  s_usx_buf[kUsxCap];
+#endif
 static uint16_t s_usx_len  = 0;
 static bool     s_usx_drop = false;
 static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complete) {
@@ -833,7 +843,7 @@ static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complet
 #endif
   if (s_usx_len == 0) s_usx_drop = false;
   if (!s_usx_drop) {
-    if (s_usx_len + length <= sizeof(s_usx_buf)) {
+    if (s_usx_len + length <= kUsxCap) {
       for (uint16_t i = 0; i < length; ++i) s_usx_buf[s_usx_len++] = data[i];
     } else {
       s_usx_drop = true;

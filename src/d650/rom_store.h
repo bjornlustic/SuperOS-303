@@ -43,11 +43,21 @@ static bool rom_load(uint8_t *dst) {
 // from the upload paths. The magic is invalidated first and rewritten last.
 // wdt_reset() is a no-op on the nousbc build (no watchdog) and pets the 8 s
 // loop watchdog on the USB combined build.
-static void rom_save(const uint8_t *src) {
+// `progress` (local addition, see SYNC.md) is called every 64 bytes so the
+// caller can keep an upload indicator animating. This loop blocks for SECONDS:
+// eeprom_update_byte busy-waits ~3.3 ms per byte it actually changes, and on an
+// erased EEPROM all 2048 change (~6.8 s). Without the hook the main loop never
+// runs, so the LED refresh ISR just holds the last published frame and the
+// indicator looks frozen mid-upload.
+static void rom_save(const uint8_t *src, void (*progress)() = nullptr) {
   eeprom_update_byte(EE_ROM_MAGIC, 0xFF);
   for (uint16_t i = 0; i < D650_ROM_SIZE; ++i) {
     eeprom_update_byte(EE_ROM_DATA + i, src[i]);
-    if ((i & 0x3F) == 0) wdt_reset();
+    // Every 16 bytes, not 64: a changed byte costs ~3.3 ms, so 64 would only
+    // call back every ~211 ms and undersample the 100 ms blink phase (it
+    // aliases into a slow, irregular flicker). 16 bytes is ~53 ms, comfortably
+    // faster than the phase, so the fast blink actually reads as fast.
+    if ((i & 0x0F) == 0) { wdt_reset(); if (progress) progress(); }
   }
   const uint16_t s = rom_sum16(src);
   eeprom_update_byte(EE_ROM_SUM, (uint8_t)(s & 0xFF));

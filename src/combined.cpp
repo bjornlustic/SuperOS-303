@@ -41,6 +41,14 @@ static constexpr unsigned kD650Side = sizeof(d650_host) + 2048u; // D650_ROM_SIZ
 static constexpr unsigned kD650Side = sizeof(d650_host);
 #endif
 uint8_t g_fw_arena[sizeof(Engine) > kD650Side ? sizeof(Engine) : kD650Side];
+// midi.cpp parks its SuperOS-only SysEx TX ring at g_fw_arena + sizeof(Engine).
+// If the d650 side ever stops being the larger of the two, that tail is real
+// Engine state and the overlay would corrupt it -- fail the build instead.
+static_assert(sizeof(Engine) + FW_ARENA_SUPEROS_TAIL <= sizeof(g_fw_arena),
+              "arena tail too small for the SuperOS-only overlay (see combined.h)");
+
+// Shared inbound USB SysEx reassembly scratch (see combined.h).
+uint8_t g_usb_sysex_scratch[FW_USB_SYSEX_SCRATCH];
 
 // main.cpp and d650/emu_avr.cpp rename their setup/loop to these.
 void superos_setup(); void superos_loop();

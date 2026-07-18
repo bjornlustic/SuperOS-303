@@ -176,7 +176,16 @@ void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_rece
 
 // --- TX queue (non-blocking multi-pattern dump) ---------------------------------
 static const uint16_t kTxCap = 512;
+#ifdef SUPEROS_COMBINED
+// This ring is SuperOS-only (the d650 side has its own midi_tx straight to
+// Serial1), so it lives in the arena tail instead of its own BSS -- see
+// FW_ARENA_SUPEROS_TAIL in combined.h. Zeroed at boot with the rest of the
+// arena, and tx_clear() resets the indices before any use.
+static_assert(kTxCap <= FW_ARENA_SUPEROS_TAIL, "TX ring exceeds the arena tail");
+static uint8_t *const s_tx = g_fw_arena + sizeof(Engine);
+#else
 static uint8_t s_tx[kTxCap];
+#endif
 static uint16_t s_tx_w, s_tx_r;
 
 static void tx_clear() {
@@ -278,7 +287,14 @@ static constexpr uint16_t kPackedPolyLen = POLY_BLOB_SIZE + ((POLY_BLOB_SIZE + 6
 
 // 0x25: variation-3 poly blob reply (device -> host). Sent in place of the mono
 // 0x11 when the requested slot's variation 3 is poly.
-static void enqueue_poly_reply(uint8_t pat, uint8_t slot) {
+// noinline is load-bearing, not a hint: this frames ~492 bytes of buffers (a
+// 227-byte raw blob + a 265-byte packed one). Inlined into
+// enqueue_pattern_reply it pushed that frame to 793 bytes, so EVERY pattern
+// reply paid the poly cost and handle_sysex_body -> enqueue_pattern_reply
+// needed 1041 bytes of stack -- more than the RAM left after the arena. That
+// overflowed into BSS and hung the SuperOS side the moment the editor loaded
+// patterns. Keeping it out of line means only the poly path pays.
+static __attribute__((noinline)) void enqueue_poly_reply(uint8_t pat, uint8_t slot) {
   if (!host_seen_any()) return;
   PolyVoice pv;
   if (g_eng->poly_active_ && slot == g_eng->abs_slot(g_eng->get_patsel()))
@@ -843,7 +859,15 @@ static void sysex_cb(byte *data, unsigned sz) {
 // we reassemble the whole F0..F7 message here, then dispatch like the DIN path.
 // Largest inbound message is the 0x26 poly-blob set: F0 + 5 header + 260 packed
 // + F7 = 267 bytes. Oversized messages are dropped via usb_sysex_drop below.
-static uint8_t  usb_sysex_buf[5 + kPackedPolyLen + 2];
+static constexpr uint16_t kUsbSysexCap = 5 + kPackedPolyLen + 2;
+#ifdef SUPEROS_COMBINED
+// Shared with the d650 side's reassembly buffer (see combined.h): one firmware
+// runs per boot, so they never both need it.
+static_assert(kUsbSysexCap <= FW_USB_SYSEX_SCRATCH, "USB SysEx scratch too small");
+static uint8_t *const usb_sysex_buf = g_usb_sysex_scratch;
+#else
+static uint8_t  usb_sysex_buf[kUsbSysexCap];
+#endif
 static uint16_t usb_sysex_len  = 0;
 static bool     usb_sysex_drop = false;   // overflow guard: skip rest of an oversized msg
 static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complete) {
@@ -852,7 +876,7 @@ static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complet
     usb_sysex_drop = false;
   }
   if (!usb_sysex_drop) {
-    if (usb_sysex_len + length <= sizeof(usb_sysex_buf)) {
+    if (usb_sysex_len + length <= kUsbSysexCap) {
       for (uint16_t i = 0; i < length; ++i) usb_sysex_buf[usb_sysex_len++] = data[i];
     } else {
       usb_sysex_drop = true;              // too big for our buffer -> ignore the remainder
