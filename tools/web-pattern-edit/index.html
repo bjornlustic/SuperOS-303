@@ -403,9 +403,10 @@
     .f-btn:disabled { opacity: 0.15; cursor: default; }
     .f-btn:hover:not(:disabled) { background: var(--gray-2); color: var(--black); }
     .f-btn.f-on { background: var(--black); border-color: var(--black); color: var(--white); }
-    .step-prob { display: flex; gap: 0; margin-top: 2px; }
-    .step-prob .p-char { flex: 1.2; height: 18px; font-size: 8px; }
-    .step-prob .p-lvl  { flex: 1; height: 18px; font-size: 8px; letter-spacing: 0; }
+    .step-prob { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
+    .prob-sub { display: flex; gap: 0; }
+    .prob-sub .p-char { flex: 1.2; height: 16px; font-size: 8px; }
+    .prob-sub .p-lvl  { flex: 1; height: 16px; font-size: 8px; letter-spacing: 0; }
     .is-note .f-btn { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.4); }
     .is-note .f-btn:hover:not(:disabled) { background: rgba(255,255,255,0.15); color: var(--white); }
     .is-note .f-btn.f-on { background: var(--white); border-color: var(--white); color: var(--black); }
@@ -1056,26 +1057,35 @@
   var POLY_LEN_OFF   = 226;
   var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 260
 
-  // Per-step characteristic probability (SysEx 0x2B step / 0x2C req / 0x2D table).
-  // One byte per step: bits[2:0] = characteristic, bits[6:3] = level 1..13
-  // (13 = 100%). 0x00 = unarmed. 64 raw -> 74 packed.
-  var PACKED_PROB    = 64 + Math.ceil(64 / 7); // 74
+  // Per-step characteristic probability (variation 1 only; SysEx 0x2B step /
+  // 0x2C req / 0x2D table). THREE bytes per step so accent, slide, a down
+  // transpose, and an up transpose can each be armed with their own level
+  // 1..13 (13 = 100%). Down (-12) and up (+12/+24) roll independently; the
+  // device coin-flips if both pass on a step.
+  //   byte0: bits[3:0] accent level (0=off), bits[7:4] slide level (0=off)
+  //   byte1: bits[3:0] down level (0=off),   bits[7:4] up level (0=off)
+  //   byte2: bit0 up-double (up = +24 when set, else +12)
+  // 192 raw -> packed.
+  var PROB_RAW       = 192;
+  var PACKED_PROB    = PROB_RAW + Math.ceil(PROB_RAW / 7);
   var PROB_LEVEL_MAX = 13;
-  var PROB_CHARS     = ['–', 'A', 'S', '-12', '+12', '-24', '+24'];
-  var PROB_DELTAS    = [0, 0, 0, -12, 12, -24, 24];
-  function probCharOf(b)  { return b & 7; }
-  function probLevelOf(b) { return (b >> 3) & 15; }
-  function probPack(c, l) { return (c & 7) | ((l & 15) << 3); }
+  function probAccLvl(b0)  { return b0 & 15; }
+  function probSldLvl(b0)  { return (b0 >> 4) & 15; }
+  function probDnLvl(b1)   { return b1 & 15; }
+  function probUpLvl(b1)   { return (b1 >> 4) & 15; }
+  function probUpDbl(b2)   { return (b2 & 1) !== 0; }
+  function probPackAcSl(a, s) { return (a & 15) | ((s & 15) << 4); }
+  function probPackDu(d, u)   { return (d & 15) | ((u & 15) << 4); }
   function probPct(l)     { return Math.round(l * 100 / PROB_LEVEL_MAX); }
   // Firmware's graceful octave degrade (sequence.h prob_degrade_transpose):
-  // double shifts fall back to single, single shifts fall back to unchanged.
+  // double-up falls back to single up, single shifts fall back to unchanged.
   // Range is -12..52: the CV DAC spans an octave below bottom C and 4
   // semitones above double-up high C (the top E = DAC code 63).
   function probDegrade(baseLin, t) {
     var v = baseLin + t;
     if (v >= -12 && v <= 52) return t;
-    if (t === 24 || t === -24) {
-      t = t / 2; v = baseLin + t;
+    if (t === 24) {
+      t = 12; v = baseLin + t;
       if (v >= -12 && v <= 52) return t;
     }
     return 0;
@@ -1509,7 +1519,7 @@
   var varMidiCh = [];
   var varMode   = [];
   var polyStore = []; // [g][p] -> Uint8Array(POLY_BLOB_SIZE) or null (variation-3 poly data)
-  var probStore = []; // [g][p][v] -> Uint8Array(64) per-step probability tables
+  var probStore = []; // [g][p] -> Uint8Array(128) per-step probability (var1, 2 bytes/step)
   var groups = []; // [4][16] -> reference into varStore[g][p][slotVar[g][p]]
   var LS_KEY = 'superos303_groups_v8'; // bumped for per-slot variations; old key dropped
   var LS_SCALE_LOCK = 'superos303_scale_lock';
@@ -1596,11 +1606,10 @@
   // The 303 CV/gate always plays variation 1, so variation 1 is the variation
   // mirrored to/from the device. Variations 2 & 3 are separate MIDI-only tracks.
   function cvBlob(g, p) { return varStore[g][p][VAR_303]; }
-  function getProb(g, p, v) {
+  function getProb(g, p) {
     if (!probStore[g]) probStore[g] = [];
-    if (!probStore[g][p]) probStore[g][p] = [new Uint8Array(64), new Uint8Array(64), new Uint8Array(64)];
-    if (!probStore[g][p][v & 3]) probStore[g][p][v & 3] = new Uint8Array(64);
-    return probStore[g][p][v & 3];
+    if (!probStore[g][p]) probStore[g][p] = new Uint8Array(PROB_RAW);
+    return probStore[g][p];
   }
   function activeIsCvVar() { return slotVar[activeGroup][activePat] === VAR_303; }
 
@@ -1613,7 +1622,7 @@
         varMidiCh[g][p] = [];
         varMode[g][p] = [];
         polyStore[g][p] = null;
-        probStore[g][p] = [new Uint8Array(64), new Uint8Array(64), new Uint8Array(64)];
+        probStore[g][p] = new Uint8Array(PROB_RAW);
         for (var v = 0; v < NUM_VARIATIONS; v++) {
           varStore[g][p][v] = makeBlankPat();
           varMidiCh[g][p][v] = v + 1;     // variation 1->ch1, 2->ch2, 3->ch3
@@ -1647,7 +1656,7 @@
             ch:   varMidiCh[g][p].slice(),
             mode: varMode[g][p].slice(),
             poly: polyStore[g][p] ? Array.from(polyStore[g][p]) : null,
-            prob: probStore[g][p].map(function(t){ return Array.from(t); })
+            prob: Array.from(getProb(g, p))
           };
         }
       }
@@ -1673,11 +1682,8 @@
           slotVar[g][p]   = s.sel | 0;
           slotCvVar[g][p] = s.cv | 0;
           polyStore[g][p] = (s.poly && s.poly.length === POLY_BLOB_SIZE) ? new Uint8Array(s.poly) : null;
-          if (Array.isArray(s.prob) && s.prob.length === NUM_VARIATIONS) {
-            for (var pv = 0; pv < NUM_VARIATIONS; pv++)
-              if (Array.isArray(s.prob[pv]) && s.prob[pv].length === 64)
-                probStore[g][p][pv] = new Uint8Array(s.prob[pv]);
-          }
+          if (Array.isArray(s.prob) && s.prob.length === PROB_RAW)
+            probStore[g][p] = new Uint8Array(s.prob);
           repointSlot(g, p);
         }
       }
@@ -2070,7 +2076,7 @@
     if (activeGroup === hwGroup) {
       lastSentBlob = new Uint8Array(activeBlob());
       lastSentPat  = activePat;
-      if (midiOut) requestProbTable(activePat, slotVar[activeGroup][activePat]);
+      if (midiOut) requestProbTable(activePat);
     }
     refreshAllPills();
     recomputeDirty();
@@ -2092,7 +2098,7 @@
     if (activeGroup === hwGroup) {
       lastSentBlob = new Uint8Array(activeBlob());
       lastSentPat = activePat;
-      if (midiOut) requestProbTable(activePat, v);
+      if (midiOut) requestProbTable(activePat);
     }
     // Tell the 303 which variation to edit (so its hardware edit target follows),
     // unless this switch came FROM the 303 (avoid echo loop).
@@ -2451,55 +2457,79 @@
       flagRow.appendChild(sBtn);
       card.appendChild(flagRow);
 
-      // ── PROB lane: per-step characteristic + probability (SysEx 0x2B) ──
-      // One characteristic per step (accent / slide / octave shift) rolled at
-      // playback with a level 1..13 (13 = 100%). Click cycles characteristic;
-      // the % button cycles the level down (wraps to 100%).
-      var pTable = getProb(activeGroup, patIdx, slotVar[activeGroup][patIdx]);
-      var pb = pTable[s];
-      var pch = probCharOf(pb);
-      var plv = probLevelOf(pb) || PROB_LEVEL_MAX;
+      // ── PROB lane: per-step accent / slide / down / up probability, each
+      // with its own level 1..13 (13 = 100%). Applies to the 303 CV voice
+      // (variation 1). Down and up roll independently (device coin-flips if
+      // both pass). SysEx 0x2B. Char button toggles/cycles; % button steps the
+      // level down (wraps to 100%).
+      var pTable = getProb(activeGroup, patIdx);
+      // Commit the three prob bytes for this step and mirror to the device.
+      function probCommit(si, b0, b1, b2) {
+        var t = getProb(activeGroup, patIdx);
+        t[si * 3] = b0; t[si * 3 + 1] = b1; t[si * 3 + 2] = b2;
+        saveGroupsToLS();
+        sendProbStep(patIdx, si, b0, b1, b2);
+        renderGrid();
+      }
       var probRow = document.createElement('div');
       probRow.className = 'step-prob';
-      var cBtn = document.createElement('button');
-      cBtn.className = 'f-btn p-char' + (pch ? ' f-on' : '');
-      cBtn.textContent = PROB_CHARS[pch];
-      cBtn.disabled = !editable;
-      if (pch >= 3) {
-        var effT = probDegrade(unpackLinear(dispPacked), PROB_DELTAS[pch]);
-        if (effT !== PROB_DELTAS[pch])
-          cBtn.title = (effT === 0) ? 'Out of range: plays unchanged'
-                                    : ('Out of range: degrades to ' + (effT > 0 ? '+' : '') + effT);
-      }
-      var lBtn = document.createElement('button');
-      lBtn.className = 'f-btn p-lvl';
-      lBtn.textContent = pch ? (probPct(plv) + '%') : '–';
-      lBtn.disabled = !editable || !pch;
-      cBtn.addEventListener('click', (function(si, lvl) {
-        return function() {
-          var t = getProb(activeGroup, patIdx, slotVar[activeGroup][patIdx]);
-          var nch = (probCharOf(t[si]) + 1) % 7;
-          t[si] = nch ? probPack(nch, lvl) : 0;
-          saveGroupsToLS();
-          sendProbStep(patIdx, si, t[si], slotVar[activeGroup][patIdx]);
-          renderGrid();
-        };
-      })(s, plv));
-      lBtn.addEventListener('click', (function(si) {
-        return function() {
-          var t = getProb(activeGroup, patIdx, slotVar[activeGroup][patIdx]);
-          var ch = probCharOf(t[si]);
-          if (!ch) return;
-          var lvl = probLevelOf(t[si]) || PROB_LEVEL_MAX;
-          lvl = (lvl > 1) ? lvl - 1 : PROB_LEVEL_MAX; // step down, wrap to 100%
-          t[si] = probPack(ch, lvl);
-          saveGroupsToLS();
-          sendProbStep(patIdx, si, t[si], slotVar[activeGroup][patIdx]);
-          renderGrid();
-        };
-      })(s));
-      probRow.appendChild(cBtn);
-      probRow.appendChild(lBtn);
+      // rows: [0]=accent, [1]=slide, [2]=down, [3]=up
+      [0, 1, 2, 3].forEach(function(kind) {
+        var b0 = pTable[s * 3], b1 = pTable[s * 3 + 1], b2 = pTable[s * 3 + 2];
+        var lvl, on, label, delta = 0;
+        if (kind === 0)      { lvl = probAccLvl(b0); on = lvl > 0; label = 'A'; }
+        else if (kind === 1) { lvl = probSldLvl(b0); on = lvl > 0; label = 'S'; }
+        else if (kind === 2) { lvl = probDnLvl(b1);  on = lvl > 0; label = '-12'; delta = -12; }
+        else                 { lvl = probUpLvl(b1);  on = lvl > 0; label = probUpDbl(b2) ? '+24' : '+12'; delta = probUpDbl(b2) ? 24 : 12; }
+        if (!lvl) lvl = PROB_LEVEL_MAX;
+        var row = document.createElement('div');
+        row.className = 'prob-sub';
+        var cBtn = document.createElement('button');
+        cBtn.className = 'f-btn p-char' + (on ? ' f-on' : '');
+        cBtn.textContent = label;
+        cBtn.disabled = !editable;
+        if (kind >= 2 && on) {
+          var effT = probDegrade(unpackLinear(dispPacked), delta);
+          if (effT !== delta)
+            cBtn.title = (effT === 0) ? 'Out of range: plays unchanged'
+                                      : ('Out of range: degrades to ' + (effT > 0 ? '+' : '') + effT);
+        }
+        var lBtn = document.createElement('button');
+        lBtn.className = 'f-btn p-lvl';
+        lBtn.textContent = on ? (probPct(lvl) + '%') : '–';
+        lBtn.disabled = !editable || !on;
+        cBtn.addEventListener('click', (function(si, k, curLvl) {
+          return function() {
+            var t = getProb(activeGroup, patIdx);
+            var nb0 = t[si * 3], nb1 = t[si * 3 + 1], nb2 = t[si * 3 + 2];
+            if (k === 0)      nb0 = probPackAcSl(probAccLvl(nb0) ? 0 : curLvl, probSldLvl(nb0));
+            else if (k === 1) nb0 = probPackAcSl(probAccLvl(nb0), probSldLvl(nb0) ? 0 : curLvl);
+            else if (k === 2) nb1 = probPackDu(probDnLvl(nb1) ? 0 : curLvl, probUpLvl(nb1));
+            else { // up: cycle off -> +12 -> +24 -> off
+              var up = probUpLvl(nb1), dbl = probUpDbl(nb2);
+              if (!up) { nb1 = probPackDu(probDnLvl(nb1), curLvl); nb2 = 0; }
+              else if (!dbl) { nb2 = 1; }
+              else { nb1 = probPackDu(probDnLvl(nb1), 0); nb2 = 0; }
+            }
+            probCommit(si, nb0, nb1, nb2);
+          };
+        })(s, kind, lvl));
+        lBtn.addEventListener('click', (function(si, k) {
+          return function() {
+            var t = getProb(activeGroup, patIdx);
+            var nb0 = t[si * 3], nb1 = t[si * 3 + 1], nb2 = t[si * 3 + 2];
+            function stepDn(cur) { return cur > 1 ? cur - 1 : PROB_LEVEL_MAX; }
+            if (k === 0)      { if (!probAccLvl(nb0)) return; nb0 = probPackAcSl(stepDn(probAccLvl(nb0)), probSldLvl(nb0)); }
+            else if (k === 1) { if (!probSldLvl(nb0)) return; nb0 = probPackAcSl(probAccLvl(nb0), stepDn(probSldLvl(nb0))); }
+            else if (k === 2) { if (!probDnLvl(nb1)) return;  nb1 = probPackDu(stepDn(probDnLvl(nb1)), probUpLvl(nb1)); }
+            else              { if (!probUpLvl(nb1)) return;  nb1 = probPackDu(probDnLvl(nb1), stepDn(probUpLvl(nb1))); }
+            probCommit(si, nb0, nb1, nb2);
+          };
+        })(s, kind));
+        row.appendChild(cBtn);
+        row.appendChild(lBtn);
+        probRow.appendChild(row);
+      });
       card.appendChild(probRow);
 
       gridEl.appendChild(card);
@@ -3229,21 +3259,21 @@
   function requestPattern(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15])); }
   // Request variation 3 of a slot (device replies 0x25 if poly, else 0x11).
   function requestPoly(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15, 2])); }
-  // Per-step probability tables (0x2B step edit / 0x2C request / 0x2D full table).
-  function requestProbTable(pat, v) { sendSysex(new Uint8Array([0x7d, 0x2c, pat & 15, v & 3])); }
-  function sendProbStep(pat, s, val, v) {
+  // Per-step probability (variation 1 only). 0x2B = one step's two bytes,
+  // 0x2C = request full table, 0x2D = full 128-byte table.
+  function requestProbTable(pat) { sendSysex(new Uint8Array([0x7d, 0x2c, pat & 15])); }
+  function sendProbStep(pat, s, b0, b1, b2) {
     if (activeGroup !== hwGroup) return;
-    sendSysex(new Uint8Array([0x7d, 0x2b, pat & 15, s & 0x3f, val & 0x7f, v & 3]));
+    sendSysex(new Uint8Array([0x7d, 0x2b, pat & 15, s & 0x3f, b0 & 0x7f, b1 & 0x7f, b2 & 0x7f]));
   }
-  function sendProbTable(pat, v) {
+  function sendProbTable(pat) {
     if (activeGroup !== hwGroup) return;
-    var t = getProb(activeGroup, pat, v);
-    var cx = xorN(t, 64), packed = pack7(t);
-    var msg = new Uint8Array(5 + packed.length + 1);
+    var t = getProb(activeGroup, pat);
+    var cx = xorN(t, PROB_RAW), packed = pack7(t);
+    var msg = new Uint8Array(5 + packed.length);
     msg[0] = 0x7d; msg[1] = 0x2d; msg[2] = pat & 15;
     msg[3] = cx & 0x7f; msg[4] = (cx >> 7) & 1;
     msg.set(packed, 5);
-    msg[5 + packed.length] = v & 3;
     sendSysex(msg);
   }
   function sendPoly(g, p) {
@@ -3896,27 +3926,27 @@
     if (cmd === 0x2d) { // per-step probability table (reply to 0x2C, or host echo-free set)
       if (bytes.length < 5 + PACKED_PROB) { log('0x2d too short (' + bytes.length + ')', 'log-err'); return; }
       var pbPat = bytes[2] & 0x0f;
-      var pbVar = (bytes.length > 5 + PACKED_PROB) ? (bytes[5 + PACKED_PROB] & 0x03) : 0;
       var pbCx  = bytes[3] | (bytes[4] << 7);
-      var pbRaw = unpack7(bytes.subarray(5), 64);
-      if (!pbRaw || xorN(pbRaw, 64) !== pbCx) { log('0x2d checksum mismatch', 'log-err'); return; }
+      var pbRaw = unpack7(bytes.subarray(5), PROB_RAW);
+      if (!pbRaw || xorN(pbRaw, PROB_RAW) !== pbCx) { log('0x2d checksum mismatch', 'log-err'); return; }
       var pbG = (hwGroup >= 0) ? hwGroup : activeGroup;
-      getProb(pbG, pbPat, pbVar).set(pbRaw);
+      getProb(pbG, pbPat).set(pbRaw);
       saveGroupsToLS();
-      if (activeGroup === pbG && pbPat === activePat && pbVar === slotVar[pbG][pbPat]) renderGrid();
-      log('Prob table pat ' + (pbPat+1) + ' var ' + (pbVar+1) + ' received', 'log-ack');
+      if (activeGroup === pbG && pbPat === activePat) renderGrid();
+      log('Prob table pat ' + (pbPat+1) + ' received', 'log-ack');
       return;
     }
 
-    if (cmd === 0x2b && bytes.length >= 6) { // one probability step from hardware
+    if (cmd === 0x2b && bytes.length >= 7) { // one probability step from hardware (3 bytes)
       var psPat = bytes[2] & 0x0f, psStep = bytes[3] & 0x3f;
-      var psVal = bytes[4] & 0x7f, psVar = bytes[5] & 0x03;
-      if (psVar > 2) return;
       var psG = (hwGroup >= 0) ? hwGroup : activeGroup;
-      getProb(psG, psPat, psVar)[psStep] = psVal;
+      var pt = getProb(psG, psPat);
+      pt[psStep * 3] = bytes[4] & 0x7f;
+      pt[psStep * 3 + 1] = bytes[5] & 0x7f;
+      pt[psStep * 3 + 2] = bytes[6] & 0x7f;
       saveGroupsToLS();
-      if (activeGroup === psG && psPat === activePat && psVar === slotVar[psG][psPat]) renderGrid();
-      log('Prob step pat ' + (psPat+1) + ' step ' + (psStep+1) + ' = 0x' + psVal.toString(16), 'log-ack');
+      if (activeGroup === psG && psPat === activePat) renderGrid();
+      log('Prob step pat ' + (psPat+1) + ' step ' + (psStep+1), 'log-ack');
       return;
     }
 

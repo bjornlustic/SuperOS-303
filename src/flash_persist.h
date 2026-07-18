@@ -24,8 +24,9 @@ static constexpr uint8_t FB_MONOVAR2_BASE  = uint8_t(NUM_SLOTS);                
 static constexpr uint8_t FB_POLY_BASE      = uint8_t(FB_MONOVAR2_BASE + NUM_SLOTS / 2); // 96
 static constexpr uint8_t FB_TRACK_BASE     = uint8_t(FB_POLY_BASE + NUM_SLOTS);        // 160
 static constexpr uint8_t FB_SETTINGS       = uint8_t(FB_TRACK_BASE + 8);               // 168
-// Per-slot step-probability tables, one block per slot (only written when any
-// step is armed): [0..63] var1, [64..127] var2, [128..191] var3 mono.
+// Per-slot step-probability table, one block per slot (variation 1 only; only
+// written when any step is armed). 3 bytes/step: b0 accent+slide levels,
+// b1 down+up transpose levels, b2 up-double flag.
 static constexpr uint8_t FB_PROB_BASE      = uint8_t(FB_SETTINGS + 1);                 // 169
 
 // Serialized sizes.

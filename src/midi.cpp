@@ -323,24 +323,30 @@ static void send_ack(uint8_t status) {
 }
 
 // --- Per-step probability table (SysEx 0x2C request / 0x2D reply) ---------------
-// 64 raw prob bytes -> 74 packed (9 full chunks + 1 partial).
-static constexpr uint16_t kPackedProbLen = MAX_STEPS + ((MAX_STEPS + 6) / 7);
+// Variation 1 only: 3 bytes/step = 192 raw -> packed via pack_7bit.
+static constexpr uint16_t kProbRawLen    = 3 * MAX_STEPS;
+static constexpr uint16_t kPackedProbLen = kProbRawLen + ((kProbRawLen + 6) / 7);
 
-static void enqueue_prob_reply(uint8_t pat, uint8_t var) {
+static void enqueue_prob_reply(uint8_t pat) {
   if (!g_eng || !host_seen_any()) return;
-  uint8_t raw[MAX_STEPS];
-  g_eng->export_prob_table(pat, var, raw);
-  const uint8_t cx = xor_blob_n(raw, MAX_STEPS);
-  uint8_t inner[5 + kPackedProbLen + 1];
+  uint8_t raw[kProbRawLen];
+  g_eng->export_prob_table(pat, raw);
+  const uint8_t cx = xor_blob_n(raw, kProbRawLen);
+  uint8_t inner[5 + kPackedProbLen];
   inner[0] = 0x7D;
   inner[1] = 0x2D;
   inner[2] = pat & 0x0F;
   inner[3] = static_cast<uint8_t>(cx & 0x7F);
   inner[4] = static_cast<uint8_t>((cx >> 7) & 1);
-  const uint16_t pl = pack_7bit(raw, MAX_STEPS, inner + 5);
-  inner[5 + pl] = static_cast<uint8_t>(var & 0x03);
-  tx_push_message(inner, static_cast<uint16_t>(5 + pl + 1));
+  const uint16_t pl = pack_7bit(raw, kProbRawLen, inner + 5);
+  tx_push_message(inner, static_cast<uint16_t>(5 + pl));
 }
+
+// Device -> host full probability-table push (0x2D), used after a hardware
+// randomize so the web editor's PROB lane resyncs in one message instead of
+// 64 per-step 0x2B broadcasts flooding the TX ring. The editor's 0x2D handler
+// just stores + repaints, so an unsolicited push is safe (no request tracker).
+void midi_send_prob_table(uint8_t pat) { enqueue_prob_reply(pat); }
 
 // --- Chain state RX (from web via SysEx 0x1A) -----------------------------------
 static bool    s_rx_chain_pending     = false;
@@ -662,48 +668,39 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     }
     break;
   }
-  case 0x2B: { // host -> 303: set one step's probability byte; optional <var>
-    if (n < 5 || !g_eng) return;
+  case 0x2B: { // host -> 303: set one step's three probability bytes (var1 only)
+    if (n < 7 || !g_eng) return;
     const uint8_t pat  = p[2] & 0x0F;
     const uint8_t step = p[3] & 0x3F;
-    const uint8_t val  = p[4] & 0x7F;
-    const uint8_t var  = (n >= 6) ? (p[5] & 0x03) : 0;
-    if (var >= NUM_VARIATIONS || prob_char_of(val) > PROB_DOUBLE_UP) return;
+    const uint8_t b0   = p[4] & 0x7F; // accent level | slide level << 4
+    const uint8_t b1   = p[5] & 0x7F; // down level | up level << 4
+    const uint8_t b2   = p[6] & 0x7F; // bit0 up-double
     if (pat == g_eng->get_patsel())
-      g_eng->prob_set_resident(var, step, val);      // RAM only, flash deferred
+      g_eng->prob_set_resident(step, b0, b1, b2);    // RAM only, flash deferred
     else
-      g_eng->prob_edit_set(g_eng->abs_slot(pat), var, step, val);
+      g_eng->prob_edit_set(g_eng->abs_slot(pat), step, b0, b1, b2);
     s_last_web_edit_ms = millis();
     break; // never echoed (0x2A convention)
   }
   case 0x2C: { // host -> 303: request probability table -> 0x2D reply
     if (n < 3 || !g_eng) return;
-    const uint8_t pat = p[2] & 0x0F;
-    const uint8_t var = (n >= 4) ? (p[3] & 0x03) : 0;
-    if (var >= NUM_VARIATIONS) return;
-    enqueue_prob_reply(pat, var);
+    enqueue_prob_reply(p[2] & 0x0F);
     break;
   }
-  case 0x2D: { // host -> 303: set full probability table; optional trailing <var>
+  case 0x2D: { // host -> 303: set full var1 probability table (128 raw bytes)
     if (n < 5 + kPackedProbLen || !g_eng) { send_ack(1); return; }
     const uint8_t pat = p[2] & 0x0F;
     const uint8_t cx  = static_cast<uint8_t>(p[3] | (p[4] << 7));
-    const uint8_t var = (n > 5 + kPackedProbLen) ? (p[5 + kPackedProbLen] & 0x03) : 0;
-    uint8_t raw[MAX_STEPS];
-    if (!unpack_7bit(p + 5, kPackedProbLen, raw, MAX_STEPS)) { send_ack(1); return; }
-    if (xor_blob_n(raw, MAX_STEPS) != cx) { send_ack(1); return; }
-    if (var >= NUM_VARIATIONS) { send_ack(2); return; }
-    for (uint8_t i = 0; i < MAX_STEPS; ++i) {
-      raw[i] &= 0x7F;
-      if (prob_char_of(raw[i]) == PROB_NONE || prob_char_of(raw[i]) > PROB_DOUBLE_UP)
-        raw[i] = 0;
-    }
+    uint8_t raw[kProbRawLen];
+    if (!unpack_7bit(p + 5, kPackedProbLen, raw, kProbRawLen)) { send_ack(1); return; }
+    if (xor_blob_n(raw, kProbRawLen) != cx) { send_ack(1); return; }
+    for (uint16_t i = 0; i < kProbRawLen; ++i) raw[i] &= 0x7F;
     if (pat == g_eng->get_patsel()) {
-      memcpy(g_eng->prob_table(var), raw, MAX_STEPS);
+      memcpy(g_eng->prob_var1_, raw, kProbRawLen);
       g_eng->prob_stale_ = true;
       g_eng->shadow_dirty_ms_ = millis();
     } else {
-      g_eng->prob_edit_blob(g_eng->abs_slot(pat), var, raw);
+      g_eng->prob_edit_blob(g_eng->abs_slot(pat), raw);
     }
     s_last_web_edit_ms = millis();
     send_ack(0);
@@ -1164,10 +1161,11 @@ void midi_send_scale_update(uint8_t pat, uint16_t mask, bool enabled, uint8_t va
 // --- Per-step probability broadcast (SysEx 0x2B) --------------------------------
 // Device -> host after a hardware probability edit. Same wire as the host->device
 // edit; the device never echoes a received 0x2B, so there is no feedback loop.
-void midi_send_prob_step(uint8_t pat, uint8_t step, uint8_t val, uint8_t var) {
-  const uint8_t inner[6] = {0x7D, 0x2B, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F),
-                            (uint8_t)(val & 0x7F), (uint8_t)(var & 0x03)};
-  tx_push_message(inner, 6);
+// b0 = accent|slide levels, b1 = down|up levels, b2 = up-double (variation 1).
+void midi_send_prob_step(uint8_t pat, uint8_t step, uint8_t b0, uint8_t b1, uint8_t b2) {
+  const uint8_t inner[7] = {0x7D, 0x2B, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F),
+                            (uint8_t)(b0 & 0x7F), (uint8_t)(b1 & 0x7F), (uint8_t)(b2 & 0x7F)};
+  tx_push_message(inner, 7);
 }
 
 // Broadcast ONE variation-3 poly step (device -> host) after a hardware chord edit,
@@ -1529,16 +1527,10 @@ void midi_shadows_gate_tick(Engine &engine, int16_t transpose) {
       continue;
     }
     Sequence &sq = engine.shadow_[i];
-    // Latched probability transpose (already range-degraded to -12..52)
-    // composes on top of the quantized pitch; armed accent chars override
-    // the stored accent flag.
-    int n = 36 + int(sq.scale_quantize_linear(sq.get_pitch())) +
-            int(engine.prob_sh_transpose_[i]) + base + int(int8_t(sq.transpose));
+    int n = 36 + int(sq.scale_quantize_linear(sq.get_pitch())) + base + int(int8_t(sq.transpose));
     if (n > 127) n = 127;
     if (n < 0)   n = 0;
-    const bool acc = (engine.prob_sh_armed_[i] == PROB_ACCENT)
-                       ? engine.prob_sh_pass_[i] : (sq.get_accent() != 0);
-    const uint8_t vel = acc ? 127 : 80;
+    const uint8_t vel = sq.get_accent() ? 127 : 80;
     if (!s_shadow_note_on[i]) {
       out_note_on(static_cast<byte>(n), vel, och);
       s_shadow_note[i] = static_cast<uint8_t>(n);

@@ -86,47 +86,43 @@ static inline uint8_t unpack_pitch_linear(uint8_t e) {
 }
 
 // -----------------------------------------------------------------------------
-// Per-step characteristic probability. One byte per step (grid-indexed, NOT
-// pitch-stream indexed): bits[2:0] = characteristic, bits[6:3] = level 1..13
-// (13 = 100%), bit7 = 0 (7-bit safe for SysEx). 0x00 = unarmed.
-// When accent/slide is armed the step's stored accent/slide flag is ignored
-// and the output is purely probability-driven. Transpose chars shift the
-// step's programmed linear pitch before scale quantize.
+// Per-step characteristic probability (variation 1 / CV voice only). THREE
+// bytes per step, grid-indexed (NOT pitch-stream indexed), so a step can arm
+// accent, slide, a down transpose, AND an up transpose all at once, each with
+// its own probability level 1..13 (13 = 100%). Down (-12) and up (+12 or +24)
+// roll independently; if BOTH pass on a step the firmware flips a coin to pick
+// which shift applies. All bytes 7-bit safe for SysEx. All-zero = unarmed.
+//   byte0: bits[3:0] = accent level (0 = off, 1..13)
+//          bits[7:4] = slide  level (0 = off, 1..13)
+//   byte1: bits[3:0] = down transpose level (-12; 0 = off)
+//          bits[7:4] = up   transpose level (0 = off)
+//   byte2: bit[0]    = up-is-double (up delta = +24 when set, else +12)
+// When accent/slide is armed the step's stored accent/slide flag is ignored and
+// the output is purely probability-driven. Transpose shifts the step's
+// programmed linear pitch before scale quantize.
 // -----------------------------------------------------------------------------
-enum ProbChar : uint8_t {
-  PROB_NONE        = 0,
-  PROB_ACCENT      = 1,
-  PROB_SLIDE       = 2,
-  PROB_DOWN        = 3, // -12
-  PROB_UP          = 4, // +12
-  PROB_DOUBLE_DOWN = 5, // -24
-  PROB_DOUBLE_UP   = 6, // +24
-};
 static constexpr uint8_t PROB_LEVEL_MAX = 13; // level 13 always passes
-static inline uint8_t prob_char_of(uint8_t b)  { return b & 0x07; }
-static inline uint8_t prob_level_of(uint8_t b) { return (b >> 3) & 0x0F; }
-static inline uint8_t prob_pack(uint8_t ch, uint8_t lvl) {
-  return uint8_t((ch & 0x07) | ((lvl & 0x0F) << 3));
+static inline uint8_t prob_accent_level(uint8_t b0) { return b0 & 0x0F; }
+static inline uint8_t prob_slide_level(uint8_t b0)  { return (b0 >> 4) & 0x0F; }
+static inline uint8_t prob_down_level(uint8_t b1)   { return b1 & 0x0F; }
+static inline uint8_t prob_up_level(uint8_t b1)     { return (b1 >> 4) & 0x0F; }
+static inline bool    prob_up_double(uint8_t b2)    { return (b2 & 0x01) != 0; }
+static inline uint8_t prob_pack_ac_sl(uint8_t acc_lvl, uint8_t sld_lvl) {
+  return uint8_t((acc_lvl & 0x0F) | ((sld_lvl & 0x0F) << 4));
 }
-static inline int8_t prob_char_delta(uint8_t ch) {
-  switch (ch) {
-    case PROB_DOWN:        return -12;
-    case PROB_UP:          return  12;
-    case PROB_DOUBLE_DOWN: return -24;
-    case PROB_DOUBLE_UP:   return  24;
-  }
-  return 0;
+static inline uint8_t prob_pack_du(uint8_t down_lvl, uint8_t up_lvl) {
+  return uint8_t((down_lvl & 0x0F) | ((up_lvl & 0x0F) << 4));
 }
-// Graceful octave degrade: double shifts fall back to single, single shifts
-// fall back to unchanged. Playable range is linear -12..52: the CV DAC spans
-// 64 codes (code = pitch + transpose - 1, "none" = +12), giving an octave of
-// headroom below bottom C and 4 semitones above double-up high C (the top E,
-// linear 52 = DAC code 63).
+// Graceful octave degrade: the double-up shift falls back to single up, single
+// shifts fall back to unchanged. Playable range is linear -12..52: the CV DAC
+// spans 64 codes (code = pitch + transpose - 1, "none" = +12), giving an
+// octave of headroom below bottom C and 4 semitones above double-up high C
+// (the top E, linear 52 = DAC code 63).
 static inline int8_t prob_degrade_transpose(uint8_t base, int8_t t) {
   int v = int(base) + t;
   if (v >= -12 && v <= 52) return t;
-  if (t == 24 || t == -24) {
-    t /= 2;
+  if (t == 24) {
+    t = 12;
     v = int(base) + t;
     if (v >= -12 && v <= 52) return t;
   }

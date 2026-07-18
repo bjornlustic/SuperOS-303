@@ -155,34 +155,27 @@ struct Engine {
   bool      shadow_edit_dirty_ = false;
   uint32_t  shadow_edit_ms_    = 0;  // millis() of last buffered edit (idle coalescing)
 
-  // --- Per-step characteristic probability (flash-backed, active slot only) ---
-  // One prob byte per step (see ProbChar in sequence.h). Tables for the whole
-  // bank cannot be RAM-resident (18 x 64 B on an 8 KB part); only the active
-  // slot's three variations are cached, loaded in ReloadShadows and flushed in
-  // persist_shadows alongside the shadow lifecycle. Poly var3 is excluded.
-  uint8_t  prob_var1_[MAX_STEPS]      = {};
-  uint8_t  prob_shadow_[2][MAX_STEPS] = {};
-  bool     prob_stale_ = false;       // resident tables edited; persist on save/reload
-  // Deferred non-resident prob edits (SysEx to a slot != active): one (slot,var)
-  // 64-byte region buffered in RAM, flash write deferred (poly 0x27 precedent).
-  uint8_t  prob_edit_[MAX_STEPS] = {};
+  // --- Per-step characteristic probability (variation 1 / CV voice only) ---
+  // Three bytes per step (see sequence.h): accent+slide levels in byte0,
+  // down+up transpose levels in byte1, up-double flag in byte2. Only the active
+  // slot's table is RAM-resident (a full-bank cache won't fit on an 8 KB part);
+  // loaded in ReloadShadows, flushed in persist_shadows. Variations 2/3 do not
+  // carry probability.
+  uint8_t  prob_var1_[3 * MAX_STEPS] = {};
+  bool     prob_stale_ = false;       // resident table edited; persist on save/reload
+  // Deferred non-resident prob edits (SysEx to a slot != active): the slot's
+  // 192-byte table buffered in RAM, flash write deferred (poly 0x27 precedent).
+  uint8_t  prob_edit_[3 * MAX_STEPS] = {};
   int16_t  prob_edit_slot_  = -1;
-  uint8_t  prob_edit_var_   = 0;
   bool     prob_edit_dirty_ = false;
   uint32_t prob_edit_ms_    = 0;
-  // Roll state, latched once per NOTE step in Advance()/ReloadShadows (output
-  // getters are polled every DAC refresh and must never re-roll). TIE steps
-  // hold the source note's latch; REST clears it.
-  uint8_t  prob_armed_     = PROB_NONE;
-  bool     prob_pass_      = false;
+  // Roll state, latched once per NOTE step in Advance() (output getters are
+  // polled every DAC refresh and must never re-roll). TIE holds the source
+  // note's latch; REST clears it. Each characteristic rolls independently.
+  bool     prob_accent_armed_ = false, prob_accent_pass_ = false;
   int8_t   prob_transpose_ = 0;
   uint8_t  prob_slide_prev_ = 0xFF;   // source-note slide override: 0xFF none, 0 off, 1 on
   uint8_t  prob_slide_pend_ = 0xFF;   // current note's override, consumed next step
-  uint8_t  prob_sh_armed_[2]     = {PROB_NONE, PROB_NONE};
-  bool     prob_sh_pass_[2]      = {false, false};
-  int8_t   prob_sh_transpose_[2] = {0, 0};
-  uint8_t  prob_sh_slide_prev_[2] = {0xFF, 0xFF};
-  uint8_t  prob_sh_slide_pend_[2] = {0xFF, 0xFF};
 
   uint8_t get_group() const { return group_; }
 
@@ -309,21 +302,13 @@ struct Engine {
     }
     shadow_last_p_     = p_select;
     shadow_last_group_ = group_;
-    // Load this slot's probability tables and re-latch variation 1 for the
+    // Load this slot's variation-1 probability table and re-latch it for the
     // step it is already on (a chain switch advances into the new pattern
     // before the reload, so that roll used the outgoing slot's table).
-    {
-      uint8_t buf[FB_PROB_LEN];
-      ReadProbAt(s, buf);
-      memcpy(prob_var1_,      buf,                 MAX_STEPS);
-      memcpy(prob_shadow_[0], buf + MAX_STEPS,     MAX_STEPS);
-      memcpy(prob_shadow_[1], buf + 2 * MAX_STEPS, MAX_STEPS);
-      prob_stale_ = false;
-      prob_clear_latch();
-      if (!resting)
-        prob_latch_step(get_sequence(), prob_var1_,
-                        prob_armed_, prob_pass_, prob_transpose_, prob_slide_pend_);
-    }
+    ReadProbAt(s, prob_var1_);
+    prob_stale_ = false;
+    prob_clear_latch();
+    if (!resting) prob_roll_var1();
   }
   // True when the active slot or group changed since the last ReloadShadows.
   // Caller must flush open shadow notes before calling ReloadShadows.
@@ -335,11 +320,7 @@ struct Engine {
   // voice, so the shadow MIDI can track the analog gate window.
   void AdvanceShadows() {
     for (uint8_t i = 0; i < NUM_VARIATIONS - 1; ++i) {
-      if (!shadow_notecount_[i]) {
-        shadow_resting_[i] = true; shadow_slide_gate_[i] = false;
-        prob_sh_armed_[i] = PROB_NONE; prob_sh_pass_[i] = false;
-        continue;
-      }
+      if (!shadow_notecount_[i]) { shadow_resting_[i] = true; shadow_slide_gate_[i] = false; continue; }
       Sequence &s = shadow_[i];
       const uint8_t dir = s.get_direction_stored();   // each variation has its own direction
       bool result;
@@ -356,28 +337,14 @@ struct Engine {
       }
       shadow_step_dir_[i] = step_dir;
       shadow_resting_[i]  = !result;
-      // Probability latch (mirrors the var1 latch in Advance()).
-      prob_sh_slide_prev_[i] = prob_sh_slide_pend_[i];
-      prob_latch_step(s, prob_shadow_[i], prob_sh_armed_[i], prob_sh_pass_[i],
-                      prob_sh_transpose_[i], prob_sh_slide_pend_[i]);
       if (result) {
-        const bool sh_dir_random = (dir == DIR_RANDOM || dir == DIR_HALF_RAND ||
-                                    dir == DIR_BROWNIAN);
-        bool src_slide = false;
-        if (!sh_dir_random) {
-          src_slide = (prob_sh_slide_prev_[i] != 0xFF)
-                        ? (!s.first_step && prob_sh_slide_prev_[i] == 1)
-                        : s.slide_from_prev_dir(dir, step_dir);
-        }
         const bool next_is_tie = s.is_tied_dir(dir, next_step_dir);
-        const bool tie_slide   = s.is_tie() && src_slide;
+        const bool tie_slide   = s.is_tie() && s.slide_from_prev_dir(dir, step_dir);
         const uint8_t len  = s.length ? s.length : 1;
         const uint8_t npos = uint8_t((unsigned(s.time_pos) +
                                       (next_step_dir >= 0 ? 1u : unsigned(len) - 1u)) % unsigned(len));
         const bool next_is_rest = (s.time(npos) == 0);
-        const bool cur_slide = (prob_sh_armed_[i] == PROB_SLIDE) ? prob_sh_pass_[i]
-                                                                 : s.get_slide();
-        shadow_slide_gate_[i] = (!next_is_rest && cur_slide) || next_is_tie || tie_slide;
+        shadow_slide_gate_[i] = (!next_is_rest && s.get_slide()) || next_is_tie || tie_slide;
       } else {
         shadow_slide_gate_[i] = false;
       }
@@ -483,81 +450,91 @@ struct Engine {
       WritePatternAt(shadow_edit_, uint8_t(shadow_edit_slot_), shadow_edit_var_);
     shadow_edit_dirty_ = false;
   }
-  // --- Probability-table edit paths (mirror the shadow/poly edit buffers) ---
-  // Resident table for a variation of the active slot.
-  uint8_t *prob_table(uint8_t var) {
-    return (var == 0) ? prob_var1_ : prob_shadow_[(var - 1) & 0x1];
-  }
-  void prob_set_resident(uint8_t var, uint8_t step, uint8_t val) {
-    prob_table(var)[step & (MAX_STEPS - 1)] = val;
+  // --- Probability-table edit paths (var1 only; mirror the shadow edit buffer) ---
+  // The three prob bytes (b0 accent+slide, b1 down+up, b2 up-double) for a step.
+  void prob_set_resident(uint8_t step, uint8_t b0, uint8_t b1, uint8_t b2) {
+    const uint8_t k = uint8_t(step & (MAX_STEPS - 1)) * 3;
+    prob_var1_[k] = b0; prob_var1_[k + 1] = b1; prob_var1_[k + 2] = b2;
     prob_stale_ = true;
     shadow_dirty_ms_ = millis();
   }
-  // Buffer one step edit for a NON-resident (slot, var). RAM only; the flash
-  // write (a 192 B read-modify-write of the slot's block) is deferred.
-  void prob_edit_set(uint8_t slot, uint8_t var, uint8_t step, uint8_t val) {
-    if (prob_edit_slot_ != int16_t(slot) || prob_edit_var_ != var) {
-      flush_prob_edit();
-      uint8_t buf[FB_PROB_LEN];
-      ReadProbAt(slot, buf);
-      memcpy(prob_edit_, buf + var * MAX_STEPS, MAX_STEPS);
-      prob_edit_slot_ = int16_t(slot);
-      prob_edit_var_  = var;
+  // Random level for a randomize op: ~1/3 of steps unarmed (0), else 1..13.
+  static uint8_t prob_rand_level() {
+    return fast_rand(3) ? uint8_t(1 + fast_rand(PROB_LEVEL_MAX)) : 0;
+  }
+  // Scatter random probabilities across the active pattern's steps (within
+  // length) for one characteristic, or all four. kind: 0 accent, 1 slide,
+  // 2 down, 3 up, 4 all. Active var1 table only; RAM, persisted lazily.
+  void prob_randomize(uint8_t kind) {
+    const uint8_t len = get_sequence().length ? get_sequence().length : 1;
+    fast_rand_seed();
+    for (uint8_t i = 0; i < len && i < MAX_STEPS; ++i) {
+      const uint8_t k = i * 3;
+      uint8_t acc = prob_accent_level(prob_var1_[k]);
+      uint8_t sld = prob_slide_level(prob_var1_[k]);
+      uint8_t dn  = prob_down_level(prob_var1_[k + 1]);
+      uint8_t up  = prob_up_level(prob_var1_[k + 1]);
+      bool    updbl = prob_up_double(prob_var1_[k + 2]);
+      if (kind == 0 || kind == 4) acc = prob_rand_level();
+      if (kind == 1 || kind == 4) sld = prob_rand_level();
+      if (kind == 2 || kind == 4) dn  = prob_rand_level();
+      if (kind == 3 || kind == 4) { up = prob_rand_level(); updbl = up && fast_rand(2); }
+      prob_var1_[k]     = prob_pack_ac_sl(acc, sld);
+      prob_var1_[k + 1] = prob_pack_du(dn, up);
+      prob_var1_[k + 2] = updbl ? 1 : 0;
     }
-    prob_edit_[step & (MAX_STEPS - 1)] = val;
+    prob_stale_ = true;
+    shadow_dirty_ms_ = millis();
+  }
+  // Buffer one step edit for a NON-resident slot. RAM only; the flash write (a
+  // 192 B read-modify-write of the slot's block) is deferred.
+  void prob_edit_set(uint8_t slot, uint8_t step, uint8_t b0, uint8_t b1, uint8_t b2) {
+    if (prob_edit_slot_ != int16_t(slot)) {
+      flush_prob_edit();
+      ReadProbAt(slot, prob_edit_);
+      prob_edit_slot_ = int16_t(slot);
+    }
+    const uint8_t k = uint8_t(step & (MAX_STEPS - 1)) * 3;
+    prob_edit_[k] = b0; prob_edit_[k + 1] = b1; prob_edit_[k + 2] = b2;
     prob_edit_dirty_ = true;
     prob_edit_ms_    = millis();
   }
-  // Buffer a full 64 B table (null = all zeros) for a NON-resident (slot, var).
-  void prob_edit_blob(uint8_t slot, uint8_t var, const uint8_t *src64) {
-    if (prob_edit_dirty_ &&
-        (prob_edit_slot_ != int16_t(slot) || prob_edit_var_ != var))
-      flush_prob_edit();
-    if (src64) memcpy(prob_edit_, src64, MAX_STEPS);
-    else       memset(prob_edit_, 0, MAX_STEPS);
+  // Buffer a full 192 B table (null = all zeros) for a NON-resident slot.
+  void prob_edit_blob(uint8_t slot, const uint8_t *src) {
+    if (prob_edit_dirty_ && prob_edit_slot_ != int16_t(slot)) flush_prob_edit();
+    if (src) memcpy(prob_edit_, src, FB_PROB_LEN);
+    else     memset(prob_edit_, 0, FB_PROB_LEN);
     prob_edit_slot_  = int16_t(slot);
-    prob_edit_var_   = var;
     prob_edit_dirty_ = true;
     prob_edit_ms_    = millis();
   }
   void flush_prob_edit() {
-    if (prob_edit_dirty_ && prob_edit_slot_ >= 0) {
-      uint8_t buf[FB_PROB_LEN];
-      ReadProbAt(uint8_t(prob_edit_slot_), buf);
-      memcpy(buf + prob_edit_var_ * MAX_STEPS, prob_edit_, MAX_STEPS);
-      WriteProbAt(uint8_t(prob_edit_slot_), buf);
-    }
+    if (prob_edit_dirty_ && prob_edit_slot_ >= 0)
+      WriteProbAt(uint8_t(prob_edit_slot_), prob_edit_);
     prob_edit_dirty_ = false;
   }
   // Table for the web editor: resident, else the dirty edit buffer, else flash.
-  void export_prob_table(uint8_t idx, uint8_t var, uint8_t *dst64) {
+  void export_prob_table(uint8_t idx, uint8_t *dst) {
     idx &= uint8_t(NUM_PATTERNS - 1);
-    if (var >= NUM_VARIATIONS) var = 0;
-    if (idx == p_select) { memcpy(dst64, prob_table(var), MAX_STEPS); return; }
+    if (idx == p_select) { memcpy(dst, prob_var1_, FB_PROB_LEN); return; }
     const uint8_t s = abs_slot(idx);
-    if (prob_edit_dirty_ && prob_edit_slot_ == int16_t(s) && prob_edit_var_ == var) {
-      memcpy(dst64, prob_edit_, MAX_STEPS);
+    if (prob_edit_dirty_ && prob_edit_slot_ == int16_t(s)) {
+      memcpy(dst, prob_edit_, FB_PROB_LEN);
       return;
     }
-    uint8_t buf[FB_PROB_LEN];
-    ReadProbAt(s, buf);
-    memcpy(dst64, buf + var * MAX_STEPS, MAX_STEPS);
+    ReadProbAt(s, dst);
   }
   // Persist edited shadow voices to flash (called on save and before reload).
   void persist_shadows() {
     flush_poly_edit();   // commit buffered non-resident poly edits before reload/save
     flush_shadow_edit(); // commit buffered non-resident var2/3 blobs too
     flush_prob_edit();   // commit buffered non-resident probability tables
-    // Flush the active slot's probability tables (uses the slot the tables
-    // were loaded for, like the shadow write below).
+    // Flush the active slot's probability table (uses the slot it was loaded
+    // for, like the shadow write below).
     if (prob_stale_ && shadow_last_p_ != 0xff) {
       const uint8_t ps = uint8_t(shadow_last_group_ * NUM_PATTERNS
                                  + (shadow_last_p_ & uint8_t(NUM_PATTERNS - 1)));
-      uint8_t buf[FB_PROB_LEN];
-      memcpy(buf,                 prob_var1_,      MAX_STEPS);
-      memcpy(buf + MAX_STEPS,     prob_shadow_[0], MAX_STEPS);
-      memcpy(buf + 2 * MAX_STEPS, prob_shadow_[1], MAX_STEPS);
-      WriteProbAt(ps, buf);
+      WriteProbAt(ps, prob_var1_);
       prob_stale_ = false;
     }
     if (!shadow_stale_ && !poly_stale_) return;
@@ -716,30 +693,41 @@ struct Engine {
   // too heavy to recompute on every main-loop DAC refresh).
   bool get_slide_dac() const { return slide_dac_; }
 
-  // Roll one voice's probability latch for its current step. NOTE = fresh
-  // roll, REST = clear, TIE = hold the source note's latch (a held note must
-  // not change accent/octave mid-tie; matches pitch_pos semantics).
-  static void prob_latch_step(const Sequence &s, const uint8_t *table,
-                              uint8_t &armed, bool &pass, int8_t &transpose,
-                              uint8_t &slide_pend) {
+  // Roll variation 1's probability latch for its current step. NOTE = fresh
+  // roll of each armed characteristic (accent / slide / transpose independently),
+  // REST = clear, TIE = hold the source note's latch (a held note must not
+  // change accent/octave mid-tie; matches pitch_pos semantics). Output getters
+  // only read the latched result, never re-roll.
+  static bool prob_roll(uint8_t level) {
+    return level && (fast_rand(PROB_LEVEL_MAX) < level);
+  }
+  void prob_roll_var1() {
+    const Sequence &s = get_sequence();
     const uint8_t t = (s.length && s.time_pos < s.length)
                         ? s.time(uint8_t(s.time_pos)) : 0;
     if (t == 1) {
-      const uint8_t pb = table[uint8_t(s.time_pos) & (MAX_STEPS - 1)];
-      armed = prob_char_of(pb);
-      pass  = (armed != PROB_NONE) && (fast_rand(PROB_LEVEL_MAX) < prob_level_of(pb));
-      transpose = 0;
-      if (pass) {
-        const int8_t d = prob_char_delta(armed);
-        // Degrade against the scale-quantized pitch: output composes as
-        // quantized + transpose (octave shifts preserve the pitch class), so
-        // range-checking the same base keeps the sum in -12..52.
-        if (d) transpose = prob_degrade_transpose(
-                   s.scale_quantize_linear(s.get_pitch()), d);
-      }
-      slide_pend = (armed == PROB_SLIDE) ? uint8_t(pass ? 1 : 0) : 0xFF;
+      const uint8_t k  = uint8_t(s.time_pos) & (MAX_STEPS - 1);
+      const uint8_t b0 = prob_var1_[k * 3], b1 = prob_var1_[k * 3 + 1];
+      const uint8_t b2 = prob_var1_[k * 3 + 2];
+      const uint8_t acc_lvl = prob_accent_level(b0);
+      prob_accent_armed_ = (acc_lvl != 0);
+      prob_accent_pass_  = prob_roll(acc_lvl);
+      const bool slide_armed = prob_slide_level(b0) != 0;
+      const bool slide_pass  = prob_roll(prob_slide_level(b0));
+      prob_slide_pend_ = slide_armed ? uint8_t(slide_pass ? 1 : 0) : 0xFF;
+      // Down (-12) and up (+12/+24) roll independently; if both pass, flip a
+      // coin to pick which shift applies this step.
+      const bool down_pass = prob_roll(prob_down_level(b1));
+      const bool up_pass    = prob_roll(prob_up_level(b1));
+      int8_t delta = 0;
+      if (down_pass && up_pass) delta = fast_rand(2) ? (prob_up_double(b2) ? 24 : 12) : -12;
+      else if (down_pass)       delta = -12;
+      else if (up_pass)         delta = prob_up_double(b2) ? 24 : 12;
+      prob_transpose_ = delta ? prob_degrade_transpose(
+          s.scale_quantize_linear(s.get_pitch()), delta) : 0;
     } else if (t == 0) {
-      armed = PROB_NONE; pass = false; transpose = 0; slide_pend = 0xFF;
+      prob_accent_armed_ = false; prob_accent_pass_ = false;
+      prob_transpose_ = 0; prob_slide_pend_ = 0xFF;
     }
   }
 
@@ -823,8 +811,7 @@ struct Engine {
     // Probability latch: consume the source note's slide override, then roll
     // once for this step (getters below only read the latched result).
     prob_slide_prev_ = prob_slide_pend_;
-    prob_latch_step(get_sequence(), prob_var1_,
-                    prob_armed_, prob_pass_, prob_transpose_, prob_slide_pend_);
+    prob_roll_var1();
     const bool dir_random = (direction_ == DIR_RANDOM ||
                              direction_ == DIR_HALF_RAND ||
                              direction_ == DIR_BROWNIAN);
@@ -847,8 +834,10 @@ struct Engine {
            (next_step_dir >= 0 ? 1u : unsigned(get_sequence().length) - 1u)) %
           unsigned(get_sequence().length));
       const bool next_is_rest = (get_sequence().time(next_pos) == 0);
-      const bool cur_slide = (prob_armed_ == PROB_SLIDE) ? prob_pass_
-                                                         : get_sequence().get_slide();
+      // This step's own slide: prob override when armed (pend 1/0), else stored.
+      const bool cur_slide = (prob_slide_pend_ != 0xFF)
+                               ? (prob_slide_pend_ == 1)
+                               : get_sequence().get_slide();
       slide_gate = (!next_is_rest && cur_slide) || next_is_tie || tie_slide;
     }
     resting = !result;
@@ -901,13 +890,8 @@ struct Engine {
 
   // Clear all latched probability roll state (transport reset / slot reload).
   void prob_clear_latch() {
-    prob_armed_ = PROB_NONE; prob_pass_ = false; prob_transpose_ = 0;
+    prob_accent_armed_ = false; prob_accent_pass_ = false; prob_transpose_ = 0;
     prob_slide_prev_ = prob_slide_pend_ = 0xFF;
-    for (uint8_t i = 0; i < 2; ++i) {
-      prob_sh_armed_[i] = PROB_NONE; prob_sh_pass_[i] = false;
-      prob_sh_transpose_[i] = 0;
-      prob_sh_slide_prev_[i] = prob_sh_slide_pend_[i] = 0xFF;
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1288,13 +1272,13 @@ struct Engine {
     stale = true;
     // A cleared pattern must not keep ghost step probabilities.
     if (idx == p_select) {
-      memset(prob_var1_, 0, MAX_STEPS);
+      memset(prob_var1_, 0, sizeof(prob_var1_));
       prob_stale_ = true;
       shadow_dirty_ms_ = millis();
       Reset();
       mode_ = NORMAL_MODE;
     } else {
-      prob_edit_blob(abs_slot(idx), 0, nullptr); // stage an all-zero var1 table
+      prob_edit_blob(abs_slot(idx), nullptr); // stage an all-zero table
     }
   }
 
@@ -1351,7 +1335,7 @@ struct Engine {
   }
 
   bool get_accent() const {
-    if (prob_armed_ == PROB_ACCENT) return !resting && prob_pass_;
+    if (prob_accent_armed_) return !resting && prob_accent_pass_;
     return !resting && get_sequence().get_accent();
   }
   uint8_t get_pitch() const {
