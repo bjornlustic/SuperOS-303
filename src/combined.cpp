@@ -39,8 +39,17 @@ void combined_boot_guard(void) {
 #endif
 }
 
-uint8_t g_fw_arena[sizeof(Engine) > sizeof(d650_host) ? sizeof(Engine)
-                                                      : sizeof(d650_host)];
+// The D650_ROM_IN_RAM build runs the mask ROM from a 2 KB SRAM copy that lives
+// in the arena TAIL, just past the d650 machine (only one firmware runs per
+// boot, so in SuperOS mode Engine owns the whole arena and the ROM copy is
+// dormant). Size the arena to fit whichever side is larger: SuperOS's Engine,
+// or the d650 machine plus the 2 KB ROM. See emu_avr.cpp (s_rom) + rom_store.h.
+#if defined(D650_ROM_IN_RAM)
+static constexpr unsigned kD650Side = sizeof(d650_host) + 2048u; // D650_ROM_SIZE
+#else
+static constexpr unsigned kD650Side = sizeof(d650_host);
+#endif
+uint8_t g_fw_arena[sizeof(Engine) > kD650Side ? sizeof(Engine) : kD650Side];
 
 // main.cpp and d650/emu_avr.cpp rename their setup/loop to these.
 void superos_setup(); void superos_loop();

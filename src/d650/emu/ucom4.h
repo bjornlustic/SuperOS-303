@@ -16,8 +16,13 @@ extern "C" {
 
 // ROM fetch — on AVR the 2 KB mask ROM lives in flash (PROGMEM); elsewhere it is
 // a plain array. Define UCOM4_ROM_RD before including to override.
+// D650_ROM_IN_RAM (combined build): the ROM is a user-uploaded SRAM copy
+// (rom_store.h), so the fetch is a plain load even on AVR — one cycle cheaper
+// than the LPM it replaces. Local addition, see src/d650/SYNC.md.
 #ifndef UCOM4_ROM_RD
-#  if defined(__AVR__)
+#  if defined(D650_ROM_IN_RAM)
+#    define UCOM4_ROM_RD(rom, addr) ((rom)[(addr)])
+#  elif defined(__AVR__)
 #    include <avr/pgmspace.h>
 #    define UCOM4_ROM_RD(rom, addr) ((uint8_t)pgm_read_byte(&(rom)[(addr)]))
 #  else
