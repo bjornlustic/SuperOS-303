@@ -548,7 +548,7 @@
        connection, the D650C backup strip, the Library, and Device Config. ── */
     #d650Strip { display: none; }
     body.mode-d650 #d650Strip { display: flex; }
-    body.mode-d650 .app > :not(.header):not(#midiStrip):not(#d650Strip):not(#libPanel):not(#configPanel):not(#d650Banner):not(#httpBanner):not(#syncOverlay):not(#downloadToast):not(#errorToast) { display: none; }
+    body.mode-d650 .app > :not(.header):not(#midiStrip):not(#d650Strip):not(#romStrip):not(#libPanel):not(#configPanel):not(#d650Banner):not(#httpBanner):not(#syncOverlay):not(#downloadToast):not(#errorToast) { display: none; }
     body.mode-d650 #cfgSuperos { display: none; }
     body.mode-d650 #cfgD650 { display: flex !important; }
   </style>
@@ -589,6 +589,8 @@
       <div class="group-inner">
         <button class="btn-ghost" id="btnMidi">Connect MIDI</button>
         <span id="midiStatus">Not connected</span>
+        <span id="devRom" style="font-size:11px;font-weight:600;padding-left:8px"
+          title="Whether a D650C mask ROM is installed on the device (uploaded to EEPROM or built into the firmware)"></span>
       </div>
     </div>
     <div class="group">
@@ -623,6 +625,30 @@
         <button class="btn" id="btnD650Restore">&#8593; Restore from file</button>
         <input type="file" id="d650FileInput" accept=".json,application/json" style="display:none" />
         <span id="d650BackupStatus" style="font-size:11px;font-weight:600;color:var(--gray-4)"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- D650C emulator mask ROM (user-supplied; not distributed with SuperOS). The
+       device runs the emulator from a ROM you upload here over USB-C or DIN MIDI. -->
+  <div class="strip" id="romStrip">
+    <div class="group">
+      <span class="lbl">D650C mask ROM</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnRomLoad"
+          title="The original TB-303 (D650C) mask ROM is copyrighted and is NOT distributed with SuperOS. Load your own dump: a raw 2048-byte .bin, or a recpu/RE-303-format .syx">&#8593; Load ROM dump</button>
+        <input type="file" id="fileRom" accept=".bin,.syx" style="display:none" />
+        <span id="romStatus" style="font-size:11px;font-weight:600;color:var(--gray-4)"
+          title="File loaded into this converter (the chip in the MIDI strip shows what is installed on the device)">no file loaded</span>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Convert / Install</span>
+      <div class="group-inner" style="gap:6px;flex-wrap:wrap">
+        <button class="btn" id="btnRomSyx" disabled
+          title="Save the loaded dump as a .syx in the format the device accepts">&#8595; Save .syx</button>
+        <button class="btn" id="btnRomSend" disabled
+          title="Send the ROM to the device over MIDI (USB-C or DIN). The device must be in D650C mode; with no ROM installed it waits there automatically.">&#8593; Send to device</button>
       </div>
     </div>
   </div>
@@ -3541,6 +3567,127 @@
     }, 100);
   }
 
+  // ── D650C mask ROM: convert + upload (SysEx, recpu/RE-303 nibble format) ──
+  //   F0 7D 03 03 7E 03 <blk> <2048 nibbles hi,lo> <ck hi> <ck lo> F7  (blk 0,1)
+  //   F0 7D 03 03 7F 00 F7                                             (end)
+  // ck = sum of the block's 1024 decoded bytes, mod 256. Byte-exact to the
+  // firmware receiver (src/d650/rom_store.h). Sent over the selected MIDI output,
+  // so it works over USB-C or DIN. Status: 0x36 query -> 0x37 reply.
+  var ROM_SIZE = 2048;
+  var maskRom = null;
+
+  function romEncodeSyx(rom) {
+    var out = [];
+    for (var blk = 0; blk < 2; blk++) {
+      out.push(0xf0, 0x7d, 0x03, 0x03, 0x7e, 0x03, blk);
+      var sum = 0;
+      for (var i = 0; i < 1024; i++) {
+        var b = rom[blk * 1024 + i];
+        out.push(b >> 4, b & 0x0f);
+        sum = (sum + b) & 0xff;
+      }
+      out.push(sum >> 4, sum & 0x0f, 0xf7);
+    }
+    out.push(0xf0, 0x7d, 0x03, 0x03, 0x7f, 0x00, 0xf7);
+    return new Uint8Array(out);
+  }
+
+  function romParseSyx(bytes) {   // Uint8Array(2048), or throws a message
+    var rom = new Uint8Array(ROM_SIZE), got = 0;
+    for (var i = 0; i < bytes.length; ) {
+      if (bytes[i] !== 0xf0) { i++; continue; }
+      var end = bytes.indexOf(0xf7, i);
+      if (end < 0) break;
+      var m = bytes.subarray(i, end);          // message without its F7
+      i = end + 1;
+      if (m.length < 7 || m[1] !== 0x7d || m[2] !== 0x03 || m[3] !== 0x03 || m[4] !== 0x7e)
+        continue;                              // not a ROM block: skip
+      if (m.length !== 5 + 2 + 2048 + 2) throw 'unexpected ROM block length (' + m.length + ')';
+      var blk = m[6];
+      if (m[5] !== 0x03 || blk > 1) throw 'unexpected ROM block header';
+      var sum = 0;
+      for (var k = 0; k < 1024; k++) {
+        var hi = m[7 + 2 * k], lo = m[8 + 2 * k];
+        if (hi > 15 || lo > 15) throw 'bad nibble in block ' + blk;
+        var by = (hi << 4) | lo;
+        rom[blk * 1024 + k] = by;
+        sum = (sum + by) & 0xff;
+      }
+      if (((m[7 + 2048] << 4) | m[8 + 2048]) !== sum) throw 'checksum mismatch in block ' + blk;
+      got |= 1 << blk;
+    }
+    if (got !== 3) throw 'file does not contain both 1024-byte ROM blocks';
+    return rom;
+  }
+
+  function romSetStatus(t) { var e = document.getElementById('romStatus'); if (e) e.textContent = t; }
+  function romLoaded(rom, name) {
+    maskRom = rom;
+    document.getElementById('btnRomSyx').disabled = false;
+    document.getElementById('btnRomSend').disabled = false;
+    romSetStatus(name + ' loaded (2048 bytes)');
+  }
+  // Device-ROM status chip from the 0x37 reply.
+  function updateDevRom(status) {
+    var el = document.getElementById('devRom'); if (!el) return;
+    if (status === 0x7f) { el.textContent = ''; el.style.color = 'var(--gray-4)'; return; }
+    if (status === 0) { el.textContent = 'no mask ROM'; el.style.color = '#c00'; }
+    else if (status === 1) { el.textContent = 'ROM: uploaded'; el.style.color = 'var(--black)'; }
+    else { el.textContent = 'ROM: on device'; el.style.color = 'var(--black)'; }
+  }
+
+  document.getElementById('btnRomLoad').addEventListener('click', function() {
+    document.getElementById('fileRom').click();
+  });
+  document.getElementById('fileRom').addEventListener('change', function() {
+    var f = this.files && this.files[0];
+    this.value = '';
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function() {
+      var bytes = new Uint8Array(rd.result);
+      try {
+        var rom;
+        if (bytes.length === ROM_SIZE) rom = bytes;             // raw dump
+        else if (bytes[0] === 0xf0)    rom = romParseSyx(bytes); // recpu-format syx
+        else throw 'expected a raw 2048-byte .bin or a recpu-format .syx (got ' + bytes.length + ' bytes)';
+        romLoaded(rom, f.name);
+      } catch (e) {
+        maskRom = null;
+        document.getElementById('btnRomSyx').disabled = true;
+        document.getElementById('btnRomSend').disabled = true;
+        romSetStatus('no file loaded');
+        showErrorToast('ROM load failed: ' + e);
+      }
+    };
+    rd.readAsArrayBuffer(f);
+  });
+  document.getElementById('btnRomSyx').addEventListener('click', function() {
+    if (!maskRom) return;
+    var url = URL.createObjectURL(new Blob([romEncodeSyx(maskRom)], { type: 'application/octet-stream' }));
+    var a = document.createElement('a'); a.href = url; a.download = 'd650c-maskrom.syx'; a.click();
+    URL.revokeObjectURL(url);
+    log('Saved d650c-maskrom.syx', 'log-edit');
+  });
+  document.getElementById('btnRomSend').addEventListener('click', function() {
+    if (!maskRom) return;
+    if (!midiOut) { showErrorToast('Mask ROM send: connect MIDI first'); return; }
+    var syx = romEncodeSyx(maskRom);
+    midiOut.send(syx);
+    log('TX mask ROM [' + syx.length + ' bytes]: 2 blocks + end marker', 'log-syx');
+    log('The device must be in D650C mode (with no ROM it waits there). The transfer ' +
+        'takes ~1.5 s, then it saves the ROM (a few seconds) and reboots into the emulator.', 'log-edit');
+  });
+  // Poll every 2 s regardless of firmware mode: 0x36 (ROM status, both firmwares
+  // answer) and 0x40 (D650C status). The 0x40 probe keeps re-detecting a unit in
+  // D650C mode (it replies 0x41 -> setDeviceMode('d650')), so the editor shows it
+  // connected without the user re-clicking Connect. Harmless in SuperOS mode.
+  setInterval(function() {
+    if (!midiOut) return;
+    sendSysex(new Uint8Array([0x7d, 0x36]));
+    if (deviceMode !== 'superos') sendSysex(new Uint8Array([0x7d, 0x40]));
+  }, 2000);
+
   // ── Error toast ───────────────────────────────────────────────────
   var errorToastTimer = null;
   function showErrorToast(msg) {
@@ -3564,6 +3711,11 @@
     }
     var cmd = bytes[1];
     log('syxInner: cmd=0x' + cmd.toString(16) + ' len=' + bytes.length + ' expectDump=' + expectDump, 'log-syx');
+
+    if (cmd === 0x37 && bytes.length >= 3) { // D650C mask-ROM status
+      updateDevRom(bytes[2]);
+      return;
+    }
 
     if (cmd === 0x11) {
       if (bytes.length < 5 + PACKED_SIZE) { log('0x11 too short (' + bytes.length + ')', 'log-err'); return; }

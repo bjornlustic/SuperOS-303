@@ -35,11 +35,20 @@
 extern "C" {
 #include "emu/ucom4.h"
 #include "emu/d650_host.h"
+#if !defined(D650_ROM_IN_RAM) || defined(D650_ROM_EMBEDDED)
+// Non-RAM builds run the reconstructed ROM from PROGMEM; the RAM build only
+// pulls it in as the D650_ROM_EMBEDDED boot fallback.
 #include "emu/tb303_rom.h"
+#endif
 #include "emu/emu_settings.h"
 #include "emu/emu_sync.h"
 #include "emu/emu_notes.h"
 }
+
+// User-uploadable mask ROM (combined build, see src/d650/SYNC.md + rom_store.h).
+#ifdef D650_ROM_IN_RAM
+#include "rom_store.h"
+#endif
 
 static const uint8_t FB_EMU_SETTINGS = 120;   // flash block id (distinct from SuperOS)
 
@@ -52,6 +61,18 @@ FlashEeprom g_flash;   // flash_persist.h declares it extern; SuperOS defines it
 static d650_host &H = *(d650_host *)g_fw_arena;   // overlays SuperOS's Engine
 #else
 static d650_host   H;
+#endif
+
+#ifdef D650_ROM_IN_RAM
+// The mask ROM runs from a 2 KB SRAM copy in the arena TAIL, just past the d650
+// machine (combined.cpp sizes g_fw_arena to hold d650_host + this). Loaded from
+// EEPROM at boot; users upload their own dump over USB-C or DIN MIDI
+// (rom_store.h). If no valid ROM is stored the emulator sits in upload-wait
+// mode. D650_ROM_EMBEDDED supplies a boot fallback (the reconstructed tb303_rom).
+static uint8_t *const s_rom = g_fw_arena + sizeof(d650_host);
+static bool           s_rom_valid = false;   // EEPROM/embedded copy present + clean
+static bool           s_rom_busy  = false;   // transfer in progress: interpreter frozen
+static RomRx          s_rrx;
 #endif
 static PinState    g_inputs[INPUT_COUNT];
 static EmuSettings g_set;
@@ -349,6 +370,21 @@ static void leds_publish() {
     SREG = s;
   }
 }
+#ifdef D650_ROM_IN_RAM
+// Mask-ROM upload indicator (no valid ROM yet, or a transfer in progress).
+// Alternates the low-C and high-C key LEDs: slow while waiting for a ROM, fast
+// while uploading. Mirrors the SuperOS-606's steps 1/9 blink. Draws directly
+// (like the menu) and marks the publish cache dirty so normal LED publishing
+// resumes cleanly once a ROM is running.
+static void romwait_display() {
+  const uint16_t half = s_rom_busy ? 100 : 400;   // ms per LED
+  const bool phase = (uint8_t)(millis() / half) & 1;
+  Leds::Set(phase ? C_KEY2_LED : C_KEY_LED, true);
+  Leds::Swap();
+  g_led_pub[0] = g_led_pub[1] = g_led_pub[2] = 0xff;
+}
+#endif
+
 static const d650_drivers DRV = { hook_cv, hook_led, nullptr };
 
 // ---------------------------------------------------------------------------
@@ -366,9 +402,60 @@ static void midi_handle_channel(uint8_t st, uint8_t d1, uint8_t d2) {
   if (type == 0x90 && d2 > 0)      emu_live_note_on(&g_live, d1, d2);   // live play
   else if (type == 0x80 || (type == 0x90 && d2 == 0)) emu_live_note_off(&g_live, d1);
 }
+#ifdef D650_ROM_IN_RAM
+static void din_send_status();   // defined below; answers the editor's 0x40 probe over DIN
+// Feed one raw MIDI byte to the mask-ROM receiver (rom_store.h). Shared by the
+// DIN parser and the USB SysEx path so a ROM dump uploads over either transport.
+// Decodes straight into the live s_rom, so a confirmed block start freezes the
+// interpreter (emu_loop honours s_rom_busy); a failed/aborted transfer restores
+// s_rom from the EEPROM copy. DONE persists and reboots into a clean D650C run.
+static void rom_rx_feed(uint8_t b) {
+  switch (s_rrx.feed(b, millis())) {
+    case ROMRX_STARTED: s_rom_busy = true; break;
+    case ROMRX_DONE:
+      while (s_save_pending) patt_save_step();   // commit pending pattern edits
+      rom_save(s_rom);
+      combined_switch_firmware(FW_D650);         // soft reboot into the emulator
+      break;                                     // (does not return)
+    case ROMRX_ERROR:
+      if (s_rom_valid && s_rom_busy) rom_load(s_rom);
+      s_rom_busy = false;
+      break;
+    default: break;
+  }
+}
+#endif
 static void midi_in_poll() {
   while (Serial1.available()) {
     uint8_t b = (uint8_t)Serial1.read();
+#ifdef D650_ROM_IN_RAM
+    // Mask-ROM upload over DIN. Fed the raw byte before the channel parser (its
+    // SysEx data bytes are otherwise discarded here).
+    rom_rx_feed(b);
+    // Minimal DIN matcher for the web editor's no-payload queries, so the unit
+    // is recognizable over DIN while it sits in D650C mode: F0 7D 36 F7 -> 0x37
+    // ROM status (0 none / 1 EEPROM / 2 embedded); F0 7D 40 F7 -> the 0x41
+    // status reply (the editor's connection probe). Realtime bytes (>=0xF8) may
+    // interleave and must not disturb the walk.
+    if (b < 0xF8) {
+      static uint8_t s_sxq = 0, s_sxcmd = 0;
+      if (b == 0xF0) { s_sxq = 1; }
+      else if (s_sxq == 1) s_sxq = (b == 0x7D) ? 2 : 0;
+      else if (s_sxq == 2) { s_sxcmd = b; s_sxq = 3; }
+      else if (s_sxq == 3) {
+        if (b == 0xF7) {
+          if (s_sxcmd == 0x36) {
+            const uint8_t st = s_rom_valid
+              ? ((eeprom_read_byte(EE_ROM_MAGIC) == EE_ROM_MAGIC_VAL) ? 1 : 2) : 0;
+            midi_tx(0xF0); midi_tx(0x7D); midi_tx(0x37); midi_tx(st); midi_tx(0xF7);
+          } else if (s_sxcmd == 0x40) {
+            din_send_status();
+          }
+        }
+        s_sxq = 0;      // any byte after the command ends this short-query walk
+      }
+    }
+#endif
     if (b >= 0xF8) {                          // realtime (may interleave)
       // Transport only when MIDI is the selected source: a stray Start in DIN
       // mode would force the RUN line and wait for pulses that never come.
@@ -519,12 +606,10 @@ static void clock_out_service() {
 // foundation for web editing and pattern backup: the host page reads/writes
 // native 303 pattern memory directly, no format translation in firmware.
 // ---------------------------------------------------------------------------
-#ifdef SUPEROS_USB_MIDI
-static bool chan_ok(uint8_t ch /*1..16*/) {
-  return g_set.midi_channel == 0 || ch == g_set.midi_channel;
-}
-static void usb_send_status() {
-  uint8_t r[46];
+// Build the 46-byte 0x41 status reply (F0/F7 added by the transport). Shared by
+// the USB sender and the DIN sender (D650_ROM_IN_RAM) so the web editor's
+// connection probe (0x40) is answered over either transport.
+static uint8_t build_status_reply(uint8_t *r) {
   r[0]  = 0x7D; r[1] = 0x41;
   r[2]  = g_set.clock_source;
   r[3]  = g_set.midi_channel;
@@ -568,7 +653,27 @@ static void usb_send_status() {
   for (uint8_t i = 0; i < D650_IN_COUNT; i++)
     if (H.in[i]) r[40 + i / 7] |= (uint8_t)(1 << (i % 7));
   g_max_gap_us = g_max_pass_us = 0;
-  usbMIDI.sendSysEx(sizeof(r), r, false);   // core wraps F0 .. F7
+  return 46;
+}
+#ifdef D650_ROM_IN_RAM
+// DIN 0x41 status reply: lets the web editor's connection probe (0x40) detect a
+// D650C unit over DIN as well as USB, so a ROM upload can be driven over either.
+static void din_send_status() {
+  uint8_t r[46];
+  const uint8_t n = build_status_reply(r);
+  midi_tx(0xF0);
+  for (uint8_t i = 0; i < n; i++) midi_tx(r[i]);
+  midi_tx(0xF7);
+}
+#endif
+#ifdef SUPEROS_USB_MIDI
+static bool chan_ok(uint8_t ch /*1..16*/) {
+  return g_set.midi_channel == 0 || ch == g_set.midi_channel;
+}
+static void usb_send_status() {
+  uint8_t r[46];
+  const uint8_t n = build_status_reply(r);
+  usbMIDI.sendSysEx(n, r, false);   // core wraps F0 .. F7
 }
 // 7-bit pack/unpack (SuperOS midi.cpp scheme): each group of up to 7 raw bytes
 // goes out as 1 MSB-bitmap byte + 7 low-7-bit bytes. 192 raw -> 220 wire bytes.
@@ -627,6 +732,15 @@ static void usb_sysex_msg(const uint8_t *data, unsigned int sz) {
   if (p[0] != 0x7D || n < 2) return;
   switch (p[1]) {
   case 0x40: usb_send_status(); break;
+#ifdef D650_ROM_IN_RAM
+  case 0x36: {   // web editor: mask-ROM status query -> 0x37 reply
+    const uint8_t st = s_rom_valid
+      ? ((eeprom_read_byte(EE_ROM_MAGIC) == EE_ROM_MAGIC_VAL) ? 1 : 2) : 0;
+    const uint8_t r[3] = { 0x7D, 0x37, st };
+    usbMIDI.sendSysEx(3, r, false);
+    break;
+  }
+#endif
   case 0x42:
     if (n >= 3 && p[2] < EMU_CLK_COUNT) {
       g_set.clock_source = p[2];
@@ -709,6 +823,14 @@ static uint8_t  s_usx_buf[3 + 3 + PATT_WIRE_LEN + 2];
 static uint16_t s_usx_len  = 0;
 static bool     s_usx_drop = false;
 static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complete) {
+#ifdef D650_ROM_IN_RAM
+  // Mask-ROM upload over USB-C. A ROM block is ~2 KB (F0 7D 03 03 7E 03 <blk>
+  // <2048 nibbles> <ck> F7), far larger than s_usx_buf, so it can't go through
+  // the whole-message reassembly path. Stream every byte straight into the
+  // receiver state machine instead (it ignores everything that isn't the ROM
+  // framing, so config/pattern messages still reassemble normally below).
+  for (uint16_t i = 0; i < length; ++i) rom_rx_feed(data[i]);
+#endif
   if (s_usx_len == 0) s_usx_drop = false;
   if (!s_usx_drop) {
     if (s_usx_len + length <= sizeof(s_usx_buf)) {
@@ -971,7 +1093,20 @@ void setup() {
   flash_persist_begin();   // combined: SuperOS mounts the arena; d650 uses EEPROM
 #endif
   settings_load();
+#ifdef D650_ROM_IN_RAM
+  // User mask ROM: EEPROM -> SRAM. Priority: EEPROM upload > embedded fallback
+  // (personal build) > none (upload-wait mode). The MIDI upload path stays live
+  // in either case.
+  s_rrx.buf = s_rom;
+  s_rom_valid = rom_load(s_rom);
+#ifdef D650_ROM_EMBEDDED
+  if (!s_rom_valid) { memcpy_P(s_rom, tb303_rom, D650_ROM_SIZE); s_rom_valid = true; }
+#endif
+  if (!s_rom_valid) memset(s_rom, 0, D650_ROM_SIZE);
+  d650_init(&H, s_rom, &DRV);
+#else
   d650_init(&H, tb303_rom, &DRV);
+#endif
   patt_load_();   // restore pattern RAM (already nibble-packed in the host)
   emu_sync_init(&g_sync, &g_set, micros());
   settings_apply();
@@ -1143,6 +1278,16 @@ void loop() {
 #ifdef SUPEROS_USB_MIDI
   usb_midi_poll();
 #endif
+#ifdef D650_ROM_IN_RAM
+  // Stall recovery: a ROM transfer that started but stopped mid-stream (cable
+  // pulled) would freeze the interpreter forever. After ~2 s of silence reset
+  // the receiver and restore s_rom from the EEPROM copy (if any).
+  if (s_rom_busy && (uint32_t)(millis() - s_rrx.last_ms) > 2000) {
+    s_rrx.reset();
+    if (s_rom_valid) rom_load(s_rom);
+    s_rom_busy = false;
+  }
+#endif
   clock_in_poll();
   static uint8_t s_last_scan_tick = 0;
   bool frame = false;
@@ -1212,6 +1357,12 @@ void loop() {
   g_budget_q16 -= owed << 16;              // consume what this pass will run
 
   if (!g_menu
+#ifdef D650_ROM_IN_RAM
+      // No mask ROM yet (upload-wait) or a live upload in progress: freeze the
+      // interpreter so it never executes a zeroed/half-written ROM. The panel,
+      // config menu (boot SuperOS escape) and MIDI upload keep running.
+      && s_rom_valid && !s_rom_busy
+#endif
 #ifdef EMU_USB_DIAG
       && !dg_emu_off
 #endif
@@ -1279,7 +1430,11 @@ void loop() {
     if (g_menu) {                    // menu draws via Set/Swap into back[]:
       Leds::Swap();                  // invalidate the direct-publish cache
       g_led_pub[0] = g_led_pub[1] = g_led_pub[2] = 0xff;
-    } else leds_publish();
+    }
+#ifdef D650_ROM_IN_RAM
+    else if (!s_rom_valid || s_rom_busy) romwait_display();  // blink lo/hi C
+#endif
+    else leds_publish();
   }
 
   // Deferred incremental pattern persistence: note RAM writes (restarting the

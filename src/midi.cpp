@@ -31,6 +31,7 @@
 #include "pins.h"
 #include "midi_api.h"
 #ifdef SUPEROS_COMBINED
+#include <avr/eeprom.h>
 #include "combined.h"
 #endif
 
@@ -419,6 +420,41 @@ static void send_config_reply() {
   tx_push_message(inner, sizeof(inner));
 }
 
+// D650C mask-ROM status for the web editor (SysEx 0x36 -> 0x37). The upload
+// itself is handled only by the emulator (emu_avr.cpp); this lets the editor
+// show what is installed while the SuperOS side is running. Streams the EEPROM
+// sum on demand so no 2 KB RAM buffer is needed here.
+//   0 = no ROM installed (D650_ROM_IN_RAM, EEPROM empty)
+//   1 = valid user upload in EEPROM
+//   2 = ROM embedded in flash (plain combined, or D650_ROM_EMBEDDED fallback)
+//   0x7F = no emulator (app-only build)
+static uint8_t rom_status() {
+#ifdef SUPEROS_COMBINED
+#ifdef D650_ROM_IN_RAM
+  if (eeprom_read_byte(EE_ROM_MAGIC) == EE_ROM_MAGIC_VAL) {
+    uint16_t s = 0;
+    for (uint16_t i = 0; i < 2048; ++i) s = (uint16_t)(s + eeprom_read_byte(EE_ROM_DATA + i));
+    const uint16_t want = (uint16_t)eeprom_read_byte(EE_ROM_SUM)
+                        | ((uint16_t)eeprom_read_byte(EE_ROM_SUM + 1) << 8);
+    if (s == want) return 1;
+  }
+#ifdef D650_ROM_EMBEDDED
+  return 2;
+#else
+  return 0;
+#endif
+#else
+  return 2;   // plain combined: ROM is always embedded in program flash
+#endif
+#else
+  return 0x7F;
+#endif
+}
+static void midi_send_rom_status() {
+  const uint8_t inner[3] = {0x7D, 0x37, rom_status()};
+  tx_push_message(inner, 3);
+}
+
 // --- SysEx parse ----------------------------------------------------------------
 static void handle_sysex_body(const uint8_t *p, unsigned n) {
   if (!g_eng || n < 2) return;
@@ -426,6 +462,9 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
   const uint8_t cmd = p[1];
 
   switch (cmd) {
+  case 0x36: // web editor: D650C mask-ROM status query -> 0x37 reply
+    midi_send_rom_status();
+    break;
   case 0x10: { // request pattern; optional trailing <var> selects the variation
     if (n < 3) return;
     const uint8_t pat = p[2] & 0x0F;
