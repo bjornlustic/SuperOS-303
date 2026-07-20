@@ -33,7 +33,10 @@ static constexpr uint8_t FW_SUPEROS = 0;   // also 0xFF (virgin EEPROM)
 static constexpr uint8_t FW_D650    = 1;
 // Bump when d650 settings defaults/semantics change (0x67: pitch_base 25,
 // factory pitch standard). Mismatch re-defaults settings AND re-seeds the store.
-static constexpr uint8_t EE_EMU_MAGIC_VAL = 0x67;
+// 0x68: factory-reset epoch for the nousbc build; first boot into the D650C
+// side re-defaults its settings and zeroes the uPD444 pattern store. The mask
+// ROM (EE_ROM_MAGIC / EE_ROM_DATA) is keyed separately and survives.
+static constexpr uint8_t EE_EMU_MAGIC_VAL = 0x68;
 // Written LAST by rom_save (invalidated first) so a torn ROM upload never
 // validates at boot.
 static constexpr uint8_t EE_ROM_MAGIC_VAL = 0x6D;
