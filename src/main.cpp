@@ -2673,7 +2673,11 @@ static void OutputDAC(bool clk_run, bool write_mode, bool track_mode, bool edit_
       pitch_cv = s_metro_tap_monitor_cv;
     else if (engine_voice && gate_running)
       pitch_cv = clamp_cv(int(engine.get_pitch_scaled()) + total_transpose);
-    else if (s_metronome_active)
+    else if (s_metronome_active && s_metro_record_phase)
+      // RECORD only: hold the last click/monitor pitch through the decay.
+      // In OVERDUB the engine is the voice; its decays must ring at the
+      // pattern's own pitch exactly like normal playback, not at a stale
+      // click pitch.
       pitch_cv = s_metro_tail_cv;
     else
       pitch_cv = clamp_cv(int(engine.get_pitch_scaled()) + total_transpose);
@@ -3689,10 +3693,14 @@ void loop() {
           if (s_metro_step_prewritten) {
             s_metro_step_prewritten = false;   // a late accept already wrote it
           } else if (!wrote_note_now) {
+            // A TIE never overwrites an existing NOTE: later passes (and the
+            // saved content of chained / linked patterns playing in OVERDUB)
+            // are preserved. A held finger crossing a NOTE step gets cut by
+            // that note instead of erasing it.
             bool tie = false;
-            if (s_metro_note_active && held)                    tie = true;
+            if (s_metro_note_active && held && sseq.time(k) != 1) tie = true;
             else if (s_metro_any_note && metro_sustain_held() &&
-                     sseq.time(k) == 0)                         tie = true;
+                     sseq.time(k) == 0)                           tie = true;
             if (tie) {
               sequence_write_time_with_pitch_sync(sseq, k, 2);
               engine.stale = true;

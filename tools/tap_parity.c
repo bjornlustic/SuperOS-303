@@ -46,7 +46,9 @@ static void simulate(const Tap *taps, int ntaps, int sustain, char out[17]) {
     if (t == 2) {
       if (prewritten) prewritten = 0;
       else if (!wrote_now) {
-        if (note_active && held)                       steps[k] = 't';
+        // a TIE never overwrites an existing NOTE (unreachable in a fresh
+        // ROM measure; matters for SuperOS overdub passes)
+        if (note_active && held && steps[k] != 'N')      steps[k] = 't';
         else if (any_note && sustain && steps[k] == '.') steps[k] = 't';
       }
     }
