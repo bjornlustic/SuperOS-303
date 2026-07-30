@@ -525,8 +525,9 @@
       click marking the start of each bar. The recorder's timing windows are measured cycle-exact
       against the original mask ROM, so taps land on the same steps they would on a stock 303.
       Press <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">TIME MODE</kbd> to switch it on:
-      the pattern's time data is cleared, its pitches are kept and consumed in order as you tap, and
-      the bar restarts from step 1.
+      the current section's time data is cleared, its pitches are kept and consumed in order as you
+      tap, and the bar restarts from step 1. Only that section is cleared: the other half of a linked
+      pair and any chained patterns keep their saved notes.
     </p>
     <ul class="docs-list">
       <li>Tap <kbd class="docs-key">WRITE/NEXT</kbd> on a beat to write a note there; a tap in the later part of a step aims at the next step's downbeat, so slightly early taps land where you meant them.</li>
@@ -544,8 +545,9 @@
       sequencer, or leave Pattern Write. While the pattern is empty the metronome keeps clicking and
       the voice stays silent (<strong>record</strong>). Once a bar wraps with notes in it, the clicks
       stop and the pattern plays back cleanly while your taps keep recording on top
-      (<strong>overdub</strong>). Emptying the pattern brings the metronome back. Chained patterns
-      join the session as they come around, each keeping its own record/overdub state.
+      (<strong>overdub</strong>). Emptying the pattern brings the metronome back. The other section
+      of a linked pair and chained patterns join the session with their saved notes intact: sections
+      with content play clean in overdub, and the metronome only clicks through empty ones.
     </p>
     <div class="man-note">
       <strong>Note</strong>

@@ -117,7 +117,6 @@ static bool s_metro_gate_pulse                  = false;
 static uint8_t s_metro_pitch_cv                 = 63;     // final DAC pitch for metronome click
 static uint8_t s_metro_gate_ticks               = 0;      // click length in clock ticks (tempo-scaled)
 static uint8_t s_metro_prev_pat                 = 0;      // pattern playing during the last step window
-static uint16_t s_metro_cleared_mask            = 0;      // chain patterns whose time we cleared this session
 static bool    s_metro_monitor_gate             = false;  // monitor voice sounding (accept -> release)
 static uint8_t s_metro_tap_monitor_cv           = 63;
 static bool    s_metro_tap_monitor_accent       = false;
@@ -3428,29 +3427,16 @@ void loop() {
           // ROM entry semantics: clear the time data, BAR RESET (session
           // starts at step 0, like the d650c's CLEAR-while-running), start
           // the metronome. Pitch stream is preserved so tapped NOTEs consume
-          // the user's pitches in stream order. Chained patterns are cleared
-          // lazily as the chain enters them (our chain extension).
+          // the user's pitches in stream order. ONLY the section the session
+          // starts on is cleared: the other half of a linked pair and any
+          // chained patterns keep their saved content and join the session
+          // in OVERDUB (play clean, taps record on top), so the metronome
+          // stops wherever content already exists. Empty ones stay RECORD.
           Sequence &seq = engine.get_sequence();
           const uint8_t len = engine.get_length();
           for (uint8_t i = 0; i < len; ++i) sequence_set_time_at(seq, i, 0);
           engine.Reset();                       // bar reset: next tick = step 0
           s_metro_prev_pat        = engine.get_patsel();
-          s_metro_cleared_mask    = uint16_t(1u << s_metro_prev_pat);
-          // A linked A/B pair is ONE user-facing pattern (one 64-step
-          // measure): clear and record both halves as a unit. Leaving the B
-          // half to the mid-session lazy clear made the pair alternate
-          // OVERDUB(A)/RECORD(B) forever -- clicks chopping through the A
-          // notes on every other pass, and the B half's rhythm wiped when
-          // the hand-off landed ("it deleted all my notes").
-          if (engine.pair_linked()) {
-            const uint8_t cur   = engine.get_patsel();
-            const uint8_t other = Engine::is_section_b(cur) ? Engine::section_a_of(cur)
-                                                            : Engine::section_b_of(cur);
-            Sequence &oseq = engine.pattern[other];
-            for (uint8_t i = 0; i < oseq.length; ++i) sequence_set_time_at(oseq, i, 0);
-            s_metro_cleared_mask |= uint16_t(1u << other);
-            midi_send_pattern_update(other);
-          }
           s_metro_tail_cv         = 63;   // idle tail starts at the click pitch
           s_metro_step_tick       = 0;
           s_metro_press_pending   = false;
@@ -3607,19 +3593,12 @@ void loop() {
                 midi_send_pattern_update(s_metro_prev_pat);
               }
             }
-            if (s_metro_bar_started && cur_pat != s_metro_prev_pat &&
-                       !(s_metro_cleared_mask & uint16_t(1u << cur_pat))) {
-              // Chain extension: entering a fresh chained pattern = next bar
-              // of the session; clear its time lazily and keep recording.
-              Sequence &nseq = engine.get_sequence();
-              for (uint8_t i = 0; i < nseq.length; ++i)
-                sequence_set_time_at(nseq, i, 0);
-              s_metro_cleared_mask |= uint16_t(1u << cur_pat);
-              midi_send_pattern_update(cur_pat);
-            }
-            // Revisited pattern: keep LOOPING (the ROM stops after one
-            // measure; users asked for an endless session that only
-            // CLEAR+TIME or transport stop ends). Later passes preserve
+            // Chained patterns and the other half of a linked pair are NOT
+            // cleared: whatever content they carry plays clean in OVERDUB
+            // (the phase computation below sees their notes), and taps still
+            // record on top. Revisited patterns keep LOOPING (the ROM stops
+            // after one measure; users asked for an endless session that
+            // only CLEAR+TIME or transport stop ends). Later passes preserve
             // earlier ones -- see the rest-skip in the tick decision below.
             s_metro_prev_pat    = cur_pat;
             s_metro_pass_accept = false;   // fresh validation window per pass
