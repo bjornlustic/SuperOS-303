@@ -1287,7 +1287,15 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     break;
 
   case NORMAL_MODE: {
-    const uint8_t bank = engine.get_patsel() >> 3;
+    // Pattern-key target section. A linked pair alternates patsel between its
+    // A and B slots as it PLAYS, so the raw section bit follows playback, not
+    // the user's selection: a key tapped while the B half happened to be
+    // playing targeted the B-section pattern (press 2 during 1B -> 2B). A
+    // linked pair's home is its A section, so taps, queues and chain builds
+    // target section A while one is selected; an unlinked selection keeps its
+    // real section.
+    const uint8_t bank = engine.pair_linked() ? 0
+                       : uint8_t(engine.get_patsel() >> 3);
     const bool browsing_other_group = clk_run && (s_display_group != engine.get_group());
 
     // ── LEDs ──
