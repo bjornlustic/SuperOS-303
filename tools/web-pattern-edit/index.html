@@ -2265,46 +2265,80 @@
     return false;
   }
 
+  // A/B pair link flag: reserved[3] bit0 (blob byte 43), stored on the A
+  // section's VAR-1 blob. Read var1 directly so viewing var2/3 doesn't hide
+  // the link.
+  function pairLinked(g, p) {
+    var ab = varStore[g][p & 7][0];
+    return !!(ab && (ab[43] & 1));
+  }
+  // The rendered section list: active chain entries (or just the active
+  // pattern) with linked A/B pairs expanded to A,B so both sections stay
+  // visible in playback order (1A, 1B, 2A, ...) instead of the view flipping
+  // between the halves.
+  function displayChainList() {
+    var base = (patChain.length > 1) ? patChain : [activePat];
+    var out = [];
+    for (var i = 0; i < base.length; i++) {
+      var p = base[i] & 15;
+      if (pairLinked(activeGroup, p)) { out.push(p & 7); out.push((p & 7) + 8); }
+      else out.push(p);
+    }
+    return out;
+  }
+  function sectionLabel(pi) {
+    return 'Pattern ' + ((pi & 7) + 1) + ((pi & 8) ? 'B' : 'A');
+  }
+
+  function renderChainSections(grid, view) {
+    grid.className = 'chain-view';
+    for (var ci = 0; ci < view.length; ci++) {
+      var pi = view[ci];
+      var isActive = (pi === activePat);
+      var cblob = groups[activeGroup][pi];
+      var clen = getLength(cblob);
+      normalizePatternTimes(cblob, clen);
+
+      var section = document.createElement('div');
+      var secCls = 'chain-pat-section' + (isActive ? ' is-active' : '');
+      if (pi === playingPat) secCls += ' is-playing-pat';
+      section.className = secCls;
+      section.dataset.chainPat = pi;
+
+      var header = document.createElement('div');
+      header.className = 'chain-pat-header';
+      var label = document.createElement('span');
+      label.textContent = sectionLabel(pi);
+      header.appendChild(label);
+      var playDot = document.createElement('div');
+      playDot.className = 'chain-pat-play-dot';
+      header.appendChild(playDot);
+      (function(p) {
+        header.addEventListener('click', function() { switchToPat(p); });
+      })(pi);
+      section.appendChild(header);
+
+      var innerGrid = document.createElement('div');
+      innerGrid.className = 'seq-grid'; // always 8 per row
+      renderPatternCards(cblob, pi, clen, innerGrid, isActive);
+      section.appendChild(innerGrid);
+      grid.appendChild(section);
+    }
+  }
+
   function renderGrid() {
     var grid = document.getElementById('seqGrid');
     grid.innerHTML = '';
 
+    var view = displayChainList();
     if (patChain.length > 1) {
-      grid.className = 'chain-view';
-      for (var ci = 0; ci < patChain.length; ci++) {
-        var pi = patChain[ci];
-        var isActive = (pi === activePat);
-        var cblob = groups[activeGroup][pi];
-        var clen = getLength(cblob);
-        normalizePatternTimes(cblob, clen);
-
-        var section = document.createElement('div');
-        var secCls = 'chain-pat-section' + (isActive ? ' is-active' : '');
-        if (pi === playingPat) secCls += ' is-playing-pat';
-        section.className = secCls;
-        section.dataset.chainPat = pi;
-
-        var header = document.createElement('div');
-        header.className = 'chain-pat-header';
-        var label = document.createElement('span');
-        label.textContent = 'Pattern ' + (pi + 1);
-        header.appendChild(label);
-        var playDot = document.createElement('div');
-        playDot.className = 'chain-pat-play-dot';
-        header.appendChild(playDot);
-        (function(p) {
-          header.addEventListener('click', function() { switchToPat(p); });
-        })(pi);
-        section.appendChild(header);
-
-        var innerGrid = document.createElement('div');
-        innerGrid.className = 'seq-grid'; // always 8 per row
-        renderPatternCards(cblob, pi, clen, innerGrid, isActive);
-        section.appendChild(innerGrid);
-        grid.appendChild(section);
-      }
+      renderChainSections(grid, view);
     } else if (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat)) {
       renderPolyEditor(grid, currentPatLen());
+    } else if (view.length > 1) {
+      // Linked A/B pair without a chain: show both sections stacked, playhead
+      // walks across them, edits stay on the active section.
+      renderChainSections(grid, view);
     } else {
       var blob = activeBlob();
       var len = currentPatLen();
@@ -3237,8 +3271,11 @@
       queuedPat = -1;
 
       // Auto-follow hardware: switch editor grid to the playing pattern.
-      // Suppress in chain view (all patterns already visible) and Edit Live mode.
-      if (activeGroup === hwGroup && !editLiveMode && patChain.length <= 1) {
+      // Suppress in chain view (all patterns already visible), in a linked
+      // A/B pair view when playback moves to the other section (both are
+      // already on screen), and in Edit Live mode.
+      if (activeGroup === hwGroup && !editLiveMode && patChain.length <= 1 &&
+          !(pairLinked(activeGroup, activePat) && (pat & 7) === (activePat & 7))) {
         switchToPat(pat);
       }
 
@@ -3253,12 +3290,8 @@
     // Show playing-step dot in the correct card
     var old = document.querySelector('.step-card.is-playing-step');
     if (old) old.classList.remove('is-playing-step');
-    var dotRoot;
-    if (patChain.length > 1) {
-      dotRoot = document.querySelector('.chain-pat-section[data-chain-pat="' + pat + '"]') || null;
-    } else if (pat === activePat) {
-      dotRoot = document;
-    }
+    var dotRoot = document.querySelector('.chain-pat-section[data-chain-pat="' + pat + '"]') || null;
+    if (!dotRoot && pat === activePat) dotRoot = document;
     if (dotRoot) {
       var cards = dotRoot.querySelectorAll('.step-card');
       for (var i = 0; i < cards.length; i++) {
@@ -3779,6 +3812,10 @@
           syncPatternToolbar();
           refreshScaleUI(); // the blob carries the pattern's scale in reserved[1..2]
           renderGrid();
+        } else if (activeGroup === g && (pat & 7) === (activePat & 7)) {
+          // Partner section of the on-screen slot: the A/B link flag or the
+          // other half's contents changed, and the pair view shows both.
+          renderGrid();
         }
       }
       recomputeDirty();
@@ -4001,7 +4038,12 @@
         }
       }
       saveGroupsToLS();
-      if (activeGroup === hwGroup && rPat === activePat && shown) renderGrid();
+      // Re-render when the edited slot is on screen: the active pattern, any
+      // chain-view section, or the partner half of a linked A/B pair.
+      if (activeGroup === hwGroup && shown &&
+          (rPat === activePat ||
+           document.querySelector('.chain-pat-section[data-chain-pat="' + rPat + '"]')))
+        renderGrid();
       recomputeDirty();
       if (shown) {
         if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
@@ -5638,8 +5680,8 @@
         layoutPitchKnob(wrap, nameEl, blob, si, len);
       }
     }
-    if (patChain.length > 1) {
-      var sections = document.querySelectorAll('#seqGrid .chain-pat-section');
+    var sections = document.querySelectorAll('#seqGrid .chain-pat-section');
+    if (sections.length) {
       for (var k = 0; k < sections.length; k++) {
         var pi = parseInt(sections[k].dataset.chainPat, 10);
         if (isNaN(pi)) continue;
