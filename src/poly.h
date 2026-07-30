@@ -18,7 +18,7 @@
 #include <string.h>
 
 #ifndef POLY_STEPS
-#define POLY_STEPS 64
+#define POLY_STEPS 32   // matches MAX_STEPS (32 steps per section)
 #endif
 
 static constexpr uint8_t POLY_VOICES  = 4;

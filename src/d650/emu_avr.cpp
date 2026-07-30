@@ -404,6 +404,7 @@ static void midi_handle_channel(uint8_t st, uint8_t d1, uint8_t d2) {
 }
 #ifdef D650_ROM_IN_RAM
 static void din_send_status();   // defined below; answers the editor's 0x40 probe over DIN
+static void enter_bootloader();  // defined below; 0x4A must also work over DIN (no-USB builds)
 // Feed one raw MIDI byte to the mask-ROM receiver (rom_store.h). Shared by the
 // DIN parser and the USB SysEx path so a ROM dump uploads over either transport.
 // Decodes straight into the live s_rom, so a confirmed block start freezes the
@@ -452,6 +453,17 @@ static void midi_in_poll() {
             midi_tx(0xF0); midi_tx(0x7D); midi_tx(0x37); midi_tx(st); midi_tx(0xF7);
           } else if (s_sxcmd == 0x40) {
             din_send_status();
+          } else if (s_sxcmd == 0x4A) {
+            // Bootloader entry must work over DIN too: the no-USB-C hardware
+            // has no other transport, and the whole point of 0x4A is updating
+            // without the power-on button combo.
+            enter_bootloader();                    // does not return
+#ifdef SUPEROS_COMBINED
+          } else if (s_sxcmd == 0x4D) {
+            // Firmware switch to SuperOS over DIN (web editor's Switch button).
+            while (s_save_pending) patt_save_step();
+            combined_switch_firmware(FW_SUPEROS);  // does not return
+#endif
           }
         }
         s_sxq = 0;      // any byte after the command ends this short-query walk

@@ -596,6 +596,8 @@
     <div class="group">
       <div class="group-inner">
         <button class="btn" id="btnFwSwitch" disabled>Switch firmware</button>
+        <button class="btn" id="btnBootloader" disabled
+          title="Reboot the unit into the SysEx bootloader (no power-on button combo needed), then send the -update.syx file from SysEx Librarian / MIDI-OX">Update OS&#8230;</button>
         <span id="fwModeStatus">Firmware: unknown</span>
       </div>
     </div>
@@ -809,7 +811,7 @@
       <div class="seq-toolbar-steps">
         <span class="seq-toolbar-lbl">Steps</span>
         <button class="len-adj-btn" id="patLenDec" title="Fewer steps">−</button>
-        <input type="number" id="patLen" class="seq-pat-len" min="1" max="64" value="16" />
+        <input type="number" id="patLen" class="seq-pat-len" min="1" max="32" value="16" />
         <button class="len-adj-btn" id="patLenInc" title="More steps">+</button>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
@@ -841,7 +843,7 @@
         <b>N</b> note &nbsp;&middot;&nbsp; <b>T</b> tie &nbsp;&middot;&nbsp; <b>R</b> rest &nbsp;&mdash;&nbsp;
         vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide
         &nbsp;&mdash;&nbsp;
-        up to <b>64</b> steps (<b>48</b> in triplet mode) &nbsp;&middot;&nbsp; red dot = currently playing step
+        up to <b>32</b> steps per section (<b>24</b> in triplet mode; a linked A/B pair plays 64) &nbsp;&middot;&nbsp; red dot = currently playing step
       </span>
     </div>
     <div class="seq-grid-wrap">
@@ -865,8 +867,8 @@
             <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi,audio/x-midi" style="display:none" />
           </div>
           <div class="ml-field">
-            <label>Steps (max 64)</label>
-            <input type="number" id="midiLoadSteps" min="1" max="64" value="16" disabled />
+            <label>Steps (max 32)</label>
+            <input type="number" id="midiLoadSteps" min="1" max="32" value="16" disabled />
           </div>
           <div class="ml-field">
             <label>Min chord notes</label>
@@ -1040,48 +1042,48 @@
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────────
-  // In-memory blob layout (matches firmware Sequence struct):
-  //   bytes  0..63  pitch[64]    NOTE-event-indexed pitch stream
+  // In-memory blob layout (matches firmware Sequence struct at MAX_STEPS = 32):
+  //   bytes  0..31  pitch[32]    NOTE-event-indexed pitch stream
   //                              (slot K = pitch for the K-th NOTE event in time order)
-  //   bytes 64..79  time_data[16] 2-bit cells, 4 steps/byte (0=REST, 1=NOTE, 2=TIE)
-  //   byte  80      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
-  //   bytes 81..88  reserved[1..8] unused padding
-  //   byte  89      transpose
-  //   byte  90      engine_select (round-tripped untouched)
-  //   byte  91      length (1..64 normal, 1..48 triplet)
+  //   bytes 32..39  time_data[8] 2-bit cells, 4 steps/byte (0=REST, 1=NOTE, 2=TIE)
+  //   byte  40      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
+  //   bytes 41..48  reserved[1..8] unused padding
+  //   byte  49      transpose
+  //   byte  50      engine_select (round-tripped untouched)
+  //   byte  51      length (1..32 normal, 1..24 triplet)
   //
   // Pitches are NOT indexed by time step. Use noteIdx(blob, s) to map a time
   // step to its stream slot. Time edits never shift pitch[]; the stream
   // auto-extends with PITCH_DEFAULT only when note_count > pitch_count.
   // Removing a NOTE preserves the pitch stream so re-adding NOTEs replays
   // the same pitches in stream order. Same model as the firmware.
-  var PATTERN_SIZE   = 92;
-  var MAX_STEPS      = 64;
-  var TRIPLET_MAX_STEPS = 48;
-  var TIME_OFF       = 64;
-  var TIME_BYTES     = 16;  // MAX_STEPS / 4 (2-bit cells, 4 steps/byte)
-  var RES0_OFF       = 80;
-  var RES1_OFF       = 81;  // reserved[1..8], unused padding
-  var TRANSPOSE_OFF  = 89;
-  var ENGINE_OFF     = 90;
-  var LEN_OFF        = 91;
-  var PACKED_SIZE    = 106; // 92 raw -> 13 full chunks (104 B) + 1 partial (2 B)
+  var MAX_STEPS      = 32;
+  var TRIPLET_MAX_STEPS = 24;
+  var TIME_OFF       = MAX_STEPS;
+  var TIME_BYTES     = MAX_STEPS / 4;  // 2-bit cells, 4 steps/byte
+  var RES0_OFF       = TIME_OFF + TIME_BYTES;
+  var RES1_OFF       = RES0_OFF + 1;   // reserved[1..8], unused padding
+  var TRANSPOSE_OFF  = RES0_OFF + 9;
+  var ENGINE_OFF     = TRANSPOSE_OFF + 1;
+  var LEN_OFF        = ENGINE_OFF + 1;
+  var PATTERN_SIZE   = LEN_OFF + 1;    // 52
+  var PACKED_SIZE    = PATTERN_SIZE + Math.ceil(PATTERN_SIZE / 7); // 60
 
   // Variation-3 poly blob (matches firmware poly.h, chord-list model). A CHORD STREAM
   // (notes pack 4x6 bits = 3 bytes/chord, accent/slide per chord) plus an independent
-  // per-step TIME stream; the K-th NOTE step pulls chord K. 227 raw -> 260 packed.
-  var POLY_BLOB_SIZE = 227;
+  // per-step TIME stream; the K-th NOTE step pulls chord K. 115 raw -> 132 packed.
   var POLY_VOICES    = 4;
   var POLY_EMPTY     = 0x3F;
   var POLY_DEFAULT   = 0x10;  // semi=0, oct=1 (centre C)
-  var POLY_CHORDS    = 64;    // max chords = max NOTE events
-  var POLY_TIME_OFF  = 192;   // POLY_CHORDS*3
-  var POLY_ACC_OFF   = 208;   // + MAX_STEPS/4
-  var POLY_SLD_OFF   = 216;   // + POLY_CHORDS/8
-  var POLY_CNT_OFF   = 224;   // chord_count
-  var POLY_DIR_OFF   = 225;
-  var POLY_LEN_OFF   = 226;
-  var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 260
+  var POLY_CHORDS    = MAX_STEPS;           // max chords = max NOTE events
+  var POLY_TIME_OFF  = POLY_CHORDS * 3;
+  var POLY_ACC_OFF   = POLY_TIME_OFF + MAX_STEPS / 4;
+  var POLY_SLD_OFF   = POLY_ACC_OFF + POLY_CHORDS / 8;
+  var POLY_CNT_OFF   = POLY_SLD_OFF + POLY_CHORDS / 8;
+  var POLY_DIR_OFF   = POLY_CNT_OFF + 1;
+  var POLY_LEN_OFF   = POLY_DIR_OFF + 1;
+  var POLY_BLOB_SIZE = POLY_LEN_OFF + 1;    // 115
+  var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 132
 
   // Per-step characteristic probability (variation 1 only; SysEx 0x2B step /
   // 0x2C req / 0x2D table). THREE bytes per step so accent, slide, a down
@@ -1091,8 +1093,8 @@
   //   byte0: bits[3:0] accent level (0=off), bits[7:4] slide level (0=off)
   //   byte1: bits[3:0] down level (0=off),   bits[7:4] up level (0=off)
   //   byte2: bit0 up-double (up = +24 when set, else +12)
-  // 192 raw -> packed.
-  var PROB_RAW       = 192;
+  // 3 * MAX_STEPS raw -> packed.
+  var PROB_RAW       = 3 * MAX_STEPS;
   var PACKED_PROB    = PROB_RAW + Math.ceil(PROB_RAW / 7);
   var PROB_LEVEL_MAX = 13;
   function probAccLvl(b0)  { return b0 & 15; }
@@ -1127,7 +1129,7 @@
   // Linear pitch range: 0..48 semitones (4 octaves)
   var PITCH_FULL_LIN_MIN = 0;
   var PITCH_FULL_LIN_MAX = 48;
-  var NUM_GROUPS         = 4;
+  var NUM_GROUPS         = 4;   // pattern groups I-IV (the knob's 7 detents pair up)
   var LS_PITCH_MODE      = 'superos303_pitch_mode';
   var PATS_PER_GROUP     = 16; // 2 banks of 8
 
@@ -1529,8 +1531,8 @@
   }
 
   // ── Storage ────────────────────────────────────────────────────────
-  // Each slot (g,p) holds 3 VARIATIONS, each a full 92-byte pattern blob.
-  //   varStore[g][p][v]  = Uint8Array(92), v = 0..2 (variations 1/2/3 = C/D/E)
+  // Each slot (g,p) holds 3 VARIATIONS, each a full PATTERN_SIZE-byte blob.
+  //   varStore[g][p][v]  = Uint8Array(PATTERN_SIZE), v = 0..2 (variations 1/2/3 = C/D/E)
   //   slotVar[g][p]      = which variation is currently active/displayed (0..2)
   //   groups[g][p]       = REFERENCE to varStore[g][p][slotVar[g][p]] (so all the
   //                        existing editor code that operates on groups[g][p]
@@ -1547,7 +1549,7 @@
   var polyStore = []; // [g][p] -> Uint8Array(POLY_BLOB_SIZE) or null (variation-3 poly data)
   var probStore = []; // [g][p] -> Uint8Array(128) per-step probability (var1, 2 bytes/step)
   var groups = []; // [4][16] -> reference into varStore[g][p][slotVar[g][p]]
-  var LS_KEY = 'superos303_groups_v8'; // bumped for per-slot variations; old key dropped
+  var LS_KEY = 'superos303_groups_v11'; // bumped for the 32-step (52-byte blob) layout; old key dropped
   var LS_SCALE_LOCK = 'superos303_scale_lock';
 
   // ── Scale definitions ──────────────────────────────────────────────
@@ -1671,7 +1673,7 @@
   }
   function saveGroupsToLSNow() {
     try {
-      var ser = { v: 8, groups: [] };
+      var ser = { v: 10, groups: [] };
       for (var g = 0; g < NUM_GROUPS; g++) {
         ser.groups[g] = [];
         for (var p = 0; p < PATS_PER_GROUP; p++) {
@@ -1694,7 +1696,7 @@
       var raw = localStorage.getItem(LS_KEY);
       if (!raw) return false;
       var ser = JSON.parse(raw);
-      if (!ser || ser.v !== 8 || !Array.isArray(ser.groups) || ser.groups.length !== NUM_GROUPS) return false;
+      if (!ser || ser.v !== 10 || !Array.isArray(ser.groups) || ser.groups.length !== NUM_GROUPS) return false;
       for (var g = 0; g < NUM_GROUPS; g++) {
         for (var p = 0; p < PATS_PER_GROUP; p++) {
           var s = ser.groups[g][p];
@@ -2210,6 +2212,7 @@
     var fwBtn = document.getElementById('btnFwSwitch');
     fwBtn.disabled = !ok || deviceMode === 'unknown';
     fwBtn.textContent = deviceMode === 'd650' ? 'Switch to SuperOS' : 'Switch to D650C';
+    document.getElementById('btnBootloader').disabled = !ok || deviceMode === 'unknown';
     document.getElementById('d650Banner').classList.toggle('visible', ok && d650);
     recomputeDirty();
   }
@@ -3290,7 +3293,10 @@
   function requestProbTable(pat) { sendSysex(new Uint8Array([0x7d, 0x2c, pat & 15])); }
   function sendProbStep(pat, s, b0, b1, b2) {
     if (activeGroup !== hwGroup) return;
-    sendSysex(new Uint8Array([0x7d, 0x2b, pat & 15, s & 0x3f, b0 & 0x7f, b1 & 0x7f, b2 & 0x7f]));
+    // Trailing msbs byte: bit0/1/2 = bit 7 of b0/b1/b2 (high-nibble levels
+    // 8-13 set bit 7, which a bare SysEx data byte cannot carry).
+    var msbs = ((b0 >> 7) & 1) | ((b1 >> 6) & 2) | ((b2 >> 5) & 4);
+    sendSysex(new Uint8Array([0x7d, 0x2b, pat & 15, s & 0x3f, b0 & 0x7f, b1 & 0x7f, b2 & 0x7f, msbs]));
   }
   function sendProbTable(pat) {
     if (activeGroup !== hwGroup) return;
@@ -3889,7 +3895,7 @@
       // is corrected. Also resets subtick to 0 (we just hit a 16th boundary).
       var sPat = bytes[2] & 0x0f;
       var sStep = bytes[3] & 0x3f;
-      var sGrp = bytes[4] & 0x03;
+      var sGrp = bytes[4] & 0x07;
       if (sGrp !== hwGroup) {
         hwGroup = sGrp;
         switchGroup(sGrp);
@@ -3925,7 +3931,7 @@
 
     if (cmd === 0x1e && bytes.length >= 4) {
       var aPat = bytes[2] & 0x0f;
-      var aGrp = bytes.length >= 4 ? bytes[3] & 0x03 : 0;
+      var aGrp = bytes.length >= 4 ? bytes[3] & 0x07 : 0;
       if (aGrp !== hwGroup) {
         hwGroup = aGrp;
         switchGroup(aGrp);
@@ -3936,7 +3942,7 @@
     }
 
     if (cmd === 0x1c && bytes.length >= 3) {
-      var newGrp = bytes[2] & 0x03;
+      var newGrp = bytes[2] & 0x07;
       var grpChanged = (newGrp !== hwGroup) || !initialSyncDone;
       hwGroup = newGrp;
       log('Hardware group: ' + (newGrp + 1) + (grpChanged ? (initialSyncDone ? ' (changed)' : ' (initial sync)') : ' (echo)'), 'log-ack');
@@ -4093,9 +4099,10 @@
       var psPat = bytes[2] & 0x0f, psStep = bytes[3] & 0x3f;
       var psG = (hwGroup >= 0) ? hwGroup : activeGroup;
       var pt = getProb(psG, psPat);
-      pt[psStep * 3] = bytes[4] & 0x7f;
-      pt[psStep * 3 + 1] = bytes[5] & 0x7f;
-      pt[psStep * 3 + 2] = bytes[6] & 0x7f;
+      var psMsbs = bytes.length >= 8 ? bytes[7] : 0; // bit0/1/2 = bit 7 of b0/b1/b2
+      pt[psStep * 3] = (bytes[4] & 0x7f) | ((psMsbs & 1) << 7);
+      pt[psStep * 3 + 1] = (bytes[5] & 0x7f) | ((psMsbs & 2) << 6);
+      pt[psStep * 3 + 2] = (bytes[6] & 0x7f) | ((psMsbs & 4) << 5);
       saveGroupsToLS();
       if (activeGroup === psG && psPat === activePat) renderGrid();
       log('Prob step pat ' + (psPat+1) + ' step ' + (psStep+1), 'log-ack');
@@ -5460,6 +5467,25 @@
     showErrorToast('Switching to ' + goingTo + '…');
   };
 
+  // 0x4A: reboot into the SysEx bootloader (handled by BOTH firmware sides;
+  // the bootloader stays resident via the GPIOR0 magic, no power-on button
+  // combo). No reply follows; the unit then only accepts the update protocol
+  // (page writes + 0x02 jump-to-app), so drop to 'unknown'.
+  document.getElementById('btnBootloader').onclick = function() {
+    if (!midiOut || deviceMode === 'unknown') return;
+    if (!confirm('Reboot this unit into the firmware-update bootloader?\n\n' +
+                 'The four mode LEDs will light and the unit will wait for a ' +
+                 '*-update.syx file (send it from SysEx Librarian / MIDI-OX, throttled). ' +
+                 'Pending edits are saved first. To exit without updating, power cycle.')) return;
+    clearCfgReadRetry();
+    expectDump = 0; bulkNextPat = -1;
+    hideSyncOverlay();
+    sendSysex(new Uint8Array([0x7d, 0x4a]));
+    setDeviceMode('unknown');
+    log('→ Rebooting into the SysEx bootloader (0x4A)', 'log-syx');
+    showErrorToast('Entering bootloader…');
+  };
+
   // ── D650C native pattern store backup/restore (SysEx 0x46/0x47/0x48) ────
   // The d650 side exposes its full uPD444 pattern memory (3072 nibbles packed
   // 2/byte = 1536 bytes) as 8 raw blocks of 192 bytes, 7-bit packed to 220
@@ -5643,7 +5669,7 @@
   })();
 
   // ── Library ───────────────────────────────────────────────────────────
-  var LIB_LS_KEY = 'superos303_library_v1';
+  var LIB_LS_KEY = 'superos303_library_v2'; // 32-step blobs; v1 held 92-byte blobs
   var libEntries = []; // [{src, group, pattern, length, pd}]
 
   function libLoadFromLS() {

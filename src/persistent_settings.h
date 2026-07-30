@@ -20,8 +20,14 @@ static_assert(FB_SETTINGS_LEN <= FE_MAX_PAYLOAD, "settings block must fit one re
 // Sig is prefix-matched: anything starting with sig_compat_prefix passes.
 // Prefix bumped to "superOS-pol3" because the variation-3 poly blob format changed
 // from flat-per-step chords to a chord-list (two-stream) layout; wipe to relayout.
-const char *const sig_pew = "superOS-pol3-v1";
-const char *const sig_compat_prefix = "superOS-pol3";
+// Bumped to "superOS-sa4p" for this layout: single-page-per-block arena, 4
+// groups (64 slots), and sparse step-probability storage. The block-id map and
+// the record header both changed, so older records must not be read back.
+// "s32a" = 32-step section layout (MAX_STEPS 32): pattern/poly/prob regions and
+// the paired-track record changed size, so old records must not be half-read.
+// The new prefix fails the compat check against any "sa4p" arena and formats.
+const char *const sig_pew = "superOS-s32a-v1";
+const char *const sig_compat_prefix = "superOS-s32a";
 static constexpr int kSigCompatPrefixLen = 12;
 static constexpr int kSigEepromLen = 16;
 
@@ -58,10 +64,11 @@ struct PersistentSettings {
     if (on) var3_poly[slot >> 3] |= m; else var3_poly[slot >> 3] &= uint8_t(~m);
   }
 
-  // Settings block byte layout (FB_SETTINGS_LEN = 32):
+  // Settings block byte layout (FB_SETTINGS_LEN = 38):
   //   [0..15] signature  [16] midi_channel  [17] flags(bit0=clock_rx)
   //   [18] direction  [19] thru  [20] led_brightness  [21] track_format
-  //   [22] var2_channel  [23] var3_channel  [24..31] var3 poly bitmap
+  //   [22] var2_channel  [23] var3_channel  [24..37] var3 poly bitmap
+  //   (14 bytes = 112 slots, one bit each)
   void serialize(uint8_t *b) const {
     memcpy(b, signature, 16);
     b[16] = midi_channel;
@@ -144,62 +151,10 @@ inline void clear_pattern_bytes(Sequence &seq) {
   seq.length = 0; // Load() promotes 0 -> SetLength(8)
 }
 
-// One mono pattern at (abs_slot, var), all packed two-per-page. var0+var1 share
-// block = slot (half = var). Variation 3 in MONO form packs two slots per block:
-// block = FB_MONOVAR2_BASE + slot/2, half = slot&1. Each write is a read-modify-
-// write so the neighbouring half is preserved. (Poly var3 uses ReadPolyAt/WritePolyAt.)
-inline void mono_block_of(uint8_t abs_slot, uint8_t var, uint8_t &block, uint8_t &half) {
-  if (var >= 2) { block = uint8_t(FB_MONOVAR2_BASE + (abs_slot >> 1)); half = abs_slot & 1; }
-  else          { block = uint8_t(FB_PATTERN_BASE + abs_slot);         half = var & 1; }
-}
-inline void ReadPatternAt(Sequence &seq, uint8_t abs_slot, uint8_t var) {
-  uint8_t block, half;
-  mono_block_of(abs_slot, var, block, half);
-  uint8_t buf[FB_PATTERN_LEN];
-  if (g_flash.read(block, buf, FB_PATTERN_LEN) == FB_PATTERN_LEN)
-    deserialize_pattern(seq, buf + half * FB_PATTERN_LEN_ONE);
-  else
-    clear_pattern_bytes(seq);
-}
-inline void WritePatternAt(const Sequence &seq, uint8_t abs_slot, uint8_t var) {
-  uint8_t block, half;
-  mono_block_of(abs_slot, var, block, half);
-  uint8_t buf[FB_PATTERN_LEN];
-  if (g_flash.read(block, buf, FB_PATTERN_LEN) != FB_PATTERN_LEN)
-    memset(buf, 0, FB_PATTERN_LEN);        // unwritten neighbour half -> empty (length 0)
-  serialize_pattern(seq, buf + half * FB_PATTERN_LEN_ONE);
-  g_flash.write(block, buf, FB_PATTERN_LEN);
-}
+#include "pattern_codec.h"
 
-// Per-slot step-probability tables: one block per slot, [0..63] var1,
-// [64..127] var2, [128..191] var3 mono. Missing record = all zeros (unarmed).
-inline void ReadProbAt(uint8_t abs_slot, uint8_t *dst192) {
-  memset(dst192, 0, FB_PROB_LEN);
-  g_flash.read(uint8_t(FB_PROB_BASE + abs_slot), dst192, FB_PROB_LEN);
-}
-inline void WriteProbAt(uint8_t abs_slot, const uint8_t *src192) {
-  // All-zero table with no existing record: skip the write so unarmed slots
-  // never consume a live flash record.
-  bool any = false;
-  for (uint8_t i = 0; i < FB_PROB_LEN; ++i)
-    if (src192[i]) { any = true; break; }
-  if (!any) {
-    uint8_t probe;
-    if (g_flash.read(uint8_t(FB_PROB_BASE + abs_slot), &probe, 1) == 0) return;
-  }
-  g_flash.write(uint8_t(FB_PROB_BASE + abs_slot), src192, FB_PROB_LEN);
-}
+// Variation-3 poly, trimmed to the chords actually used.
+#include "poly_codec.h"
 
-// Variation 3 in poly form: its own dedicated block (poly slots only).
-inline void ReadPolyAt(PolyVoice &pv, uint8_t abs_slot) {
-  uint8_t buf[POLY_BLOB_SIZE];
-  if (g_flash.read(uint8_t(FB_POLY_BASE + abs_slot), buf, POLY_BLOB_SIZE) == POLY_BLOB_SIZE)
-    pv.deserialize(buf);
-  else
-    pv.Clear();
-}
-inline void WritePolyAt(const PolyVoice &pv, uint8_t abs_slot) {
-  uint8_t buf[POLY_BLOB_SIZE];
-  pv.serialize(buf);
-  g_flash.write(uint8_t(FB_POLY_BASE + abs_slot), buf, POLY_BLOB_SIZE);
-}
+// Per-slot step-probability tables (variation 1), sparse-encoded.
+#include "prob_codec.h"

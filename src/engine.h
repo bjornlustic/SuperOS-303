@@ -236,7 +236,7 @@ struct Engine {
       uint8_t blank[FB_TRACK_LEN];
       memset(blank, 0xFF, FB_TRACK_LEN);          // LoadTrack treats 0xFF as fresh
       for (uint8_t t = 0; t < NUM_TRACKS; ++t)
-        g_flash.write(uint8_t(FB_TRACK_BASE + t), blank, FB_TRACK_LEN);
+        WriteTrackAt(t, blank);
       GlobalSettings.set_track_format(PersistentSettings::kTrackFormatVersion);
     }
     ReloadShadows(); // prime shadow voices for the first running tick
@@ -525,6 +525,16 @@ struct Engine {
     ReadProbAt(s, dst);
   }
   // Persist edited shadow voices to flash (called on save and before reload).
+  /// True when anything OUTSIDE the variation-1 pattern array is waiting to be
+  /// written: resident shadow / poly / probability edits, or a buffered
+  /// non-resident one. `stale` does not cover these, so every flush point that
+  /// tests `stale` alone would otherwise leave variation 2/3, poly and
+  /// probability edits in RAM until a slot change or transport stop.
+  bool aux_dirty() const {
+    return shadow_stale_ || poly_stale_ || prob_stale_ ||
+           poly_edit_dirty_ || shadow_edit_dirty_ || prob_edit_dirty_;
+  }
+
   void persist_shadows() {
     flush_poly_edit();   // commit buffered non-resident poly edits before reload/save
     flush_shadow_edit(); // commit buffered non-resident var2/3 blobs too
@@ -582,7 +592,7 @@ struct Engine {
     track &= (NUM_TRACKS - 1);
     track_select = track;
     uint8_t b[FB_TRACK_LEN];
-    const bool have = (g_flash.read(uint8_t(FB_TRACK_BASE + track), b, FB_TRACK_LEN) == FB_TRACK_LEN);
+    const bool have = ReadTrackAt(track, b);
     if (have) {
       memcpy(p_chain_packed, b, P_CHAIN_PACKED_BYTES);
       memcpy(t_chain_last, b + P_CHAIN_PACKED_BYTES, T_CHAIN_BITS_BYTES);
@@ -621,7 +631,7 @@ struct Engine {
     memcpy(b, p_chain_packed, P_CHAIN_PACKED_BYTES);
     memcpy(b + P_CHAIN_PACKED_BYTES, t_chain_last, T_CHAIN_BITS_BYTES);
     memcpy(b + P_CHAIN_PACKED_BYTES + T_CHAIN_BITS_BYTES, t_chain_transpose, MAX_CHAIN);
-    g_flash.write(uint8_t(FB_TRACK_BASE + track_select), b, FB_TRACK_LEN);
+    WriteTrackAt(track_select, b);
     track_stale = false;
   }
   uint8_t get_chain_len()    const { return p_chain_len; }
@@ -1317,6 +1327,31 @@ struct Engine {
     return uint8_t(edit_seq_view().time_pos & (MAX_STEPS - 1));
   }
   bool SetEditVar(uint8_t v) { if (v >= NUM_VARIATIONS || v == edit_var_) return false; edit_var_ = v; return true; }
+
+  // ---------------------------------------------------------------------------
+  // A/B sections (spec 1-a). Slots p and p+8 of the active bank are the A and
+  // B sections of one pattern; the link flag is stored on the A section, so
+  // both slots answer the same question. A linked pair plays A then B and
+  // takes up to 128 steps between them.
+  // ---------------------------------------------------------------------------
+  static uint8_t section_a_of(uint8_t pat) { return uint8_t(pat & 0x07); }
+  static uint8_t section_b_of(uint8_t pat) { return uint8_t((pat & 0x07) + 8); }
+  static bool    is_section_b(uint8_t pat) { return (pat & 0x08) != 0; }
+  bool pair_linked(uint8_t pat) const { return pattern[section_a_of(pat)].ab_linked(); }
+  bool pair_linked() const { return pair_linked(get_patsel()); }
+  void set_pair_linked(uint8_t pat, bool on) {
+    Sequence &a = pattern[section_a_of(pat)];
+    if (a.ab_linked() == on) return;
+    a.set_ab_linked(on);
+    stale = true;
+  }
+  /// Total steps across the pair: A alone, or A + B when linked.
+  uint8_t pair_length(uint8_t pat) const {
+    const uint8_t la = pattern[section_a_of(pat)].length;
+    if (!pair_linked(pat)) return la;
+    const uint16_t t = uint16_t(la) + uint16_t(pattern[section_b_of(pat)].length);
+    return uint8_t(t > 128 ? 128 : t);
+  }
   // Advance the edit cursor: variation 1 uses the full engine advance;
   // a shadow just steps its own cursor forward.
   void AdvanceEditCursor() {
@@ -1382,17 +1417,19 @@ struct Engine {
     if (override) p_select = next_p;
     edit_var_ = 0; // a new pattern always starts on variation 1 for editing
   }
-  // Canonical length change: clamps to the triplet cap (24) or MAX_STEPS,
-  // rebuilds pitch_count (NOTE events outside the new length no longer count)
-  // and clears the pitch[] tail. Used by the hardware editor (via SetLength)
-  // and the SysEx 0x18 handler (on an arbitrary pattern).
+  // Canonical length change: clamps to the triplet cap (48) or MAX_STEPS and
+  // rebuilds pitch_count (NOTE events outside the new length no longer count).
+  // NON-VOLATILE both ways (spec 5): time_data and pitch[] past the new last
+  // step are kept, so shortening then re-lengthening restores the original
+  // notes. Used by the hardware editor (via SetLength) and SysEx 0x18.
   void ApplyLength(Sequence &s, uint8_t len) {
     const uint8_t old_len = s.length;
-    const uint8_t cap = s.is_triplet_mode() ? uint8_t(24) : uint8_t(MAX_STEPS);
+    const uint8_t cap = s.is_triplet_mode() ? uint8_t(TRIPLET_MAX_STEPS)
+                                            : uint8_t(MAX_STEPS);
     s.SetLength(len, cap);
     if (s.length != old_len) {
       sequence_rebuild_pitch_count(s);
-      for (uint8_t k = s.get_pitch_count(); k < MAX_STEPS; ++k) s.pitch[k] = PITCH_EMPTY;
+      sequence_ensure_pitch_for_notes(s);
     }
     stale = true;
   }
