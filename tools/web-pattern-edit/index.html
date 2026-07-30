@@ -1429,10 +1429,8 @@
     }
     if (allTie) setTime(blob, 0, 1);
     if (getTime(blob, 0) === 2) setTime(blob, 0, 1);
-    for (var j = 0; j < len; j++) {
-      var nxt = (j + 1) % len;
-      if (getTime(blob, j) === 0 && getTime(blob, nxt) === 2) setTime(blob, j, 1);
-    }
+    // Rest-then-tie stays as written (matches firmware): an orphaned tie is
+    // silence at playback; promoting it to a NOTE created phantom notes.
     ensurePitchStream(blob);
   }
 

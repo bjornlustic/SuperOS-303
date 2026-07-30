@@ -483,6 +483,19 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
   case 0x36: // web editor: D650C mask-ROM status query -> 0x37 reply
     midi_send_rom_status();
     break;
+  case 0x34: { // panel diagnostic -> 0x35: debounced held-state of every input
+    // (7 inputs per byte, InputIndex order) + the derived DialMode. Lets a
+    // host see the mode dial, group dial and modifier keys remotely.
+    extern PinState inputs[INPUT_COUNT];
+    uint8_t r[3 + (INPUT_COUNT + 6) / 7];
+    r[0] = 0x7D; r[1] = 0x35;
+    memset(r + 3, 0, sizeof(r) - 3);
+    for (uint8_t i = 0; i < INPUT_COUNT; ++i)
+      if (inputs[i].held()) r[3 + i / 7] |= uint8_t(1 << (i % 7));
+    r[2] = uint8_t(dial_mode_of(read_input_state(inputs)));
+    tx_push_message(r, sizeof(r));
+    break;
+  }
   case 0x10: { // request pattern; optional trailing <var> selects the variation
     if (n < 3) return;
     const uint8_t pat = p[2] & 0x0F;

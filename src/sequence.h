@@ -704,10 +704,10 @@ inline void normalize_pattern_times_only(Sequence &s) {
   }
   if (all_tie) sequence_set_time_at(s, 0, 1);
   if (s.time(0) == 2) sequence_set_time_at(s, 0, 1);
-  for (uint8_t i = 0; i < L; ++i) {
-    const uint8_t nxt = uint8_t((unsigned(i) + 1u) % unsigned(L));
-    if (s.time(i) == 0 && s.time(nxt) == 2) sequence_set_time_at(s, i, 1);
-  }
+  // A TIE after a REST is left alone: playback holds the gate only if a NOTE
+  // opened it, so an orphaned tie is just silence. Promoting the rest back to
+  // a NOTE (as this used to do) materialized a phantom note from the queued
+  // pitch stream whenever the user rested a note that had a tie behind it.
 }
 
 inline void normalize_pattern_times(Sequence &s) {
@@ -719,12 +719,7 @@ inline void normalize_pattern_times(Sequence &s) {
   }
   if (all_tie) sequence_write_time_with_pitch_sync(s, 0, 1);
   if (s.time(0) == 2) sequence_write_time_with_pitch_sync(s, 0, 1);
-  for (uint8_t i = 0; i < L; ++i) {
-    const uint8_t nxt = uint8_t((unsigned(i) + 1u) % unsigned(L));
-    if (s.time(i) == 0 && s.time(nxt) == 2) {
-      sequence_write_time_with_pitch_sync(s, i, 1);
-    }
-  }
+  // Rest-then-tie stays as written; see normalize_pattern_times_only.
 }
 
 // Weighted octave: DOWN 25% / CENTRE 50% / UP 25%. Top register excluded.

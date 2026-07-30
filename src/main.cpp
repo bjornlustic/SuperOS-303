@@ -51,7 +51,8 @@ static Engine &engine = *(Engine *)g_fw_arena;  // overlays the d650 machine;
                                                 // placement-new'ed in setup
 #endif
 
-static PinState inputs[INPUT_COUNT];
+// Non-static: midi.cpp's 0x34 panel diagnostic reads the debounced states.
+PinState inputs[INPUT_COUNT];
 
 static uint8_t s_prev_tracknum = 0xff; // 0xff = not yet initialized
 static uint8_t s_display_group = 0;    // group shown by dial (may differ from playing group when running)
@@ -223,6 +224,82 @@ static bool     s_chain_hold_loop       = false; // true this frame: loop when t
 static uint8_t  s_chain_hold_target_pat = 0xff;  // actual pattern to loop (0xff = any/none)
 static uint8_t  s_chain_queued[4]    = {0, 0, 0, 0};
 static uint8_t  s_chain_queue_len    = 0;     // ≥1 = pattern(s) waiting to activate
+
+// Wrap-intent tracking for the chain advance (see the advance block in loop()):
+// what we queued for the next wrap, and whether it was the end-of-chain handoff
+// to s_chain_queued. Also the chainless linked-pair defer slot.
+static uint8_t s_chain_prev_tp        = 0xFF;
+static uint8_t s_chain_expect         = 0xFF; // slot we queued (0xFF = none)
+static uint8_t s_chain_expect_pos     = 0;    // cursor value once it lands
+static bool    s_chain_expect_handoff = false; // expect = queued-chain handoff
+static uint8_t s_pair_defer           = 0xFF; // switch waiting for the B half to finish
+static uint8_t s_pair_defer_pair      = 0xFF; // pair (slot & 7) the defer was parked on
+// Forget queued-wrap intent. Must be called whenever chain contents or position
+// are set from OUTSIDE the advance block (arm, build commit, web apply, run
+// start): a stale expect from the previous run/chain would otherwise satisfy
+// the first wrap and snap the cursor to a stale index.
+static void chain_intent_reset() {
+  s_chain_prev_tp        = 0xFF;
+  s_chain_expect         = 0xFF;
+  s_chain_expect_handoff = false;
+  s_pair_defer           = 0xFF;
+  s_pair_defer_pair      = 0xFF;
+}
+
+// Persistent chains: a chain saved with A+B held + TAP lives in its first
+// pattern's reserved[4..6] (len, then 4-bit slot entries), so it persists with
+// the pattern and re-arms whenever that pattern is selected while stopped (and
+// at boot). Clearing the pattern clears the stored chain with it.
+static void emit_chain_state();
+// A linked A/B pair is always ENTERED at its A section (it then plays A-then-B
+// on its own). Every fresh entry point -- taps, chain commits, queue writes,
+// stored-chain arming, transport start -- routes through this, so playback can
+// never start on the B half. The only paths that select B directly are the
+// explicit SLIDE section button and the intra-pair wrap hand-off.
+static uint8_t chain_entry_start(uint8_t pat) {
+  return engine.pair_linked(pat) ? Engine::section_a_of(pat) : pat;
+}
+static void store_chain_on(uint8_t pat, const uint8_t *pats, uint8_t len) {
+  Sequence &s = engine.pattern[pat & 0x0F];
+  s.reserved[4] = uint8_t(len & 0x07);
+  s.reserved[5] = uint8_t((pats[0] & 0x0F) | ((len > 1 ? pats[1] & 0x0F : 0) << 4));
+  s.reserved[6] = uint8_t((len > 2 ? pats[2] & 0x0F : 0) | ((len > 3 ? pats[3] & 0x0F : 0) << 4));
+  engine.stale = true;
+  midi_send_pattern_update(pat & 0x0F);
+}
+static bool arm_stored_chain(uint8_t pat, bool set_first) {
+  const Sequence &s = engine.pattern[pat & 0x0F];
+  const uint8_t len = uint8_t(s.reserved[4] & 0x07);
+  if (len < 2 || len > 4) return false;
+  s_chain_pats[0] = uint8_t(s.reserved[5] & 0x0F);
+  s_chain_pats[1] = uint8_t((s.reserved[5] >> 4) & 0x0F);
+  s_chain_pats[2] = uint8_t(s.reserved[6] & 0x0F);
+  s_chain_pats[3] = uint8_t((s.reserved[6] >> 4) & 0x0F);
+  s_chain_len       = len;
+  s_chain_pos       = 0;
+  s_chain_active    = true;
+  s_chain_queue_len = 0;
+  s_chain_bank      = uint8_t((s_chain_pats[0] >> 3) & 1);
+  chain_intent_reset();
+  if (set_first) {
+    uint8_t first = s_chain_pats[0];
+    if (engine.pair_linked(first)) first = Engine::section_a_of(first);
+    engine.SetPattern(first, true);
+  }
+  emit_chain_state();
+  return true;
+}
+
+// A+B (ACCENT+SLIDE) held chain builder: tap pattern keys in ANY order (repeats
+// allowed) while both section buttons are down; releasing commits the chain.
+// Unlike the hold+tap builder this is not limited to an ascending run.
+static uint8_t s_ab_chain_pats[4] = {0, 0, 0, 0};
+static uint8_t s_ab_chain_len     = 0;     // 0 = no A+B build in progress
+static bool    s_ab_prev_link     = false; // pair-link state before the A+B press
+static uint8_t s_ab_link_pat      = 0xff;  // pattern the A+B press linked (0xff = none)
+// FN pressed while chain-build keys were held = "save this chain"; the same
+// FN hold must not also drive the length editor. Cleared on FN release.
+static bool    s_fn_chain_saved   = false;
 static uint8_t  s_chain_hold_key     = 0xff;  // key being tracked for tap/hold
 static uint32_t s_chain_hold_ms      = 0;     // millis() when hold key was pressed
 static bool     s_chain_hold_crossed = false; // hold threshold crossed
@@ -849,6 +926,9 @@ void setup() {
 
   flash_persist_begin(); // mount flash-as-EEPROM (formats on first boot)
   engine.Load();
+  // A stored chain on the boot pattern re-arms so a saved chain plays from
+  // power-on without re-selecting the pattern.
+  arm_stored_chain(engine.get_patsel(), false);
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
   midi_set_var_channels(GlobalSettings.var2_channel, GlobalSettings.var3_channel);
   Leds::brightness = GlobalSettings.led_brightness;
@@ -1251,6 +1331,94 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     }
 
     // ── Pattern select inputs ──
+    // A+B chain builder: while ACCENT and SLIDE are both held, pattern-key taps
+    // append to a chain (any order, repeats allowed, cap 4, current bank).
+    // Releasing either button commits it: stopped -> starts now, running ->
+    // takes over at the next pattern wrap. The first tap converts the gesture
+    // from "link the pair" to "build a chain", so the link side effect of the
+    // A+B press is restored to what it was.
+    const bool ab_hold = inputs[ACCENT_KEY].held() && inputs[SLIDE_KEY].held() &&
+                         !clear_mod && !s_metronome_active;
+    if (ab_hold) {
+      // Ghost guard (same rule as keyboard play): with both modifiers down, a
+      // real key press in the ACCENT/SLIDE columns can phantom its row
+      // partner (keys 3/4 and 7/8). Both rising together cannot be told
+      // apart -- drop the pair rather than chain a wrong pattern.
+      bool dropped[8] = {false};
+      if (inputs[2].rising() && inputs[3].rising()) dropped[2] = dropped[3] = true;
+      if (inputs[6].rising() && inputs[7].rising()) dropped[6] = dropped[7] = true;
+      for (uint8_t i = 0; i < 8; ++i) {
+        if (!inputs[i].rising() || dropped[i]) continue;
+        if (s_ab_chain_len == 0) {
+          // First tap: this is a chain build, not a section-link gesture.
+          if (s_ab_link_pat != 0xff) {
+            engine.set_pair_linked(s_ab_link_pat, s_ab_prev_link);
+            engine.stale = true;
+            s_ab_link_pat = 0xff;
+          }
+          s_chain_hold_key        = 0xff;  // cancel single-key tap/hold tracking
+          s_chain_hold_crossed    = false;
+          s_chain_hold_target_pat = 0xff;
+          s_chain_anchor_key      = 0xff;
+        }
+        if (s_ab_chain_len < 4)
+          s_ab_chain_pats[s_ab_chain_len++] = uint8_t(bank * 8 + i);
+      }
+      // A+B + TAP: persist the chain. Mid-build saves the build; otherwise the
+      // active chain is saved onto its first pattern. With nothing to save,
+      // it clears a stored chain from the current pattern. The mode LEDs
+      // flash as the acknowledgement.
+      if (inputs[TAP_NEXT].rising()) {
+        if (s_ab_chain_len >= 2) {
+          store_chain_on(s_ab_chain_pats[0], s_ab_chain_pats, s_ab_chain_len);
+        } else if (s_chain_active && s_chain_len >= 2) {
+          store_chain_on(s_chain_pats[0], s_chain_pats, s_chain_len);
+        } else {
+          Sequence &cs = engine.pattern[engine.get_patsel() & 0x0F];
+          cs.reserved[4] = 0; cs.reserved[5] = 0; cs.reserved[6] = 0;
+          engine.stale = true;
+          midi_send_pattern_update(engine.get_patsel());
+        }
+        pattern_cleared_flash_timer = 0;
+        s_pat_cleared_hold = true;
+      }
+    } else if (s_ab_chain_len) {
+      // A or B released: commit the build.
+      if (s_ab_chain_len >= 2) {
+        s_chain_bank = bank;
+        s_chain_len  = s_ab_chain_len;
+        for (uint8_t ci = 0; ci < s_ab_chain_len; ++ci)
+          s_chain_pats[ci] = s_ab_chain_pats[ci];
+        s_chain_active    = true;
+        s_chain_queue_len = 0;
+        s_chain_hold_loop = false;
+        chain_intent_reset();
+        if (clk_run) {
+          s_chain_pos = uint8_t(s_chain_len - 1); // wrap advances into pats[0]
+        } else {
+          s_chain_pos = 0;
+          uint8_t first = s_chain_pats[0];
+          if (engine.pair_linked(first)) first = Engine::section_a_of(first);
+          engine.SetPattern(first, true);
+          midi_send_active_pattern(engine.get_patsel());
+        }
+      } else {
+        // Single tap: behave like a plain pattern tap.
+        const uint8_t pat = chain_entry_start(s_ab_chain_pats[0]);
+        if (clk_run && s_chain_active && s_chain_len > 1) {
+          s_chain_queue_len = 1;
+          s_chain_queued[0] = pat;
+        } else {
+          engine.SetPattern(pat, !clk_run);
+          if (!clk_run) midi_send_active_pattern(engine.get_patsel());
+        }
+      }
+      emit_chain_state();
+      s_ab_chain_len = 0;
+    }
+    if (!ab_hold && !inputs[ACCENT_KEY].held() && !inputs[SLIDE_KEY].held())
+      s_ab_link_pat = 0xff;  // gesture fully released with no taps: link stands
+
     if (s_metronome_active) {
       // Tap-write session: pattern keys 1-8 are the ROM's SUSTAIN modifier
       // (metro_sustain_held); no selection, chains, or bank switches here.
@@ -1261,13 +1429,19 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].rising()) {
           engine.QueueGroup(s_display_group);
-          engine.SetPattern(bank * 8 + i, false);
+          // A live chain would re-queue its own next pattern every loop pass
+          // and stomp this queued switch, so a group change ends the chain.
+          s_chain_active    = false;
+          s_chain_len       = 0;
+          s_chain_queue_len = 0;
+          chain_intent_reset();
+          engine.SetPattern(chain_entry_start(uint8_t(bank * 8 + i)), false);
           emit_chain_state();
           break;
         }
       }
     }
-    if (clk_run && !browsing_other_group && !clear_mod) {
+    if (clk_run && !browsing_other_group && !clear_mod && !ab_hold) {
       // Running: chain building always available (whether or not a chain is currently active).
       //   two keys pressed simultaneously / hold+tap → build or queue a chain
       //   single key tap (quick press+release)       → queue single pattern (or chain pattern)
@@ -1303,6 +1477,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
               s_chain_pats[ci] = bank * 8 + lo2 + ci;
             s_chain_pos       = new_len - 1;
             s_chain_queue_len = 0;
+            chain_intent_reset();
           }
           emit_chain_state();
           chain_built = true;
@@ -1337,14 +1512,33 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
         // Hold key released
         if (s_chain_hold_key != 0xff && inputs[s_chain_hold_key].falling()) {
           if (!s_chain_hold_crossed) {
-            // Tap: queue single pattern
+            // Tap: queue single pattern -- or, when the target carries a
+            // STORED chain (FN-saved), queue/arm that whole chain so "press 1
+            // plays 1-2" works live as well as stopped.
+            const uint8_t tgt = uint8_t(bank * 8 + s_chain_hold_key);
+            const Sequence &ts = engine.pattern[tgt & 0x0F];
+            const uint8_t  sl  = uint8_t(ts.reserved[4] & 0x07);
             if (s_chain_active && s_chain_len > 1) {
-              // In chain: queue as single → deactivates chain when reached
-              s_chain_queue_len = 1;
-              s_chain_queued[0] = bank * 8 + s_chain_hold_key;
+              if (sl >= 2 && sl <= 4) {
+                // In chain: queue the target's stored chain (promotes on arrival)
+                s_chain_queue_len = sl;
+                s_chain_queued[0] = chain_entry_start(uint8_t(ts.reserved[5] & 0x0F));
+                s_chain_queued[1] = uint8_t((ts.reserved[5] >> 4) & 0x0F);
+                s_chain_queued[2] = uint8_t(ts.reserved[6] & 0x0F);
+                s_chain_queued[3] = uint8_t((ts.reserved[6] >> 4) & 0x0F);
+              } else {
+                // In chain: queue as single → deactivates chain when reached
+                s_chain_queue_len = 1;
+                s_chain_queued[0] = chain_entry_start(tgt);
+              }
+            } else if (sl >= 2 && sl <= 4) {
+              // Not in chain: the stored chain takes over at the next wrap
+              // (same mechanics as committing an A+B build while running).
+              arm_stored_chain(tgt, false);
+              s_chain_pos = uint8_t(s_chain_len - 1); // wrap advances into pats[0]
             } else {
               // Not in chain: direct pattern switch
-              engine.SetPattern(bank * 8 + s_chain_hold_key, false);
+              engine.SetPattern(chain_entry_start(tgt), false);
             }
             emit_chain_state();
           }
@@ -1358,7 +1552,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       // Hold-to-loop: only active while key still held past threshold
       s_chain_hold_loop = (s_chain_hold_key != 0xff && s_chain_hold_crossed);
 
-    } else if (!clk_run) {
+    } else if (!clk_run && !ab_hold) {
       // Stopped: chain building.  When CLEAR is held, pat keys are reserved for
       // global copy/paste handlers below — do nothing here.
       s_chain_hold_key = 0xff; // clear stale running state
@@ -1373,7 +1567,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
             s_chain_len        = 1;
             s_chain_active     = false;
             s_chain_hold_loop  = false;
-            engine.SetPattern(bank * 8 + i, true);
+            engine.SetPattern(chain_entry_start(uint8_t(bank * 8 + i)), true);
             // Stopped: notify web editor of new active pattern (no 0x15 stream while stopped).
             midi_send_active_pattern(engine.get_patsel());
             break;
@@ -1395,9 +1589,13 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
           if (s_chain_len > 1) {
             s_chain_active = true;
             s_chain_pos    = 0;
-            engine.SetPattern(s_chain_pats[0], true);
+            chain_intent_reset();
+            engine.SetPattern(chain_entry_start(s_chain_pats[0]), true);
           } else {
             s_chain_active = false;
+            // Plain select: a pattern with a stored chain re-arms it, so a
+            // saved chain "always plays" when its pattern is chosen.
+            arm_stored_chain(uint8_t(s_chain_bank * 8 + s_chain_anchor_key), false);
           }
           s_chain_anchor_key = 0xff;
           emit_chain_state();
@@ -1417,9 +1615,16 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     if (acc_edge || sld_edge) {
       const bool link = (acc_edge && inputs[SLIDE_KEY].held()) ||
                         (sld_edge && inputs[ACCENT_KEY].held());
+      if (link) {
+        // Remember the pre-link state: a pattern-key tap while A+B stays held
+        // turns this gesture into a chain build and restores this.
+        s_ab_link_pat  = engine.get_patsel();
+        s_ab_prev_link = engine.pair_linked(s_ab_link_pat);
+      }
       s_chain_active     = false; s_chain_len       = 0;
       s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
       s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
+      chain_intent_reset();
       engine.set_pair_linked(engine.get_patsel(), link);
       // Linked entry always lands on A: notes 1-64 fill the A section first.
       const uint8_t want = (link || acc_edge) ? Engine::section_a_of(engine.get_patsel())
@@ -2788,23 +2993,34 @@ void loop() {
       } else {
         // Apply new chain state from web
         if (rx_al > 1) {
-          s_chain_active = true;
-          s_chain_len    = rx_al;
-          for (uint8_t ci = 0; ci < rx_al; ++ci) s_chain_pats[ci] = rx_ap[ci];
-          if (!clk_run) {
-            s_chain_pos = 0;
-            engine.SetPattern(rx_ap[0], true);
-          } else {
-            s_chain_pos = s_chain_len - 1; // chain advance will queue pats[0] next
+          // Same active chain re-sent (the web echoes the full state when it
+          // only queued something): keep the running position and wrap intent
+          // untouched, or the chain would jump to its last entry.
+          bool same_active = s_chain_active && (s_chain_len == rx_al);
+          for (uint8_t ci = 0; same_active && ci < rx_al; ++ci)
+            if (s_chain_pats[ci] != rx_ap[ci]) same_active = false;
+          if (!same_active) {
+            s_chain_active = true;
+            s_chain_len    = rx_al;
+            for (uint8_t ci = 0; ci < rx_al; ++ci) s_chain_pats[ci] = rx_ap[ci];
+            chain_intent_reset();
+            if (!clk_run) {
+              s_chain_pos = 0;
+              engine.SetPattern(chain_entry_start(rx_ap[0]), true);
+            } else {
+              s_chain_pos = s_chain_len - 1; // chain advance will queue pats[0] next
+            }
           }
         } else if (rx_al == 1) {
           s_chain_active = false;
           s_chain_len    = 1;
           s_chain_pats[0] = rx_ap[0];
-          engine.SetPattern(rx_ap[0], !clk_run);
+          chain_intent_reset();
+          engine.SetPattern(chain_entry_start(rx_ap[0]), !clk_run);
         } else {
           s_chain_active = false;
           s_chain_len    = 0;
+          chain_intent_reset();
         }
         s_chain_queue_len = rx_ql;
         for (uint8_t ci = 0; ci < rx_ql; ++ci) s_chain_queued[ci] = rx_qp[ci];
@@ -2823,11 +3039,21 @@ void loop() {
   if (run_rising_effective || midi_clk_rose) {
     // midi_poll already called engine.Reset() on MIDI Start; only reset for hardware button.
     if (!midi_clk_rose) engine.Reset();
+    chain_intent_reset();
     // Restart chain from first pattern on every start (hardware or MIDI clock).
+    // The Reset() above only reset the sequence selected AT STOP; when either
+    // branch moves patsel, the landed sequence still holds its old position
+    // and the run would start mid-pattern -- reset it too.
     if (s_chain_active && s_chain_len > 1) {
       s_chain_pos       = 0;
       s_chain_queue_len = 0;
-      engine.SetPattern(s_chain_pats[0], true);
+      engine.SetPattern(chain_entry_start(s_chain_pats[0]), true);
+      engine.get_sequence().Reset();
+    } else if (engine.pair_linked() && Engine::is_section_b(engine.get_patsel())) {
+      // No chain: a run that previously stopped on the B half of a linked
+      // pair must restart from A, not resume alternating from B.
+      engine.SetPattern(Engine::section_a_of(engine.get_patsel()), true);
+      engine.get_sequence().Reset();
     }
     emit_chain_state();
     if (dial_track_mode) emit_track_state(dial, /*clk_run=*/true, cur_tracknum & 0x07);
@@ -2897,7 +3123,7 @@ void loop() {
     } else if (time_mod) {
       Leds::Set(FUNCTION_MODE_LED, true);
       // TODO: performance time effects
-    } else if (fn_mod) {
+    } else if (fn_mod && !s_fn_chain_saved) {
       ProcessLengthEditor(dial_pattern_write);
     } else if (edit_mode && dial_pattern_write && !fn_mod && !clear_mod &&
                !s_metronome_active && !s_metro_tap_swallow &&
@@ -2918,39 +3144,79 @@ void loop() {
     const uint8_t cur = engine.get_patsel();
     bool chain_state_changed = false;
 
-    // Activate queued item when its first pattern starts playing
-    if (s_chain_queue_len > 0 && cur == s_chain_queued[0]) {
-      if (s_chain_queue_len > 1) {
-        // Promote full queued chain
-        for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
-          s_chain_pats[ci] = s_chain_queued[ci];
-        s_chain_len = s_chain_queue_len;
-        s_chain_pos = 0;
+    // Position tracking by INTENT: we remember what we queued for the next
+    // wrap (s_chain_expect / s_chain_expect_pos / s_chain_expect_handoff) and
+    // act when the wrap lands on it. Deriving position or queue promotion
+    // from the playing pattern VALUE alone aliases chains with repeated
+    // entries: 2,1,2 would snap back to the first 2, and a queued chain
+    // starting with a pattern the current chain also contains would promote
+    // mid-pass instead of at the end of the chain. The value search below is
+    // only the fallback for external moves (user tap, run start).
+    const uint8_t tp      = engine.get_time_pos();
+    const bool    wrapped = (tp == 0 && s_chain_prev_tp != 0 && s_chain_prev_tp != 0xFF);
+    s_chain_prev_tp = tp;
+
+    const bool cur_linked = engine.pair_linked(cur);
+    if (wrapped) {
+      if (s_chain_expect != 0xFF && cur == s_chain_expect) {
+        if (s_chain_expect_handoff && s_chain_queue_len > 0) {
+          // The end-of-chain handoff we queued has landed: promote the queued
+          // chain (or drop to a single pattern) exactly at the chain boundary.
+          if (s_chain_queue_len > 1) {
+            for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
+              s_chain_pats[ci] = s_chain_queued[ci];
+            s_chain_len = s_chain_queue_len;
+            s_chain_pos = 0;
+          } else {
+            s_chain_active = false;
+            s_chain_len    = 0;
+          }
+          s_chain_queue_len   = 0;
+          chain_state_changed = true;
+        } else {
+          s_chain_pos = s_chain_expect_pos;
+        }
       } else {
-        // Single pattern: deactivate chain, just play this pattern
-        s_chain_active = false;
-        s_chain_len    = 0;
+        // External move: re-derive by value, searching from the cursor. A
+        // linked pair's B half matches its entry too.
+        for (uint8_t k = 0; k < s_chain_len; ++k) {
+          const uint8_t ci = uint8_t((s_chain_pos + k) % s_chain_len);
+          const uint8_t e  = s_chain_pats[ci];
+          if (e == cur || (cur_linked && (e & 7) == (cur & 7))) { s_chain_pos = ci; break; }
+        }
       }
-      s_chain_queue_len    = 0;
-      chain_state_changed  = true;
+      s_chain_expect_handoff = false;
     }
 
     if (s_chain_active && s_chain_len > 1) {
-      // Update position in active chain
-      for (uint8_t ci = 0; ci < s_chain_len; ++ci)
-        if (s_chain_pats[ci] == cur) { s_chain_pos = ci; break; }
-
-      // Queue next: hold-loop (only when chain reaches held pattern) > queued chain > advance
+      // Queue next: linked-pair B half > hold-loop > queued chain > advance.
       uint8_t next_pat;
-      if (s_chain_hold_loop && (s_chain_hold_target_pat == 0xff || cur == s_chain_hold_target_pat)) {
-        // Loop: either any pattern (legacy) or specifically the held one
-        next_pat = cur;
+      uint8_t next_pos = s_chain_pos;
+      bool    handoff  = false;
+      if (cur_linked && !Engine::is_section_b(cur)) {
+        // A linked pair inside a chain plays its whole A-B before the chain
+        // advances: hand the wrap to the B section of the SAME chain entry.
+        next_pat = Engine::section_b_of(cur);
+      } else if (s_chain_hold_loop && (s_chain_hold_target_pat == 0xff || cur == s_chain_hold_target_pat ||
+                 (cur_linked && (s_chain_hold_target_pat & 7) == (cur & 7)))) {
+        // Loop: a linked pair loops A->B->A->B, an unlinked pattern loops itself
+        next_pat = cur_linked ? Engine::section_a_of(cur) : cur;
       } else if (s_chain_queue_len > 0 && s_chain_pos == s_chain_len - 1) {
-        // At the last pattern of the current chain: hand off to the queued chain
-        next_pat = s_chain_queued[0];
+        // At the last pattern of the current chain: hand off to the queued
+        // chain. Entered at A when the named entry is a linked pair (the tap
+        // paths normalize queued[0], the hold+tap build path does not).
+        next_pat = chain_entry_start(s_chain_queued[0]);
+        handoff  = true;
       } else {
-        next_pat = s_chain_pats[(s_chain_pos + 1) % s_chain_len];
+        next_pos = uint8_t((s_chain_pos + 1) % s_chain_len);
+        next_pat = s_chain_pats[next_pos];
+        // Linked entries are entered at their A section regardless of which
+        // section the chain named, so every pass plays A then B.
+        if (engine.pair_linked(next_pat)) next_pat = Engine::section_a_of(next_pat);
       }
+      s_chain_expect         = next_pat;
+      s_chain_expect_pos     = next_pos;
+      s_chain_expect_handoff = handoff;
       engine.SetPattern(next_pat);
     }
 
@@ -2960,11 +3226,37 @@ void loop() {
     // engine hands over at the wrap. A plays, then B, then A again -- one
     // pattern of up to 128 steps (spec 1-a / 5-d / 5-e).
     const uint8_t cur  = engine.get_patsel();
+    const uint8_t nxt  = engine.get_next();
     const uint8_t want = Engine::is_section_b(cur) ? Engine::section_a_of(cur)
                                                    : Engine::section_b_of(cur);
-    // Only on a change: SetPattern resets the edit variation, so re-queuing the
-    // same target every loop pass would pin the picker to variation 1.
-    if (engine.get_next() != want) engine.SetPattern(want);
+    // A defer parked on a different pair is stale (the pair was unlinked or
+    // the pattern moved externally before it could land): drop it.
+    if (s_pair_defer != 0xFF && s_pair_defer_pair != (cur & 7)) {
+      s_pair_defer      = 0xFF;
+      s_pair_defer_pair = 0xFF;
+    }
+    if (nxt == cur) {
+      // Idle wrap: steer the A/B alternation -- or land a deferred switch now
+      // that the B half has finished (the pair is ONE pattern; a switch never
+      // cuts it in half).
+      if (s_pair_defer != 0xFF && Engine::is_section_b(cur)) {
+        engine.SetPattern(s_pair_defer);
+        s_pair_defer      = 0xFF;
+        s_pair_defer_pair = 0xFF;
+      } else {
+        engine.SetPattern(want);
+      }
+    } else if (!Engine::is_section_b(cur) && nxt != Engine::section_b_of(cur) &&
+               engine.pending_group_ == 0xff) {
+      // A switch queued while the A half plays waits for the pair to finish:
+      // park it, hand the wrap to B, and land it at B's wrap (first branch).
+      // A later tap overwrites the parked target, so the newest choice wins.
+      // Group-switch queues are exempt: the pending group applies at the very
+      // next wrap regardless, so deferring the pattern would strand it.
+      s_pair_defer      = nxt;
+      s_pair_defer_pair = uint8_t(cur & 7);
+      engine.SetPattern(Engine::section_b_of(cur));
+    }
   }
 
   // show all pressed buttons. Probability mode renders its own step / picker /
@@ -3106,6 +3398,7 @@ void loop() {
           // Manual exit (CLEAR+TIME again): the only way a looping session
           // ends besides transport stop / leaving Pattern Write.
           s_metro_monitor_gate = false;
+          s_metro_gate_pulse   = false; // never leave a click pulse armed
           midi_metronome_stop();
           midi_audition_note_off();
           midi_send_pattern_update(engine.get_patsel());
@@ -3121,6 +3414,21 @@ void loop() {
           engine.Reset();                       // bar reset: next tick = step 0
           s_metro_prev_pat        = engine.get_patsel();
           s_metro_cleared_mask    = uint16_t(1u << s_metro_prev_pat);
+          // A linked A/B pair is ONE user-facing pattern (one 64-step
+          // measure): clear and record both halves as a unit. Leaving the B
+          // half to the mid-session lazy clear made the pair alternate
+          // OVERDUB(A)/RECORD(B) forever -- clicks chopping through the A
+          // notes on every other pass, and the B half's rhythm wiped when
+          // the hand-off landed ("it deleted all my notes").
+          if (engine.pair_linked()) {
+            const uint8_t cur   = engine.get_patsel();
+            const uint8_t other = Engine::is_section_b(cur) ? Engine::section_a_of(cur)
+                                                            : Engine::section_b_of(cur);
+            Sequence &oseq = engine.pattern[other];
+            for (uint8_t i = 0; i < oseq.length; ++i) sequence_set_time_at(oseq, i, 0);
+            s_metro_cleared_mask |= uint16_t(1u << other);
+            midi_send_pattern_update(other);
+          }
           s_metro_tail_cv         = 63;   // idle tail starts at the click pitch
           s_metro_step_tick       = 0;
           s_metro_press_pending   = false;
@@ -3183,7 +3491,22 @@ void loop() {
         engine.get_mode() == PITCH_MODE) {
       engine.SetMode(NORMAL_MODE, true);
     }
-    if (inputs[FUNCTION_KEY].rising() && dial_pattern_write) {
+    // Chain-save gesture: while the chain-build keys are still held (hold 1,
+    // tap 2/3/4...), pressing FUNCTION stores the chain on its FIRST pattern.
+    // Selecting that pattern later replays the chain (arm_stored_chain); a
+    // pattern without a stored chain plays alone. The press is consumed so the
+    // same FN hold cannot also drive the length editor.
+    if (inputs[FUNCTION_KEY].rising() && dial_pattern_write && s_chain_len >= 2) {
+      bool pat_held = false;
+      for (uint8_t i = 0; i < 8; ++i)
+        if (inputs[i].held()) { pat_held = true; break; }
+      if (pat_held) {
+        store_chain_on(s_chain_pats[0], s_chain_pats, s_chain_len);
+        pattern_cleared_flash_timer = 0;  // mode-LED flash = "saved"
+        s_fn_chain_saved = true;
+      }
+    }
+    if (inputs[FUNCTION_KEY].rising() && dial_pattern_write && !s_fn_chain_saved) {
       const uint8_t cl = engine.edit_seq_view().length;
       s_len_extended      = (MAX_STEPS > 32) && (cl > 32);
       s_len_black_base    = uint8_t(((cl - 1) / 8) * 8);
@@ -3192,6 +3515,7 @@ void loop() {
     if (inputs[FUNCTION_KEY].falling()) {
       s_len_black_pressed = false;
       s_len_extended = false;
+      s_fn_chain_saved = false;
     }
   }
 
