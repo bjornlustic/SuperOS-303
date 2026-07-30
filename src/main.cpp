@@ -104,6 +104,7 @@ static bool s_metronome_active                  = false;
 static bool s_metro_press_pending               = false;  // TAP press awaiting an accept tick
 static bool s_metro_note_active                 = false;  // tapped note's finger still down (tie source)
 static bool s_metro_any_note                    = false;  // sustain tie-fill arms after the first note
+static bool s_metro_pass_accept                 = false;  // a tap was HELD at its accept tick this pass
 static bool s_metro_bar_started                 = false;  // bar reset reached step 0; writes enabled
 static bool s_metro_step_prewritten             = false;  // upcoming step already holds a next-step NOTE
 // Two per-pattern phases while the session loops. RECORD = the ROM's measure
@@ -1658,9 +1659,9 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
   if (pat_clr_flash) Leds::Set(ASHARP_KEY_LED, true);
 }
 
-// Tap-write monitor (ROM-exact): starts at the ACCEPT tick with the pitch the
-// freshly written NOTE consumed from the stream, sounds until physical
-// release. Scale and transpose applied like playback; MIDI mirrors it via the
+// Tap-write monitor (ROM-exact): starts at the PRESS with the pitch the
+// aimed-at NOTE will consume from the stream, sounds until physical release.
+// Scale and transpose applied like playback; MIDI mirrors it via the
 // audition channel.
 static void metro_start_monitor(const Sequence &s, uint8_t step) {
   const uint8_t k  = s.pitch_index_for_note(step);
@@ -3296,12 +3297,25 @@ void loop() {
     midi_metronome_stop();
     midi_audition_note_off();
   }
-  // Per-frame TAP tracking for the recorder. A press only ARMS here; the ROM
-  // registers it at the next accept tick (tick 2..5 of the step) if still
-  // held. Release ends the monitor voice and the tie chain immediately.
+  // Per-frame TAP tracking for the recorder. A press ARMS the pending flag
+  // and starts the monitor voice IMMEDIATELY (ROM-measured: the heard note
+  // follows the finger from the press, not from the accept tick). The write
+  // itself still lands on the tick grid below. Release ends the monitor and
+  // the tie chain immediately.
   if (s_metronome_active) {
-    if (inputs[TAP_NEXT].rising())
+    if (inputs[TAP_NEXT].rising()) {
       s_metro_press_pending = true;
+      if (s_metro_bar_started) {
+        // Predict the step this press is aimed at (same rule the accept tick
+        // applies) so the monitor previews the pitch that note will consume.
+        // Pre-write, pitch_index_for_note gives the same stream slot the
+        // write will map, so the pitch matches the accept-time result.
+        const uint8_t t_dec = (engine.step_period() >= 8) ? 3 : 2;
+        const uint8_t k     = engine.get_time_pos();
+        const uint8_t tgt   = (s_metro_step_tick < t_dec) ? k : uint8_t(k + 1);
+        metro_start_monitor(engine.get_sequence(), tgt);
+      }
+    }
     if (inputs[TAP_NEXT].falling()) {
       s_metro_note_active  = false;
       s_metro_monitor_gate = false;
@@ -3440,6 +3454,7 @@ void loop() {
           s_metro_tail_cv         = 63;   // idle tail starts at the click pitch
           s_metro_step_tick       = 0;
           s_metro_press_pending   = false;
+          s_metro_pass_accept     = false;
           s_metro_note_active     = false;
           s_metro_any_note        = false;
           s_metro_bar_started     = false;
@@ -3579,7 +3594,20 @@ void loop() {
           if (tp == 0) {
             if (!s_metro_bar_started) {
               s_metro_bar_started = true;        // bar reset landed: recording on
-            } else if (cur_pat != s_metro_prev_pat &&
+            } else if (s_metro_record_phase && !s_metro_pass_accept) {
+              // ROM bar validation: a RECORD pass none of whose taps was
+              // still held at its accept tick ends as an EMPTY bar -- stale
+              // writes are discarded and the metronome keeps looping,
+              // exactly like the ROM's endless empty-measure record loop.
+              Sequence &pseq = engine.pattern[s_metro_prev_pat];
+              if (pseq.note_count()) {
+                for (uint8_t i = 0; i < pseq.length; ++i)
+                  sequence_set_time_at(pseq, i, 0);
+                engine.stale = true;
+                midi_send_pattern_update(s_metro_prev_pat);
+              }
+            }
+            if (s_metro_bar_started && cur_pat != s_metro_prev_pat &&
                        !(s_metro_cleared_mask & uint16_t(1u << cur_pat))) {
               // Chain extension: entering a fresh chained pattern = next bar
               // of the session; clear its time lazily and keep recording.
@@ -3593,7 +3621,8 @@ void loop() {
             // measure; users asked for an endless session that only
             // CLEAR+TIME or transport stop ends). Later passes preserve
             // earlier ones -- see the rest-skip in the tick decision below.
-            s_metro_prev_pat = cur_pat;
+            s_metro_prev_pat    = cur_pat;
+            s_metro_pass_accept = false;   // fresh validation window per pass
             // Phase for the pass that starts NOW: a pattern that has content
             // graduates to OVERDUB (clicks off, engine voice on); an empty
             // one stays in RECORD (metronome keeps guiding).
@@ -3640,33 +3669,36 @@ void loop() {
         const bool held      = inputs[TAP_NEXT].held();
         bool wrote_note_now  = false;
         if (t >= t_dec && s_metro_press_pending) {
-          // Accept tick with an armed press. The ROM requires the key still
-          // held here; a stale (already released) press is dropped -- that IS
-          // the ROM's narrow pre-boundary dead zone.
+          // Accept tick with an armed press. ROM-measured law: the note is
+          // written whether or not the key is still held (a "stale" press
+          // still lands on its target step). Held state only feeds the tie
+          // chain and the pass-validation flag; a RECORD pass none of whose
+          // taps were held at their accept tick is discarded at the wrap,
+          // which is the ROM's endless empty-bar loop.
           s_metro_press_pending = false;
-          if (held) {
-            uint8_t target = k;
-            bool ok = true;
-            if (t > t_dec) {
-              // Late accept: the tap was aimed at the NEXT step's downbeat.
-              // Past the bar end it drops (the manual's "you cannot write
-              // correctly if tapping between two measures").
-              if (uint8_t(k + 1) >= len) ok = false;
-              else target = uint8_t(k + 1);
-            }
-            if (ok) {
-              sequence_write_time_with_pitch_sync(sseq, target, 1);
-              engine.stale = true;
-              metro_start_monitor(sseq, target);
+          uint8_t target = k;
+          bool ok = true;
+          if (t > t_dec) {
+            // Late accept: the tap was aimed at the NEXT step's downbeat.
+            // Past the bar end it drops (the manual's "you cannot write
+            // correctly if tapping between two measures").
+            if (uint8_t(k + 1) >= len) ok = false;
+            else target = uint8_t(k + 1);
+          }
+          if (ok) {
+            sequence_write_time_with_pitch_sync(sseq, target, 1);
+            engine.stale = true;
+            s_metro_any_note = true;
+            if (held) {
               s_metro_note_active = true;
-              s_metro_any_note    = true;
-              if (target != k) s_metro_step_prewritten = true;
-              else             wrote_note_now = true;
-              uint8_t pb = PITCH_EMPTY;
-              const uint8_t slot = sseq.pitch_index_for_note(target);
-              if (slot < sseq.get_pitch_count()) pb = sseq.pitch[slot];
-              midi_send_step_update(engine.get_patsel(), target, pb, 1);
+              s_metro_pass_accept = true;
             }
+            if (target != k) s_metro_step_prewritten = true;
+            else             wrote_note_now = true;
+            uint8_t pb = PITCH_EMPTY;
+            const uint8_t slot = sseq.pitch_index_for_note(target);
+            if (slot < sseq.get_pitch_count()) pb = sseq.pitch[slot];
+            midi_send_step_update(engine.get_patsel(), target, pb, 1);
           }
         }
         if (t == t_dec) {

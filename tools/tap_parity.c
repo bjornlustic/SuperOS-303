@@ -12,11 +12,10 @@
 typedef struct { double press, release; } Tap;
 
 static void simulate(const Tap *taps, int ntaps, int sustain, char out[17]) {
-  int pending = 0, note_active = 0, any_note = 0, prewritten = 0;
+  int pending = 0, note_active = 0, any_note = 0, prewritten = 0, had_accept = 0;
   int consumed[16]; memset(consumed, 0, sizeof consumed);
   char steps[17]; memset(steps, '.', 16); steps[16] = 0;
   // walk ticks 0..(16*6-1); time T = tick/6.0 in steps
-  int next_press_evt = 0;
   for (int tick = 0; tick < 16 * 6; tick++) {
     double T = tick / 6.0;
     int k = tick / 6, t = tick % 6;
@@ -30,28 +29,32 @@ static void simulate(const Tap *taps, int ntaps, int sustain, char out[17]) {
     for (int i = 0; i < ntaps; i++)
       if (taps[i].press <= T && T < taps[i].release) held = 1;
     if (!held) note_active = 0;                     // release ends the tie chain
-    (void)next_press_evt;
     int wrote_now = 0;
     if (t >= 2 && pending) {
+      // Accept tick. ROM-measured: the note is WRITTEN whether or not the
+      // key is still held ("stale" presses still land); held only feeds the
+      // tie chain and the bar-validation flag.
       pending = 0;
-      if (held) {
-        int target = (t == 2) ? k : k + 1;
-        if (target < 16) {
-          steps[target] = 'N';
-          note_active = 1; any_note = 1;
-          if (target != k) prewritten = 1; else wrote_now = 1;
-        }
+      int target = (t == 2) ? k : k + 1;
+      if (target < 16) {                 // past the bar end a late aim drops
+        steps[target] = 'N';
+        any_note = 1;
+        if (held) { note_active = 1; had_accept = 1; }
+        if (target != k) prewritten = 1; else wrote_now = 1;
       }
     }
     if (t == 2) {
       if (prewritten) prewritten = 0;
       else if (!wrote_now) {
-        if (note_active && held)             steps[k] = 't';
-        else if (any_note && sustain)        steps[k] = 't';
-        else                                 steps[k] = '.';
+        if (note_active && held)                       steps[k] = 't';
+        else if (any_note && sustain && steps[k] == '.') steps[k] = 't';
       }
     }
   }
+  // ROM bar validation: a bar none of whose taps was held at its accept tick
+  // is an EMPTY bar -- the recording is discarded and the record loop
+  // continues (SuperOS: the RECORD pass is cleared at the wrap).
+  if (!had_accept) memset(steps, '.', 16);
   memcpy(out, steps, 17);
 }
 
@@ -67,7 +70,10 @@ int main(void) {
 
   // ---- ROM fine assignment sweep (dur 0.30), transcribed results ----------
   // press in [k+0.04, k+0.29] -> step k ; [k+0.33, k+0.75] -> step k+1 ;
-  // [k+0.79, k+1.00] -> dropped (stale at the next decision tick).
+  // [k+0.79, k+1.00] -> blank. NOTE the blank is NOT a per-tap drop: the ROM
+  // writes stale presses too (verified with helper taps -- see tap_diff.c),
+  // but a bar with no HELD accept is discarded by the bar validation, and a
+  // single short tap in that window is exactly that case.
   struct { double x; const char *want; } asg[] = {
     {1.042, ".N.............."}, {1.125, ".N.............."}, {1.292, ".N.............."},
     {1.334, "..N............."}, {1.500, "..N............."}, {1.751, "..N............."},
