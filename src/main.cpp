@@ -3615,6 +3615,21 @@ void loop() {
               s_metro_recorded_mask &= uint16_t(~(1u << cur_pat));
             s_metro_record_phase =
                 !(s_metro_recorded_mask & uint16_t(1u << cur_pat));
+            if (!s_metro_record_phase) {
+              // An OVERDUB pass begins: the pattern is the voice. A finger
+              // still held from the recording bar must not carry over -- the
+              // tie chain would write TIEs over this pattern's rests
+              // (permanently extending its saved notes), and the monitor
+              // voice would override the engine's pitch while both gate.
+              // Holds still tie across RECORD wraps (a linked pair being
+              // recorded is one 64-step pattern), only content-bearing
+              // passes cut them.
+              s_metro_note_active = false;
+              if (s_metro_monitor_gate) {
+                s_metro_monitor_gate = false;
+                midi_audition_note_off();
+              }
+            }
           }
           // Metronome click (measured on the d650c): LOW (DAC 51, ~327 Hz on
           // factory trim) at the bar start, HIGH (DAC 63) on the other 8ths,
