@@ -680,6 +680,29 @@ static void din_send_status() {
   midi_tx(0xF7);
 }
 #endif
+#ifdef D650_ROM_IN_RAM
+// 0x4A: reboot into the SysEx bootloader without the power-on button combo.
+// Parks BOOT_MAGIC in GPIOR0 (survives the jmp; any real reset clears it) so
+// the bootloader stays resident instead of bouncing back to the app, and
+// detaches USB first so the host sees a clean disconnect before the
+// bootloader's own device attaches. Outside the SUPEROS_USB_MIDI block: the
+// DIN path calls this too, and on no-USB builds the USB writes are no-ops on
+// an already-down controller. On the original OS-303 bootloader the GPIOR0
+// magic means nothing and the jump falls straight back into the app: those
+// units enter the bootloader with TAP held at power-on instead.
+static void enter_bootloader() {
+  // Flush any pending pattern edits first: the jump never returns and the
+  // packed uPD444 store in SRAM is lost. Bounded: <= 8 blocks, changed only.
+  while (s_save_pending) patt_save_step();
+  cli();
+  UDCON |= (1 << DETACH);
+  _delay_ms(30);                 // host must register the drop first
+  USBCON = 0;                    // leave the controller clean for the
+  PLLCSR = 0;                    // bootloader's own init
+  GPIOR0 = 0xB7;                 // BOOT_MAGIC, keep in sync with bootload.c
+  asm volatile("jmp 0x1F000");   // boot section (BOOTRST, BOOTSZ=01)
+}
+#endif
 #ifdef SUPEROS_USB_MIDI
 static bool chan_ok(uint8_t ch /*1..16*/) {
   return g_set.midi_channel == 0 || ch == g_set.midi_channel;
@@ -721,23 +744,6 @@ static void usb_send_ram_block(uint8_t blk) {
 static void usb_ram_ack(uint8_t blk, uint8_t status) {
   const uint8_t r[4] = { 0x7D, 0x48, blk, status };
   usbMIDI.sendSysEx(4, r, false);
-}
-// 0x4A: reboot into the SysEx bootloader without the power-on button combo.
-// Parks BOOT_MAGIC in GPIOR0 (survives the jmp; any real reset clears it) so
-// the bootloader stays resident instead of bouncing back to the app, and
-// detaches USB first so the host sees a clean disconnect before the
-// bootloader's own device attaches.
-static void enter_bootloader() {
-  // Flush any pending pattern edits first: the jump never returns and the
-  // packed uPD444 store in SRAM is lost. Bounded: <= 8 blocks, changed only.
-  while (s_save_pending) patt_save_step();
-  cli();
-  UDCON |= (1 << DETACH);
-  _delay_ms(30);                 // host must register the drop first
-  USBCON = 0;                    // leave the controller clean for the
-  PLLCSR = 0;                    // bootloader's own init
-  GPIOR0 = 0xB7;                 // BOOT_MAGIC, keep in sync with bootload.c
-  asm volatile("jmp 0x1F000");   // boot section (BOOTRST, BOOTSZ=01)
 }
 static void usb_sysex_msg(const uint8_t *data, unsigned int sz) {
   if (sz < 4 || data[0] != 0xF0 || data[sz - 1] != 0xF7) return;

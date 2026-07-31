@@ -4,11 +4,11 @@ name: Release
 # builds the firmware and publishes a GitHub release with the one-file update
 # .syx, the full ISP .hex, and RELEASE_NOTES.md as the body.
 #
-# FIRMWARE_ENV selects the shipped build. combined-norom is the
-# copyright-clean build: it ships WITHOUT the reconstructed D650C mask ROM
-# (D650C mode waits for a user ROM upload over SysEx; superOS works fully).
-# Change to `combined` only if you have the rights to distribute the embedded
-# ROM publicly.
+# FIRMWARE_ENV selects the shipped build. combined-nousbc is the public
+# build: no USB-C, compatible with the ORIGINAL OS-303 bootloader (no
+# watchdog resets), and copyright-clean (no embedded D650C mask ROM; users
+# upload their own over DIN SysEx). combined-norom is the USB-C variant,
+# same ROM-clean policy. Never ship a ROM-embedded env publicly.
 
 on:
   push:
@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 env:
-  FIRMWARE_ENV: combined-norom
+  FIRMWARE_ENV: combined-nousbc
 
 jobs:
   release:

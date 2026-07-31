@@ -17,14 +17,22 @@ features.
 
 ## Installing
 
-- **`.syx`**: the one-file MIDI update. Easiest path: the web editor's
-  **Update OS...** button picks the file, reboots the unit into the
-  bootloader, and sends it automatically. Manual path: hold TAP (WRITE/NEXT)
-  at power-on (or send `F0 7D 4A F7`), then send the file with SysEx
-  Librarian / MIDI-OX throttled to ~50 ms between messages. The flash service
-  is bundled; there is no second file to install.
+This release is the **no-USB-C build** (DIN MIDI only) and installs through
+the **original OS-303 bootloader**; no bootloader update and no ISP
+programmer needed.
+
+- **`.syx`**: the one-file MIDI update. Hold TAP (WRITE/NEXT) at power-on
+  (four LEDs light solid), then press **Update OS...** in the web editor and
+  pick the file; the editor sends it automatically. Any SysEx tool throttled
+  to ~50 ms between messages (SysEx Librarian, MIDI-OX) works too. Units
+  already on superOS 0.9.9+ can also enter the bootloader with SysEx
+  `F0 7D 4A F7`. The flash service is bundled; there is no second file to
+  install, and the file never writes the bootloader region.
 - **`.hex`**: full image (firmware + flash service + bootloader) for ISP
   programming of a blank CPU.
+- **D650C mode** ships without the mask ROM. Load your own dump from the web
+  editor ("Load ROM dump": a raw 2048-byte .bin or an RE-303-format .syx);
+  superOS mode works fully without it.
 
 ## New since v0.9.9c
 

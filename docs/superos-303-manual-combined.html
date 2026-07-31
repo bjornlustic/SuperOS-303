@@ -1143,6 +1143,13 @@
       <li>The unit reboots into normal operation by itself when the file ends.</li>
     </ol>
     <p class="docs-body">
+      On units still running the <strong>original OS-303 bootloader</strong>, the SysEx entry command
+      is not available: hold <kbd class="docs-key">TAP</kbd> (WRITE/NEXT) while powering on. Once the
+      four LEDs are lit, the web editor's <strong>Update OS&hellip;</strong> button (or any SysEx
+      tool) sends the update through that bootloader unchanged; the release file never touches the
+      bootloader itself.
+    </p>
+    <p class="docs-body">
       If the upload fails and the LEDs stay stuck, it is safe to power-cycle and try again. Stored
       patterns are never touched by the bootloader.
     </p>

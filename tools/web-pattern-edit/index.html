@@ -2210,7 +2210,11 @@
     var fwBtn = document.getElementById('btnFwSwitch');
     fwBtn.disabled = !ok || deviceMode === 'unknown';
     fwBtn.textContent = deviceMode === 'd650' ? 'Switch to SuperOS' : 'Switch to D650C';
-    document.getElementById('btnBootloader').disabled = !ok || deviceMode === 'unknown';
+    // Enabled whenever an output port is bound: with a live device the update
+    // reboots it into the bootloader itself (0x4A); with no identified device
+    // the flow assumes the unit is ALREADY in the bootloader (original
+    // OS-303 bootloader units: hold TAP at power-on, then update from here).
+    document.getElementById('btnBootloader').disabled = !midiOut;
     document.getElementById('d650Banner').classList.toggle('visible', ok && d650);
     recomputeDirty();
   }
@@ -5640,7 +5644,12 @@
   }
 
   document.getElementById('btnBootloader').onclick = function() {
-    if (!midiOut || deviceMode === 'unknown' || osUpd) return;
+    if (!midiOut || osUpd) return;
+    // Identified device: reboot it into the bootloader ourselves (0x4A).
+    // Unidentified: assume the unit is ALREADY in the bootloader (original
+    // OS-303 bootloader has no SysEx entry; the user held TAP at power-on)
+    // and stream straight to the selected output port.
+    var live = deviceMode !== 'unknown';
     var fi = document.createElement('input');
     fi.type = 'file';
     fi.accept = '.syx';
@@ -5655,22 +5664,37 @@
           log('OS update: rejected ' + f.name + ': ' + parsed.err, 'log-err');
           return;
         }
-        if (!confirm('Update the firmware with "' + f.name + '"?\n\n' +
-                     parsed.pages + ' flash pages will be written (about ' +
-                     Math.ceil(parsed.pages * OS_PAGE_GAP_MS / 1000) + ' seconds).\n' +
-                     'Pending edits are saved first, then the unit reboots into the ' +
-                     'bootloader and the file is sent automatically.\n\n' +
-                     'Do not power off the unit while the update runs.')) return;
+        var mins = 'about ' + Math.ceil(parsed.pages * OS_PAGE_GAP_MS / 1000) + ' seconds';
+        var msg = live
+          ? ('Update the firmware with "' + f.name + '"?\n\n' +
+             parsed.pages + ' flash pages will be written (' + mins + ').\n' +
+             'Pending edits are saved first, then the unit reboots into the ' +
+             'bootloader and the file is sent automatically.\n\n' +
+             'Do not power off the unit while the update runs.')
+          : ('Send "' + f.name + '" to a unit already in the bootloader?\n\n' +
+             'This assumes the unit is in bootloader mode NOW (hold WRITE/NEXT ' +
+             'while powering on; four mode LEDs lit solid) on output "' +
+             (midiOut.name || midiOut.id) + '".\n' +
+             parsed.pages + ' flash pages will be written (' + mins + ').\n\n' +
+             'Do not power off the unit while the update runs.');
+        if (!confirm(msg)) return;
         clearCfgReadRetry();
         expectDump = 0; bulkNextPat = -1;
         hideSyncOverlay();
         osUpd = { msgs: parsed.msgs, pages: parsed.pages, name: f.name,
                   origOut: midiOut, port: null, sent: 0, t0: Date.now() };
-        sendSysex(new Uint8Array([0x7d, 0x4a]));
-        setDeviceMode('unknown');
-        log('→ 0x4A: rebooting into the SysEx bootloader for ' + f.name, 'log-syx');
-        osUpdateStatus('Waiting for the bootloader…');
-        setTimeout(osUpdateTick, OS_BOOT_GRACE_MS);
+        if (live) {
+          sendSysex(new Uint8Array([0x7d, 0x4a]));
+          setDeviceMode('unknown');
+          log('→ 0x4A: rebooting into the SysEx bootloader for ' + f.name, 'log-syx');
+          osUpdateStatus('Waiting for the bootloader…');
+          setTimeout(osUpdateTick, OS_BOOT_GRACE_MS);
+        } else {
+          osUpd.port = midiOut;
+          log('OS update: sending ' + f.name + ' to the already-running bootloader', 'log-syx');
+          osUpdateStatus('Updating OS: 0%');
+          setTimeout(osUpdateTick, 100);
+        }
       };
       rd.readAsArrayBuffer(f);
     };

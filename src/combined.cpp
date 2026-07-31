@@ -24,10 +24,19 @@ extern "C" {
 // boot instead of freezing. setup() disables it. The bootloader is not
 // affected (it clears MCUSR + disables the WDT on entry, and this code only
 // runs once it jumps to the app).
+// SUPEROS_OLD_BOOTLOADER build (no USB-C, for units running the original
+// OS-303 bootloader, which wdt_disable()s but does NOT clear MCUSR/WDRF on
+// entry): every watchdog mechanism is removed. There is no USB, so no
+// PLL-lock hang to recover from, and a watchdog reset would trap that
+// bootloader in a WDRF reset-loop until power-off (WDRF forces WDE back on,
+// 16 ms timeout). Firmware switching uses a soft reset instead (see
+// combined_switch_firmware).
 extern "C" __attribute__((naked, used, section(".init3")))
 void combined_boot_guard(void) {
   MCUSR = 0;
+#ifndef SUPEROS_OLD_BOOTLOADER
   wdt_enable(WDTO_2S);
+#endif
 }
 
 // The D650_ROM_IN_RAM build runs the mask ROM from a 2 KB SRAM copy that lives
@@ -73,7 +82,12 @@ void setup() {
   // freeze into an automatic recovery reboot; the fresh attach afterwards
   // has always enumerated cleanly. 8 s clears every legitimate long stall
   // (flash GC ~1 s, d650c full-store EEPROM flush ~5 s, swap lockout 4 s).
+#ifndef SUPEROS_OLD_BOOTLOADER
   wdt_enable(WDTO_8S);
+#else
+  wdt_disable(); // no USB, no PLL-hang recovery needed; the original
+                 // bootloader can't survive a watchdog reset, keep WDT off.
+#endif
   const uint8_t sel = eeprom_read_byte(EE_FW_SELECT);
   g_fw = (sel == FW_D650) ? FW_D650 : FW_SUPEROS;
   // TEMP wedge diagnostics: boot counter; WDT-recovery counter via the reset
@@ -89,7 +103,9 @@ void setup() {
 }
 
 void loop() {
+#ifndef SUPEROS_OLD_BOOTLOADER
   wdt_reset();   // pet the permanent freeze-recovery watchdog (see setup)
+#endif
   static bool s_first = true;
   if (s_first) {
     s_first = false;
@@ -106,7 +122,9 @@ void loop() {
 }
 
 void combined_switch_firmware(uint8_t fw) {
+#ifndef SUPEROS_OLD_BOOTLOADER
   wdt_reset();   // fresh 8 s budget for the flushes + lockout below
+#endif
   eeprom_update_byte(EE_FW_SELECT, fw);
   // Input lockout before the reboot: a key still held through the reset lands
   // in the bootloader's stay-resident window (the TAP line is sampled 40 ms
@@ -140,6 +158,21 @@ void combined_switch_firmware(uint8_t fw) {
       delay(2);
     }
   }
+#ifdef SUPEROS_OLD_BOOTLOADER
+  // Original-bootloader build: reboot with a SOFT reset (re-enter the app
+  // reset vector) instead of a watchdog reset. The original bootloader does
+  // not clear MCUSR/WDRF on entry, so a watchdog reset would trap it in a
+  // reset loop until power-off. A jump to 0x0000 never enters the bootloader
+  // at all: crt0 re-runs and setup() reads the new select byte. The input
+  // lockout above guarantees no key is held, so the re-run cannot bounce
+  // into the bootloader (TAP-at-boot). Peripherals are not hardware-reset,
+  // but both firmwares fully re-init what they use in setup(), and there is
+  // no USB to leave in a bad state.
+  cli();
+  wdt_disable();
+  asm volatile("jmp 0");
+  for (;;) {}
+#else
   // Shut USB and its PLL down CLEANLY before the reset (same sequence as the
   // d650c side's bootloader entry): the host sees a proper disconnect, and
   // the next boot's usb_init() starts the PLL from a cold, known state
@@ -157,5 +190,6 @@ void combined_switch_firmware(uint8_t fw) {
   // reads the new select byte.
   wdt_enable(WDTO_15MS);
   for (;;) {}
+#endif
 }
 #endif
