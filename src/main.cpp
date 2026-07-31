@@ -107,12 +107,20 @@ static bool s_metro_any_note                    = false;  // sustain tie-fill ar
 static bool s_metro_pass_accept                 = false;  // a tap was HELD at its accept tick this pass
 static bool s_metro_bar_started                 = false;  // bar reset reached step 0; writes enabled
 static bool s_metro_step_prewritten             = false;  // upcoming step already holds a next-step NOTE
-// Two per-pattern phases while the session loops. RECORD = the ROM's measure
+// Two per-pattern phases while the session runs. RECORD = the ROM's measure
 // (clicks on, engine voice silent, monitor under the finger), looping until
 // the bar wraps with content. OVERDUB = the pattern has been input: clicks
 // stop, the pattern plays clean, taps still record on top.
+// Session lifecycle: ONE guided pass through the whole unit (every chain
+// member's bar, linked halves counted), then the session AUTO-EXITS at the
+// pass-completing wrap IF anything was recorded. An all-empty pass loops the
+// metronome (the ROM's endless empty measure) until the first real take or
+// a manual exit (transport stop / dial off Pattern Write).
 static bool     s_metro_record_phase            = true;
 static uint16_t s_metro_recorded_mask           = 0;      // patterns that finished a pass with notes
+static uint16_t s_metro_unit_mask               = 0;      // patterns wiped at entry = the session's unit
+static uint8_t  s_metro_pass_bars               = 1;      // bars in one full pass of the unit
+static uint8_t  s_metro_bar_count               = 0;      // bars completed since the pass began
 static bool s_metro_gate_pulse                  = false;
 static uint8_t s_metro_pitch_cv                 = 63;     // final DAC pitch for metronome click
 static uint8_t s_metro_gate_ticks               = 0;      // click length in clock ticks (tempo-scaled)
@@ -310,6 +318,96 @@ static void emit_chain_state() {
   midi_send_chain_state(
     s_chain_active ? s_chain_len : 0, s_chain_pats,
     s_chain_queue_len, s_chain_queued);
+}
+
+// (Re)start a tap-write session. ROM entry semantics: clear the time data,
+// BAR RESET (session starts at step 0, like the d650c's CLEAR-while-running),
+// start the metronome. Pitch streams are preserved so tapped NOTEs consume
+// the user's pitches in stream order.
+// The session's UNIT is everything the playhead will traverse: the entry
+// section, the other half of a linked pair, and every member of an active
+// chain (plus their linked halves). The WHOLE unit is wiped to RECORD --
+// otherwise members with content join in OVERDUB, the clicks cut off there,
+// and after one recorded pass no member ever re-enters RECORD again. A chain
+// session restarts at member 0 (and a linked pair at its A section -- same
+// normalization as transport start), so which members get the metronome does
+// not depend on which slot happened to be playing at the gesture. Patterns
+// pulled in AFTER entry (new chain builds, queued taps) keep their content
+// and join in OVERDUB.
+// Callable MID-SESSION (CLEAR+TIME while active = restart from the top), so
+// it also silences any sounding click / monitor voice before resetting.
+static void metro_session_begin() {
+  midi_metronome_stop();
+  midi_audition_note_off();
+  // The gesture also fires from an accidentally opened TIME_MODE (see the
+  // simultaneous-press note at the gesture); the session runs in NORMAL.
+  engine.SetMode(NORMAL_MODE, false);
+  const bool chain_session = s_chain_active && s_chain_len > 1;
+  if (chain_session) {
+    s_chain_pos       = 0;
+    s_chain_queue_len = 0;
+    chain_intent_reset();
+    engine.SetPattern(chain_entry_start(s_chain_pats[0]), true);
+    emit_chain_state();
+  } else {
+    // Pin the engine to the session start: a pattern switch queued before
+    // the gesture (quick tap / parked pair defer) must not yank the session
+    // to an un-wiped pattern at the bar-1 wrap.
+    chain_intent_reset();
+    engine.SetPattern(engine.pair_linked()
+                          ? Engine::section_a_of(engine.get_patsel())
+                          : engine.get_patsel(),
+                      true);
+  }
+  uint16_t wipe = 0;
+  uint8_t  pass_bars = 0;   // bars in one full traversal (linked halves count)
+  if (chain_session) {
+    for (uint8_t ci = 0; ci < s_chain_len; ++ci) {
+      const uint8_t m = uint8_t(s_chain_pats[ci] & 0x0F);
+      wipe |= uint16_t(1u << m);
+      if (engine.pair_linked(m)) {
+        wipe |= uint16_t((1u << Engine::section_a_of(m)) |
+                         (1u << Engine::section_b_of(m)));
+        pass_bars = uint8_t(pass_bars + 2);
+      } else {
+        pass_bars = uint8_t(pass_bars + 1);
+      }
+    }
+  } else {
+    const uint8_t m = engine.get_patsel();
+    wipe |= uint16_t(1u << m);
+    pass_bars = 1;
+    if (engine.pair_linked(m)) {
+      wipe |= uint16_t((1u << Engine::section_a_of(m)) |
+                       (1u << Engine::section_b_of(m)));
+      pass_bars = 2;
+    }
+  }
+  for (uint8_t p = 0; p < NUM_PATTERNS; ++p) {
+    if (!(wipe & uint16_t(1u << p))) continue;
+    Sequence &ws = engine.pattern[p];
+    for (uint8_t i = 0; i < ws.length; ++i) sequence_set_time_at(ws, i, 0);
+    midi_send_pattern_update(p);
+  }
+  s_metro_unit_mask = wipe;
+  s_metro_pass_bars = pass_bars ? pass_bars : 1;
+  s_metro_bar_count = 0;
+  engine.Reset();                       // bar reset: next tick = step 0
+  s_metro_prev_pat        = engine.get_patsel();
+  s_metro_tail_cv         = 63;   // idle tail starts at the click pitch
+  s_metro_step_tick       = 0;
+  s_metro_press_pending   = false;
+  s_metro_pass_accept     = false;
+  s_metro_note_active     = false;
+  s_metro_any_note        = false;
+  s_metro_bar_started     = false;
+  s_metro_step_prewritten = false;
+  s_metro_monitor_gate    = false;
+  s_metro_gate_pulse      = false;
+  s_metro_gate_ticks      = 0;
+  s_metro_record_phase    = true;
+  s_metro_recorded_mask   = 0;
+  engine.stale = true;   // wiped patterns re-sent in the wipe loop above
 }
 
 // Broadcast track-mode state (SysEx 0x23) for the web editor's Track view.
@@ -1649,7 +1747,11 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                           || s_pat_cleared_hold;
   const bool in_time  = engine.get_mode() == TIME_MODE;
   const bool in_pitch = engine.get_mode() == PITCH_MODE;
-  Leds::Set(TIME_MODE_LED,     in_time  || pat_clr_flash);
+  // Tap-write session indicator: TIME LED blinks for as long as a session is
+  // active, RECORD or OVERDUB. An all-OVERDUB pass is silent, so without
+  // this the user cannot tell a session is still running.
+  Leds::Set(TIME_MODE_LED,     in_time  || pat_clr_flash ||
+                               (s_metronome_active && (clk_count & 4)));
   Leds::Set(PITCH_MODE_LED,    in_pitch || pat_clr_flash);
   // FUNCTION_MODE_LED = "normal mode" indicator. Lit whenever the engine is not
   // in TIME/PITCH submode. Driven off NOT-in-submode so that mode-LED edge
@@ -3293,7 +3395,9 @@ void loop() {
       Leds::Set(ASHARP_KEY_LED, true);
   }
 
-  // Metronome: auto-exit if transport stopped or write mode released
+  // Metronome: auto-exit if transport stopped or write mode released. These
+  // are the ONLY session exits -- CLEAR+TIME while active RESTARTS the
+  // session (see the gesture below), it never toggles off.
   if (s_metronome_active && (!clk_run || !write_mode)) {
     s_metronome_active = false;
     s_metro_gate_pulse = false;
@@ -3396,8 +3500,11 @@ void loop() {
     // step-select made bare step presses open the audition gate).
     const bool overlay_mode = s_dir_mode || s_scale_mode || s_step_sel_mode || s_prob_mode;
     const bool in_poly_edit = (engine.get_mode() == PITCH_MODE && engine.edit_var_ == 2 && engine.poly_active_);
-    if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode && !in_poly_edit && !overlay_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
-    if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod && !overlay_mode) engine.SetMode(PITCH_MODE, !clk_run);
+    // !s_metronome_active: a stray TIME/PITCH press during a tap-write
+    // session would leave NORMAL_MODE and dead-lock the CLEAR+TIME restart
+    // gesture (it requires NORMAL_MODE); the recorder owns the panel.
+    if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode && !in_poly_edit && !overlay_mode && !s_metronome_active) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
+    if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod && !overlay_mode && !s_metronome_active) engine.SetMode(PITCH_MODE, !clk_run);
 
     // Keyboard play mode toggle: FN + PITCH_KEY rising while dial is in Pattern Play.
     if (fn_mod && inputs[PITCH_KEY].rising() && (dial == DialMode::PatternPlay) &&
@@ -3410,56 +3517,46 @@ void loop() {
       }
     }
 
-    // CLEAR + TIME_KEY: toggle metronome tap-write (running + Pattern Write + NORMAL_MODE).
+    // CLEAR + TIME_KEY: START metronome tap-write (running + Pattern Write +
+    // NORMAL_MODE). NOT a toggle: with the session looping endlessly and an
+    // all-OVERDUB pass being silent (no clicks, patterns play normally), the
+    // user cannot HEAR whether a session is still active -- a blind toggle
+    // made every other CLEAR+TIME an invisible no-op exit ("tap-write only
+    // works every second try / after a transport restart"). Now the gesture
+    // always means "record from the top": inactive = begin, active = restart
+    // the session fresh. A session ends on transport stop or leaving
+    // Pattern Write (flick the dial to Pattern Play and back to exit without
+    // stopping).
     // D# guard: with CLEAR + D# held (paste gesture) the diode-less matrix reads a
     // phantom TIME via the dial contact (PH0,PA0) -- same ghost class as the
     // ProcessClearCombos pattern-key guard -- which would start a tap-write
     // session mid-paste and wipe the pattern's time data.
-    if (clear_mod && inputs[TIME_KEY].rising() && !fn_mod &&
+    // Either press order fires: CLEAR held + TIME pressed, or TIME held +
+    // CLEAR pressed. With only the first form, pressing both together could
+    // miss (TIME's edge debouncing in a frame before CLEAR reads held), and
+    // the press was silently swallowed -- "I had to press it twice".
+    const bool metro_gesture =
+        (clear_mod && inputs[TIME_KEY].rising()) ||
+        (inputs[CLEAR_KEY].rising() && inputs[TIME_KEY].held());
+    // TIME_MODE is accepted too: when both keys go down together, TIME's
+    // edge can debounce one frame before CLEAR reads held, opening
+    // TIME_MODE instead of the gesture -- which then blocked the gesture
+    // until TIME_MODE auto-exited ("press twice and wait"). The session
+    // forces the mode back to NORMAL in metro_session_begin().
+    if (metro_gesture && !fn_mod &&
         !inputs[DSHARP_KEY].held() && !inputs[CSHARP_KEY].held() &&
-        clk_run && dial_pattern_write && engine.get_mode() == NORMAL_MODE) {
-      s_metronome_active = !s_metronome_active;
-        if (!s_metronome_active) {
-          // Manual exit (CLEAR+TIME again): the only way a looping session
-          // ends besides transport stop / leaving Pattern Write.
-          s_metro_monitor_gate = false;
-          s_metro_gate_pulse   = false; // never leave a click pulse armed
-          midi_metronome_stop();
-          midi_audition_note_off();
-          midi_send_pattern_update(engine.get_patsel());
-        } else {
-          // ROM entry semantics: clear the time data, BAR RESET (session
-          // starts at step 0, like the d650c's CLEAR-while-running), start
-          // the metronome. Pitch stream is preserved so tapped NOTEs consume
-          // the user's pitches in stream order. ONLY the section the session
-          // starts on is cleared: the other half of a linked pair and any
-          // chained patterns keep their saved content and join the session
-          // in OVERDUB (play clean, taps record on top), so the metronome
-          // stops wherever content already exists. Empty ones stay RECORD.
-          Sequence &seq = engine.get_sequence();
-          const uint8_t len = engine.get_length();
-          for (uint8_t i = 0; i < len; ++i) sequence_set_time_at(seq, i, 0);
-          engine.Reset();                       // bar reset: next tick = step 0
-          s_metro_prev_pat        = engine.get_patsel();
-          s_metro_tail_cv         = 63;   // idle tail starts at the click pitch
-          s_metro_step_tick       = 0;
-          s_metro_press_pending   = false;
-          s_metro_pass_accept     = false;
-          s_metro_note_active     = false;
-          s_metro_any_note        = false;
-          s_metro_bar_started     = false;
-          s_metro_step_prewritten = false;
-          s_metro_monitor_gate    = false;
-          s_metro_record_phase    = true;
-          s_metro_recorded_mask   = 0;
-          engine.stale = true;
-          midi_send_pattern_update(engine.get_patsel());
-        }
+        clk_run && dial_pattern_write &&
+        (engine.get_mode() == NORMAL_MODE || engine.get_mode() == TIME_MODE)) {
+      s_metronome_active = true;
+      metro_session_begin();
     }
 
     // CLEAR rising with a pat key held: clear that pattern (only clear path).
-    // Pattern Write only -- destructive op.
-    if (inputs[CLEAR_KEY].rising() && !fn_mod && !edit_mode && dial_pattern_write) {
+    // Pattern Write only -- destructive op. Suppressed during tap-write:
+    // pattern keys mean SUSTAIN there, and CLEAR is half of the restart
+    // gesture, so CLEAR while sustaining must not wipe a pattern.
+    if (inputs[CLEAR_KEY].rising() && !fn_mod && !edit_mode &&
+        dial_pattern_write && !s_metronome_active) {
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].held()) {
           const uint8_t pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
@@ -3584,50 +3681,76 @@ void loop() {
           if (tp == 0) {
             if (!s_metro_bar_started) {
               s_metro_bar_started = true;        // bar reset landed: recording on
-            } else if (s_metro_record_phase && !s_metro_pass_accept) {
-              // ROM bar validation: a RECORD pass none of whose taps was
-              // still held at its accept tick ends as an EMPTY bar -- stale
-              // writes are discarded and the metronome keeps looping,
-              // exactly like the ROM's endless empty-measure record loop.
-              Sequence &pseq = engine.pattern[s_metro_prev_pat];
-              if (pseq.note_count()) {
-                for (uint8_t i = 0; i < pseq.length; ++i)
-                  sequence_set_time_at(pseq, i, 0);
-                engine.stale = true;
-                midi_send_pattern_update(s_metro_prev_pat);
+            } else {
+              if (s_metro_record_phase && !s_metro_pass_accept) {
+                // ROM bar validation: a RECORD pass none of whose taps was
+                // still held at its accept tick ends as an EMPTY bar -- stale
+                // writes are discarded and the metronome keeps looping,
+                // exactly like the ROM's endless empty-measure record loop.
+                Sequence &pseq = engine.pattern[s_metro_prev_pat];
+                if (pseq.note_count()) {
+                  for (uint8_t i = 0; i < pseq.length; ++i)
+                    sequence_set_time_at(pseq, i, 0);
+                  engine.stale = true;
+                  midi_send_pattern_update(s_metro_prev_pat);
+                }
+              }
+              // One guided pass through the whole unit, then DONE: at the
+              // wrap that completes a full pass (every chain member's bar,
+              // linked halves counted), the session AUTO-EXITS if anything
+              // was recorded -- the take is finished, the metronome and the
+              // TIME LED stop, and the patterns play what was tapped. An
+              // all-empty pass keeps looping with the metronome so the
+              // clicks guide until the first real take (the ROM's endless
+              // empty measure). Runs AFTER the bar validation above so a
+              // discarded all-stale take does not count as recorded.
+              if (++s_metro_bar_count >= s_metro_pass_bars) {
+                s_metro_bar_count = 0;
+                bool recorded = false;
+                for (uint8_t p = 0; p < NUM_PATTERNS; ++p)
+                  if ((s_metro_unit_mask & uint16_t(1u << p)) &&
+                      engine.pattern[p].note_count()) { recorded = true; break; }
+                if (recorded) {
+                  s_metronome_active   = false;
+                  s_metro_monitor_gate = false;
+                  s_metro_gate_pulse   = false;
+                  s_metro_gate_ticks   = 0;
+                  midi_metronome_stop();
+                  midi_audition_note_off();
+                }
               }
             }
-            // Chained patterns and the other half of a linked pair are NOT
-            // cleared: whatever content they carry plays clean in OVERDUB
-            // (the phase computation below sees their notes), and taps still
-            // record on top. Revisited patterns keep LOOPING (the ROM stops
-            // after one measure; users asked for an endless session that
-            // only CLEAR+TIME or transport stop ends). Later passes preserve
-            // earlier ones -- see the rest-skip in the tick decision below.
-            s_metro_prev_pat    = cur_pat;
-            s_metro_pass_accept = false;   // fresh validation window per pass
-            // Phase for the pass that starts NOW: a pattern that has content
-            // graduates to OVERDUB (clicks off, engine voice on); an empty
-            // one stays in RECORD (metronome keeps guiding).
-            if (engine.get_sequence().note_count())
-              s_metro_recorded_mask |= uint16_t(1u << cur_pat);
-            else
-              s_metro_recorded_mask &= uint16_t(~(1u << cur_pat));
-            s_metro_record_phase =
-                !(s_metro_recorded_mask & uint16_t(1u << cur_pat));
-            if (!s_metro_record_phase) {
-              // An OVERDUB pass begins: the pattern is the voice. A finger
-              // still held from the recording bar must not carry over -- the
-              // tie chain would write TIEs over this pattern's rests
-              // (permanently extending its saved notes), and the monitor
-              // voice would override the engine's pitch while both gate.
-              // Holds still tie across RECORD wraps (a linked pair being
-              // recorded is one 64-step pattern), only content-bearing
-              // passes cut them.
-              s_metro_note_active = false;
-              if (s_metro_monitor_gate) {
-                s_metro_monitor_gate = false;
-                midi_audition_note_off();
+            if (s_metronome_active) {
+              // Patterns pulled in AFTER entry (new chain builds, queued
+              // taps) keep their content and play clean in OVERDUB (the
+              // phase computation below sees their notes), taps recording
+              // on top. Later passes preserve earlier ones -- see the
+              // rest-skip in the tick decision below.
+              s_metro_prev_pat    = cur_pat;
+              s_metro_pass_accept = false;   // fresh validation window per pass
+              // Phase for the pass that starts NOW: a pattern that has
+              // content graduates to OVERDUB (clicks off, engine voice on);
+              // an empty one stays in RECORD (metronome keeps guiding).
+              if (engine.get_sequence().note_count())
+                s_metro_recorded_mask |= uint16_t(1u << cur_pat);
+              else
+                s_metro_recorded_mask &= uint16_t(~(1u << cur_pat));
+              s_metro_record_phase =
+                  !(s_metro_recorded_mask & uint16_t(1u << cur_pat));
+              if (!s_metro_record_phase) {
+                // An OVERDUB pass begins: the pattern is the voice. A finger
+                // still held from the recording bar must not carry over --
+                // the tie chain would write TIEs over this pattern's rests
+                // (permanently extending its saved notes), and the monitor
+                // voice would override the engine's pitch while both gate.
+                // Holds still tie across RECORD wraps (a linked pair being
+                // recorded is one 64-step pattern), only content-bearing
+                // passes cut them.
+                s_metro_note_active = false;
+                if (s_metro_monitor_gate) {
+                  s_metro_monitor_gate = false;
+                  midi_audition_note_off();
+                }
               }
             }
           }
