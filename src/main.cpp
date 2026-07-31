@@ -267,6 +267,19 @@ static void emit_chain_state();
 static uint8_t chain_entry_start(uint8_t pat) {
   return engine.pair_linked(pat) ? Engine::section_a_of(pat) : pat;
 }
+// Chain-wide A/B mode: the chain's FIRST member owns the link flag for the
+// whole chain, so A+B means "every member plays A then B" (the panel's A+B
+// LEDs are a chain mode indicator, not a per-member property). Per-member
+// flags still work for patterns played alone.
+static bool chain_ab_mode() {
+  return s_chain_active && s_chain_len > 1 &&
+         engine.pair_linked(uint8_t(s_chain_pats[0] & 0x0F));
+}
+// Section-bank browse view while a chain is running: 0/1 = pattern keys and
+// A/B LEDs show that bank without touching the playing chain; 0xFF = follow
+// the playing pattern. Only meaningful while a chain is live (see
+// ProcessDefault); reset whenever the chain ends or the transport stops.
+static uint8_t s_section_view = 0xFF;
 static void store_chain_on(uint8_t pat, const uint8_t *pats, uint8_t len) {
   Sequence &s = engine.pattern[pat & 0x0F];
   s.reserved[4] = uint8_t(len & 0x07);
@@ -362,10 +375,11 @@ static void metro_session_begin() {
   uint16_t wipe = 0;
   uint8_t  pass_bars = 0;   // bars in one full traversal (linked halves count)
   if (chain_session) {
+    const bool chain_ab = chain_ab_mode();  // chain-wide A/B: every member A+B
     for (uint8_t ci = 0; ci < s_chain_len; ++ci) {
       const uint8_t m = uint8_t(s_chain_pats[ci] & 0x0F);
       wipe |= uint16_t(1u << m);
-      if (engine.pair_linked(m)) {
+      if (chain_ab || engine.pair_linked(m)) {
         wipe |= uint16_t((1u << Engine::section_a_of(m)) |
                          (1u << Engine::section_b_of(m)));
         pass_bars = uint8_t(pass_bars + 2);
@@ -1392,8 +1406,12 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     // linked pair's home is its A section, so taps, queues and chain builds
     // target section A while one is selected; an unlinked selection keeps its
     // real section.
-    const uint8_t bank = engine.pair_linked() ? 0
+    const bool chain_live = s_chain_active && s_chain_len > 1 && clk_run;
+    if (!chain_live) s_section_view = 0xFF;   // browse view only exists mid-chain
+    uint8_t bank = (engine.pair_linked() || chain_ab_mode())
+                       ? 0
                        : uint8_t(engine.get_patsel() >> 3);
+    if (chain_live && s_section_view != 0xFF) bank = s_section_view;
     const bool browsing_other_group = clk_run && (s_display_group != engine.get_group());
 
     // ── LEDs ──
@@ -1413,11 +1431,12 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       }
       Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
     }
-    // Section indicator. Unlinked: the selected section's LED alone. Linked
-    // (spec 1-a): BOTH lit, and the section currently playing / being written
-    // to blinks, so during a performance you can see which half of the pattern
-    // is running without counting steps.
-    if (engine.pair_linked()) {
+    // Section indicator. Unlinked: the selected section's LED alone (the
+    // BROWSED bank while section-browsing a live chain). Linked -- per
+    // pattern or chain-wide (spec 1-a): BOTH lit, and the section currently
+    // playing / being written to blinks, so during a performance you can see
+    // which half of the pattern is running without counting steps.
+    if (engine.pair_linked() || chain_ab_mode()) {
       const bool on_b  = Engine::is_section_b(engine.get_patsel());
       const bool blink = bool(clk_run ? (clk_count < 12) : ((millis() >> 8) & 1));
       Leds::Set(ACCENT_KEY_LED, on_b ? true  : blink);
@@ -1460,6 +1479,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
           if (s_ab_link_pat != 0xff) {
             engine.set_pair_linked(s_ab_link_pat, s_ab_prev_link);
             engine.stale = true;
+            midi_send_pattern_update(Engine::section_a_of(s_ab_link_pat));
             s_ab_link_pat = 0xff;
           }
           s_chain_hold_key        = 0xff;  // cancel single-key tap/hold tracking
@@ -1709,35 +1729,68 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       }
     }
 
-    // Bank switch — always clears chain.  Skipped when CLEAR is held so
-    // CLEAR+ACCENT (randomize) and CLEAR+SLIDE combos can take the edge, and
-    // during a tap-write session (its keys belong to the recorder).
-    // Section select (spec 1-a). One button alone picks that section and
-    // UNLINKS the pair; pressing the other while the first is held LINKS them
-    // so the pattern edits and plays A-then-B in serial. The link lives on the
-    // pattern, so reselecting it later comes back linked.
+    // Section buttons. Skipped when CLEAR is held so CLEAR+ACCENT
+    // (randomize) and CLEAR+SLIDE combos can take the edge, and during a
+    // tap-write session (its keys belong to the recorder).
+    // No LIVE chain -- section select (spec 1-a): one button alone picks
+    // that section and UNLINKS the pair; pressing the other while the first
+    // is held LINKS them so the pattern edits and plays A-then-B in serial.
+    // The link lives on the pattern, so reselecting it later comes back
+    // linked. Selecting a section clears any (stopped) chain.
+    // LIVE chain -- the chain-wide A/B branch below: buttons toggle the
+    // chain's A/B mode or browse the other bank, never killing the chain.
     const bool acc_edge = inputs[ACCENT_KEY].rising() && !clear_mod && !s_metronome_active;
     const bool sld_edge = inputs[SLIDE_KEY].rising()  && !clear_mod && !s_metronome_active;
     if (acc_edge || sld_edge) {
       const bool link = (acc_edge && inputs[SLIDE_KEY].held()) ||
                         (sld_edge && inputs[ACCENT_KEY].held());
-      if (link) {
-        // Remember the pre-link state: a pattern-key tap while A+B stays held
-        // turns this gesture into a chain build and restores this.
-        s_ab_link_pat  = engine.get_patsel();
-        s_ab_prev_link = engine.pair_linked(s_ab_link_pat);
+      if (chain_live) {
+        // A LIVE chain is never killed or redirected by the section buttons.
+        // A+B held = chain-wide A/B mode ON, owned by the chain's first
+        // member: every member then plays A then B. A single press turns
+        // the mode OFF when it is on; otherwise it BROWSES that bank -- the
+        // pattern keys and LEDs show it so a pattern there can be picked or
+        // chained, while the chain keeps playing untouched.
+        const uint8_t owner = uint8_t(s_chain_pats[0] & 0x0F);
+        if (link) {
+          // Builder-restore bookkeeping: a pattern-key tap while A+B stays
+          // held becomes a chain build and reverts this link.
+          s_ab_link_pat  = owner;
+          s_ab_prev_link = engine.pair_linked(owner);
+          engine.set_pair_linked(owner, true);
+          engine.stale   = true;
+          s_section_view = 0xFF;
+          // The flag lives on the owner's A section: push that blob so the
+          // web editor restacks its chain view.
+          midi_send_pattern_update(Engine::section_a_of(owner));
+        } else if (engine.pair_linked(owner)) {
+          engine.set_pair_linked(owner, false);
+          engine.stale   = true;
+          s_section_view = 0xFF;
+          midi_send_pattern_update(Engine::section_a_of(owner));
+        } else {
+          s_section_view = acc_edge ? 0 : 1;
+        }
+        emit_chain_state();
+      } else {
+        if (link) {
+          // Remember the pre-link state: a pattern-key tap while A+B stays
+          // held turns this gesture into a chain build and restores this.
+          s_ab_link_pat  = engine.get_patsel();
+          s_ab_prev_link = engine.pair_linked(s_ab_link_pat);
+        }
+        s_chain_active     = false; s_chain_len       = 0;
+        s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
+        s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
+        chain_intent_reset();
+        engine.set_pair_linked(engine.get_patsel(), link);
+        // Linked entry always lands on A: notes 1-64 fill the A section first.
+        const uint8_t want = (link || acc_edge) ? Engine::section_a_of(engine.get_patsel())
+                                                : Engine::section_b_of(engine.get_patsel());
+        engine.SetPattern(want, !clk_run);
+        if (!clk_run) midi_send_active_pattern(engine.get_patsel());
+        emit_chain_state();
       }
-      s_chain_active     = false; s_chain_len       = 0;
-      s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
-      s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
-      chain_intent_reset();
-      engine.set_pair_linked(engine.get_patsel(), link);
-      // Linked entry always lands on A: notes 1-64 fill the A section first.
-      const uint8_t want = (link || acc_edge) ? Engine::section_a_of(engine.get_patsel())
-                                              : Engine::section_b_of(engine.get_patsel());
-      engine.SetPattern(want, !clk_run);
-      if (!clk_run) midi_send_active_pattern(engine.get_patsel());
-      emit_chain_state();
     }
     break;
   }
@@ -3270,7 +3323,11 @@ void loop() {
     const bool    wrapped = (tp == 0 && s_chain_prev_tp != 0 && s_chain_prev_tp != 0xFF);
     s_chain_prev_tp = tp;
 
-    const bool cur_linked = engine.pair_linked(cur);
+    // Chain-wide A/B: the first member's link flag makes EVERY member play
+    // A then B; a member's own flag still counts (pattern linked before it
+    // was chained).
+    const bool chain_ab   = chain_ab_mode();
+    const bool cur_linked = engine.pair_linked(cur) || chain_ab;
     if (wrapped) {
       if (s_chain_expect != 0xFF && cur == s_chain_expect) {
         if (s_chain_expect_handoff && s_chain_queue_len > 0) {
@@ -3326,7 +3383,8 @@ void loop() {
         next_pat = s_chain_pats[next_pos];
         // Linked entries are entered at their A section regardless of which
         // section the chain named, so every pass plays A then B.
-        if (engine.pair_linked(next_pat)) next_pat = Engine::section_a_of(next_pat);
+        if (chain_ab || engine.pair_linked(next_pat))
+          next_pat = Engine::section_a_of(next_pat);
       }
       s_chain_expect         = next_pat;
       s_chain_expect_pos     = next_pos;

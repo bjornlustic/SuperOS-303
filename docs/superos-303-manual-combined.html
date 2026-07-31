@@ -313,8 +313,10 @@
     <p class="docs-body">
       Each pattern slot has two sections of up to 32 steps each. Press <kbd class="docs-key">ACCENT</kbd>
       for section A or <kbd class="docs-key">SLIDE</kbd> for section B. Stopped, the switch is immediate;
-      running, it takes effect at the next wrap. Selecting a section clears any active chain, and
-      selecting one section alone unlinks a linked pair.
+      running, it takes effect at the next wrap. Selecting a section clears any chain that is not
+      playing, and selecting one section alone unlinks a linked pair. While a chain is playing the
+      section buttons never interrupt it; they control chain A/B mode instead (Chaining Patterns,
+      section 3).
     </p>
 
     <h3 class="man-sub">Linking A + B: 64-Step Patterns</h3>
@@ -468,6 +470,29 @@
       <li>Pressing two pattern keys together, or holding one and tapping another, builds a new chain from the range between them. With a chain already playing, the new chain is queued and takes over at the chain boundary.</li>
     </ul>
 
+    <h3 class="man-sub">Chain A/B Mode</h3>
+    <p class="docs-body">
+      While a chain is playing, the section buttons never stop or redirect it. Hold
+      <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> together to turn chain
+      A/B mode on: every member of the chain plays its A section, then its B section, before the
+      chain advances. Both section LEDs light with the playing section blinking, exactly as on a
+      linked pair. The mode is stored as the link flag on the chain's first member, so a saved chain
+      comes back with it. Members that were already linked on their own keep playing A then B either
+      way. With the mode on, a single press of <kbd class="docs-key">ACCENT</kbd> or
+      <kbd class="docs-key">SLIDE</kbd> turns it off. Tapping pattern keys while
+      <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> are still held builds a
+      new chain as usual and reverts the link.
+    </p>
+
+    <h3 class="man-sub">Browsing While a Chain Plays</h3>
+    <p class="docs-body">
+      With chain A/B mode off, pressing <kbd class="docs-key">ACCENT</kbd> or
+      <kbd class="docs-key">SLIDE</kbd> alone while a chain is playing browses that bank: the pattern
+      keys and section LEDs show bank A or B so a pattern there can be picked or chained, while the
+      chain keeps playing untouched. The view returns to the playing pattern when the chain ends or
+      the sequencer stops.
+    </p>
+
     <h3 class="man-sub">Saving a Chain with a Pattern</h3>
     <p class="docs-body">
       A chain can be stored on its first pattern so it comes back later:
@@ -524,10 +549,12 @@
       303's TAP timing method, with the original's sound: a short click on every 8th note and a lower
       click marking the start of each bar. The recorder's timing windows are measured cycle-exact
       against the original mask ROM, so taps land on the same steps they would on a stock 303.
-      Press <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">TIME MODE</kbd> to switch it on:
-      the current section's time data is cleared, its pitches are kept and consumed in order as you
-      tap, and the bar restarts from step 1. Only that section is cleared: the other half of a linked
-      pair and any chained patterns keep their saved notes.
+      Press <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">TIME MODE</kbd> (either order)
+      to start a take: the rhythm of the whole take is cleared (the current section, the other
+      half of a linked pair, and every member of an active chain) while all pitches are kept and
+      consumed in order as you tap. The bar restarts from step 1 (a linked pair always starts on its
+      A section, a chain at its first member) and the <kbd class="docs-key">TIME MODE</kbd> LED
+      blinks while the take is running.
     </p>
     <ul class="docs-list">
       <li>Tap <kbd class="docs-key">WRITE/NEXT</kbd> on a beat to write a note there; a tap in the later part of a step aims at the next step's downbeat, so slightly early taps land where you meant them.</li>
@@ -538,21 +565,26 @@
       <li><strong>Sustain</strong>: hold any pattern key <kbd class="docs-key">1</kbd>&ndash;<kbd class="docs-key">8</kbd> and the gaps between notes fill with ties instead of rests.</li>
     </ul>
 
-    <h3 class="man-sub">An Endless Session</h3>
+    <h3 class="man-sub">One Guided Pass</h3>
     <p class="docs-body">
-      Unlike the original, which stops after one measure, the session loops until you press
-      <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">TIME MODE</kbd> again, stop the
-      sequencer, or leave Pattern Write. While the pattern is empty the metronome keeps clicking and
-      the voice stays silent (<strong>record</strong>). Once a bar wraps with notes in it, the clicks
-      stop and the pattern plays back cleanly while your taps keep recording on top
-      (<strong>overdub</strong>). Emptying the pattern brings the metronome back. The other section
-      of a linked pair and chained patterns join the session with their saved notes intact: sections
-      with content play clean in overdub, and the metronome only clicks through empty ones.
+      A take is one guided pass through everything it covers: each empty bar clicks along in
+      <strong>record</strong> (metronome on, voice silent) and loops until you tap something real
+      into it, and once a bar has notes it plays back cleanly while your taps keep recording on top
+      (<strong>overdub</strong>). When a full pass has gone by (every chain member's bar, both
+      halves of a linked pair) and something was recorded, the take ends by itself: the patterns
+      simply play what you tapped, and members you never tapped are left empty. A pass where nothing
+      was tapped keeps looping with the metronome until the first real take.
+    </p>
+    <p class="docs-body">
+      <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">TIME MODE</kbd> during a take is not
+      a toggle: it restarts the take from the top. Stopping the sequencer or leaving Pattern Write
+      ends the take immediately. Patterns pulled in after the take started (a new chain build, a
+      queued pattern) keep their saved notes and join in overdub.
     </p>
     <div class="man-note">
       <strong>Note</strong>
-      During a session the pattern keys belong to the recorder (sustain), and the
-      <kbd class="docs-key">CLEAR</kbd> transform combos are disabled until the session ends.
+      During a take the pattern keys belong to the recorder (sustain), and the
+      <kbd class="docs-key">CLEAR</kbd> transform combos are disabled until it ends.
     </div>
   </section>
 

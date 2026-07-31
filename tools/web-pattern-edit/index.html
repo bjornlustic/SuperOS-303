@@ -2278,10 +2278,15 @@
   // between the halves.
   function displayChainList() {
     var base = (patChain.length > 1) ? patChain : [activePat];
+    // Chain-wide A/B (hardware rule): the chain's FIRST member owns the link
+    // flag for the whole chain, so every member expands to A,B when it is
+    // set; a member's own flag still counts for patterns linked before they
+    // were chained.
+    var chainAB = (patChain.length > 1) && pairLinked(activeGroup, patChain[0]);
     var out = [];
     for (var i = 0; i < base.length; i++) {
       var p = base[i] & 15;
-      if (pairLinked(activeGroup, p)) { out.push(p & 7); out.push((p & 7) + 8); }
+      if (chainAB || pairLinked(activeGroup, p)) { out.push(p & 7); out.push((p & 7) + 8); }
       else out.push(p);
     }
     return out;
@@ -3815,6 +3820,12 @@
         } else if (activeGroup === g && (pat & 7) === (activePat & 7)) {
           // Partner section of the on-screen slot: the A/B link flag or the
           // other half's contents changed, and the pair view shows both.
+          renderGrid();
+        } else if (activeGroup === g && patChain.length > 1 &&
+                   patChain.some(function(cp) { return (cp & 7) === (pat & 7); })) {
+          // A chain member (or its partner section) changed: the chain view
+          // shows every member, and the first member's blob carries the
+          // chain-wide A/B flag that restacks the whole view.
           renderGrid();
         }
       }

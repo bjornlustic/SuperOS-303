@@ -63,30 +63,36 @@ def build_sysex(page, page_data):
     return bytes(msg)
 
 
+# 0x1F000..0x1FDFF is reserved for the RUNNING bootloader (currently ends
+# ~0x1F7B3; the flash service owns 0x1FE00+). Writing any of it from the
+# bootloader bricks the device (no ISP to recover). Never emit those pages.
+BOOT_FIRST_PAGE = 0x1F000 // PAGE_SIZE
+BOOT_LAST_PAGE = 0x1FDFF // PAGE_SIZE
+
+
+def emit(ih, outbuf):
+    """Emit write-page messages for only the pages the image actually
+    covers. Gap pages (e.g. between the app and the 0x1FE00 flash service)
+    are never sent: writing them as 0xFF would erase the flash arena and
+    the running bootloader."""
+    pages = set()
+    for start, stop in ih.segments():
+        pages.update(range(start // PAGE_SIZE, (stop - 1) // PAGE_SIZE + 1))
+
+    for page in sorted(pages):
+        if BOOT_FIRST_PAGE <= page <= BOOT_LAST_PAGE:
+            sys.stderr.write(
+                "hex2sysex: skipping page 0x%X (running bootloader; writing "
+                "it over MIDI would brick the device)\n" % page)
+            continue
+        data = ih.tobinarray(start=page * PAGE_SIZE, size=PAGE_SIZE)
+        outbuf.write(build_sysex(page, data))
+
+    outbuf.write(bytes([SYSEX_START, MFR_ID, CMD_EXECUTE, SYSEX_END]))
+
+
 def process(in_file, outbuf):
-
-    ih = IntelHex(in_file)
-
-    maxaddr = ih.maxaddr()
-
-    pages = (maxaddr + PAGE_SIZE) // PAGE_SIZE
-
-    for page in range(pages):
-
-        addr = page * PAGE_SIZE
-        data = ih.tobinarray(start=addr, size=PAGE_SIZE)
-
-        msg = build_sysex(page, data)
-
-        outbuf.write(msg)
-
-    msg = [
-        SYSEX_START,
-        MFR_ID,
-        CMD_EXECUTE,
-        SYSEX_END
-    ]
-    outbuf.write(bytes(msg))
+    emit(IntelHex(in_file), outbuf)
 
 
 def main():

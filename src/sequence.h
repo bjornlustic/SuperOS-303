@@ -59,9 +59,8 @@ static constexpr int NUM_PATTERNS = 16; // patterns per bank
 // 5-6 = III, 7 = IV), which is what the stock firmware has always done. Each
 // group holds 8 patterns, each with an A and a B section -> 16 slots per
 // group, 64 slots total.
-// NOTE: the FRAM build is where 7 groups / 112 slots is planned -- see the
-// "Planned for the FRAM build" note in .claude/CLAUDE.md. It does not fit the
-// internal-flash arena at 64 steps.
+// NOTE: 7 groups / 112 slots is planned for the FRAM build only; it does not
+// fit the internal-flash arena at 64 steps.
 static constexpr int NUM_BANKS = 4;     // banks 0..3 (was NUM_GROUPS)
 static constexpr int NUM_GROUPS = NUM_BANKS; // back-compat alias
 // Each of the 64 slots (bank*16 + pat) holds 3 variations. Variation 1 is the
