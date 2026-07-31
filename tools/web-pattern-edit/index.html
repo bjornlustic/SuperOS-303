@@ -597,7 +597,7 @@
       <div class="group-inner">
         <button class="btn" id="btnFwSwitch" disabled>Switch firmware</button>
         <button class="btn" id="btnBootloader" disabled
-          title="Reboot the unit into the SysEx bootloader (no power-on button combo needed), then send the -update.syx file from SysEx Librarian / MIDI-OX">Update OS&#8230;</button>
+          title="Pick a *-update.syx file: the unit reboots into the SysEx bootloader and the editor sends the update itself (no power-on button combo, no external SysEx tool)">Update OS&#8230;</button>
         <span id="fwModeStatus">Firmware: unknown</span>
       </div>
     </div>
@@ -5518,23 +5518,163 @@
     showErrorToast('Switching to ' + goingTo + '…');
   };
 
-  // 0x4A: reboot into the SysEx bootloader (handled by BOTH firmware sides;
-  // the bootloader stays resident via the GPIOR0 magic, no power-on button
-  // combo). No reply follows; the unit then only accepts the update protocol
-  // (page writes + 0x02 jump-to-app), so drop to 'unknown'.
+  // ── In-editor OS update ─────────────────────────────────────────────
+  // Full flow, no external SysEx tool: pick a *-update.syx, validate every
+  // page against the same XOR checksum the bootloader verifies (a corrupt
+  // file must never start: the bootloader halts on the first bad page until
+  // power cycle), reboot the unit into the SysEx bootloader (0x4A, handled
+  // by BOTH firmware sides; pending edits are flushed first), wait for it to
+  // come back (over USB it re-enumerates as "SuperOS-303 Bootloader"; over
+  // DIN the interface port never changes), then stream the messages with a
+  // fixed gap -- the bootloader has no per-page ACK, so pacing is the
+  // throttle, same as SysEx Librarian's. The file's trailing 0x02 reboots
+  // into the new firmware and the remembered-port reconnect takes over.
+  var OS_PAGE_GAP_MS   = 50;
+  var OS_BOOT_WAIT_MS  = 12000; // give USB re-enumeration time before giving up
+  var OS_BOOT_GRACE_MS = 2500;  // settle time before the first page
+  var osUpd = null;             // active update: {msgs, pages, name, origOut, port, sent, t0}
+
+  function osUpdateParse(buf) {
+    var d = new Uint8Array(buf), msgs = [], pages = 0, exec = false, i = 0;
+    while (i < d.length) {
+      if (d[i] !== 0xF0) return { err: 'stray byte 0x' + d[i].toString(16) + ' at offset ' + i };
+      var j = i + 1;
+      while (j < d.length && d[j] !== 0xF7) {
+        if (d[j] & 0x80) return { err: 'status byte inside a message at offset ' + j };
+        j++;
+      }
+      if (j >= d.length) return { err: 'unterminated SysEx message' };
+      var m = d.subarray(i, j + 1);
+      if (m.length < 4 || m[1] !== 0x7D) return { err: 'not a SuperOS update file' };
+      var cmd = m[2];
+      if (cmd === 0x01) {
+        if (m.length < 11) return { err: 'truncated page message' };
+        var page = (m[3] << 7) | m[4];
+        var plen = (m[5] << 7) | m[6];
+        if (page >= 0x1F0 && page <= 0x1FD)
+          return { err: 'file writes bootloader page 0x' + page.toString(16).toUpperCase() + '; refusing' };
+        if (9 + plen + 1 !== m.length) return { err: 'bad packed length on page 0x' + page.toString(16).toUpperCase() };
+        // Decode the 7-bit groups and XOR-verify, exactly as bootload.c does.
+        var ck = ((m[7] & 0x0F) << 4) | (m[8] & 0x0F);
+        var k = 9, end = 9 + plen;
+        while (k < end) {
+          var msb = m[k++];
+          for (var b = 0; b < 7 && k < end; b++, k++)
+            ck ^= m[k] | (((msb >> b) & 1) << 7);
+        }
+        if (ck) return { err: 'checksum mismatch on page 0x' + page.toString(16).toUpperCase() + ' (corrupt file?)' };
+        pages++;
+      } else if (cmd === 0x02) {
+        exec = true;
+      } else {
+        return { err: 'unexpected command 0x' + cmd.toString(16) + ' in file' };
+      }
+      msgs.push(new Uint8Array(m));
+      i = j + 1;
+    }
+    if (!pages) return { err: 'no page-write messages in file' };
+    if (!exec)  return { err: 'file has no trailing run-app (0x02) message' };
+    return { msgs: msgs, pages: pages };
+  }
+
+  function osUpdateFindPort() {
+    if (!midiAccess || !osUpd) return null;
+    var outs = Array.from(midiAccess.outputs.values());
+    // USB: the bootloader enumerates as its own device.
+    var boot = outs.find(function(p) { return /bootloader/i.test(p.name || ''); });
+    if (boot) return boot;
+    // DIN: the MIDI interface port never went away; after the settle time,
+    // keep using the output the update started on.
+    if (Date.now() - osUpd.t0 >= OS_BOOT_GRACE_MS && osUpd.origOut) {
+      return outs.find(function(p) {
+        return p.id === osUpd.origOut.id || (p.name && p.name === osUpd.origOut.name);
+      }) || null;
+    }
+    return null;
+  }
+
+  function osUpdateStatus(msg) {
+    document.getElementById('fwModeStatus').textContent = msg;
+    showErrorToast(msg);
+  }
+
+  function osUpdateTick() {
+    if (!osUpd) return;
+    if (!osUpd.port) {
+      osUpd.port = osUpdateFindPort();
+      if (!osUpd.port) {
+        if (Date.now() - osUpd.t0 > OS_BOOT_WAIT_MS) {
+          osUpdateStatus('Update aborted: bootloader never appeared');
+          log('OS update: no bootloader port after ' + OS_BOOT_WAIT_MS + ' ms. ' +
+              'The unit may be waiting in the bootloader (four LEDs lit): ' +
+              'send the file with SysEx Librarian / MIDI-OX or power cycle.', 'log-err');
+          osUpd = null;
+          return;
+        }
+        setTimeout(osUpdateTick, 250);
+        return;
+      }
+      log('OS update: sending via "' + (osUpd.port.name || osUpd.port.id) + '"', 'log-syx');
+    }
+    if (osUpd.sent >= osUpd.msgs.length) {
+      var name = osUpd.name;
+      osUpd = null;
+      osUpdateStatus('Update sent - the unit is rebooting');
+      log('OS update: ' + name + ' sent completely; the unit reboots into the new firmware', 'log-ack');
+      return;
+    }
+    try {
+      osUpd.port.send(osUpd.msgs[osUpd.sent]);
+    } catch (e) {
+      osUpdateStatus('Update aborted: ' + e.message);
+      log('OS update: send failed at message ' + (osUpd.sent + 1) + '/' + osUpd.msgs.length +
+          ': ' + e.message + '. The unit is still in the bootloader; retry Update OS or ' +
+          'send the file with SysEx Librarian.', 'log-err');
+      osUpd = null;
+      return;
+    }
+    osUpd.sent++;
+    if (osUpd.sent === osUpd.msgs.length || osUpd.sent % 16 === 0)
+      osUpdateStatus('Updating OS: ' + Math.floor(100 * osUpd.sent / osUpd.msgs.length) + '%');
+    setTimeout(osUpdateTick, OS_PAGE_GAP_MS);
+  }
+
   document.getElementById('btnBootloader').onclick = function() {
-    if (!midiOut || deviceMode === 'unknown') return;
-    if (!confirm('Reboot this unit into the firmware-update bootloader?\n\n' +
-                 'The four mode LEDs will light and the unit will wait for a ' +
-                 '*-update.syx file (send it from SysEx Librarian / MIDI-OX, throttled). ' +
-                 'Pending edits are saved first. To exit without updating, power cycle.')) return;
-    clearCfgReadRetry();
-    expectDump = 0; bulkNextPat = -1;
-    hideSyncOverlay();
-    sendSysex(new Uint8Array([0x7d, 0x4a]));
-    setDeviceMode('unknown');
-    log('→ Rebooting into the SysEx bootloader (0x4A)', 'log-syx');
-    showErrorToast('Entering bootloader…');
+    if (!midiOut || deviceMode === 'unknown' || osUpd) return;
+    var fi = document.createElement('input');
+    fi.type = 'file';
+    fi.accept = '.syx';
+    fi.onchange = function() {
+      var f = fi.files && fi.files[0];
+      if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function() {
+        var parsed = osUpdateParse(rd.result);
+        if (parsed.err) {
+          showErrorToast('Not sent: ' + parsed.err);
+          log('OS update: rejected ' + f.name + ': ' + parsed.err, 'log-err');
+          return;
+        }
+        if (!confirm('Update the firmware with "' + f.name + '"?\n\n' +
+                     parsed.pages + ' flash pages will be written (about ' +
+                     Math.ceil(parsed.pages * OS_PAGE_GAP_MS / 1000) + ' seconds).\n' +
+                     'Pending edits are saved first, then the unit reboots into the ' +
+                     'bootloader and the file is sent automatically.\n\n' +
+                     'Do not power off the unit while the update runs.')) return;
+        clearCfgReadRetry();
+        expectDump = 0; bulkNextPat = -1;
+        hideSyncOverlay();
+        osUpd = { msgs: parsed.msgs, pages: parsed.pages, name: f.name,
+                  origOut: midiOut, port: null, sent: 0, t0: Date.now() };
+        sendSysex(new Uint8Array([0x7d, 0x4a]));
+        setDeviceMode('unknown');
+        log('→ 0x4A: rebooting into the SysEx bootloader for ' + f.name, 'log-syx');
+        osUpdateStatus('Waiting for the bootloader…');
+        setTimeout(osUpdateTick, OS_BOOT_GRACE_MS);
+      };
+      rd.readAsArrayBuffer(f);
+    };
+    fi.click();
   };
 
   // ── D650C native pattern store backup/restore (SysEx 0x46/0x47/0x48) ────

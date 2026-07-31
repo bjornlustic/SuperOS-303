@@ -1129,6 +1129,14 @@
       Updates are one SysEx file over MIDI; no programmer needed. Release files are self-contained,
       so any SuperOS-303 CPU with the bootloader can take them.
     </p>
+    <h3 class="man-sub">From the Web Editor (Recommended)</h3>
+    <p class="docs-body">
+      With the unit connected, press <strong>Update OS&hellip;</strong> in the web editor and pick the
+      release <code class="docs-code">.syx</code> file. The editor checks the file, saves pending
+      edits, reboots the unit into the bootloader, and sends the update by itself; the unit restarts
+      into the new firmware when it finishes. No button combo and no other software needed.
+    </p>
+    <h3 class="man-sub">With a SysEx Tool</h3>
     <ol class="docs-ordered-list">
       <li>Enter the bootloader: hold <kbd class="docs-key">TAP</kbd> (WRITE/NEXT) while powering on, or send SysEx <code class="docs-code">F0 7D 4A F7</code> to the running unit (works in both firmwares). Four LEDs light solid: the device is in the bootloader.</li>
       <li>Send the release <code class="docs-code">.syx</code> file over MIDI with a SysEx tool that supports a delay between messages (e.g. SysEx Librarian, ~50&nbsp;ms).</li>
