@@ -116,6 +116,12 @@ struct Engine {
   bool     shadow_stale_ = false;          // resident shadow edited; persist on save/reload
   uint32_t shadow_dirty_ms_ = 0;           // millis() of the last shadow edit (idle-flush coalescing)
   uint8_t  edit_var_ = 0;                   // hardware edit target: 0=var1, 1=var2, 2=var3
+  // Running A/B step-edit target while a linked pair (or chain-wide A/B) plays.
+  // Stored as the RESOLVED slot index (0xFF = follow playback) so the hot
+  // get_edit_sequence path stays one byte-compare; the panel loop owns arming
+  // and re-resolving it (PITCH held + CLEAR, in FN+PITCH step-select and the
+  // PITCH/TIME write modes only).
+  uint8_t  ab_edit_pat_ = 0xFF;
   // Per-shadow gate state (computed at AdvanceShadows, sampled per tick by the
   // shadow MIDI gate-follow so var2/3 note length tracks the analog gate).
   bool     shadow_resting_[NUM_VARIATIONS - 1]    = {true, true};
@@ -1307,15 +1313,18 @@ struct Engine {
   // Hardware edit target: variation 1 (the playback/CV buffer) or one of the two
   // resident shadow voices (variations 2/3). Playback never uses this; only the
   // hardware pattern-write UI does, so var2/3 edits go to the shadow buffers.
-  Sequence &get_edit_sequence() {
-    if (edit_var_ == 0) return pattern[p_select];
+  // noinline: called from dozens of sites; inlining the body (pin-resolved
+  // index + shadow dirty-marking) at each one costs several hundred bytes
+  // against the arena ceiling.
+  __attribute__((noinline)) Sequence &get_edit_sequence() {
+    if (edit_var_ == 0) return pattern[get_edit_patsel()];
     shadow_stale_ = true;                 // a shadow is the edit target -> persist on save
     shadow_dirty_ms_ = millis();          // refresh the idle-flush quiet timer
     return shadow_[(edit_var_ - 1) & 0x1];
   }
   // Read-only view of the edit target (no dirty mark) for LED/display code.
-  const Sequence &edit_seq_view() const {
-    return (edit_var_ == 0) ? pattern[p_select] : shadow_[(edit_var_ - 1) & 0x1];
+  __attribute__((noinline)) const Sequence &edit_seq_view() const {
+    return (edit_var_ == 0) ? pattern[get_edit_patsel()] : shadow_[(edit_var_ - 1) & 0x1];
   }
   uint8_t get_edit_var() const { return edit_var_; }
   // Playhead of the variation being edited (its shadow for var2/3), for the chase
@@ -1337,7 +1346,9 @@ struct Engine {
   static uint8_t section_a_of(uint8_t pat) { return uint8_t(pat & 0x07); }
   static uint8_t section_b_of(uint8_t pat) { return uint8_t((pat & 0x07) + 8); }
   static bool    is_section_b(uint8_t pat) { return (pat & 0x08) != 0; }
-  bool pair_linked(uint8_t pat) const { return pattern[section_a_of(pat)].ab_linked(); }
+  // noinline: ~20 call sites (chain/section logic); inlining the array index +
+  // flag read at each costs flash against the arena ceiling.
+  __attribute__((noinline)) bool pair_linked(uint8_t pat) const { return pattern[section_a_of(pat)].ab_linked(); }
   bool pair_linked() const { return pair_linked(get_patsel()); }
   void set_pair_linked(uint8_t pat, bool on) {
     Sequence &a = pattern[section_a_of(pat)];
@@ -1401,6 +1412,11 @@ struct Engine {
   }
   uint8_t get_patsel() const {
     return p_select;
+  }
+  // Variation-1 edit pattern index with the A/B edit pin applied: the pin
+  // redirects step edits to one section of the playing pair.
+  uint8_t get_edit_patsel() const {
+    return (ab_edit_pat_ != 0xFF) ? ab_edit_pat_ : p_select;
   }
   uint8_t get_next() const {
     return next_p;

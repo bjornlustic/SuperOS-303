@@ -259,21 +259,30 @@ static void chain_intent_reset() {
 // the pattern and re-arms whenever that pattern is selected while stopped (and
 // at boot). Clearing the pattern clears the stored chain with it.
 static void emit_chain_state();
-// A linked A/B pair is always ENTERED at its A section (it then plays A-then-B
+// Sticky panel A/B MODE. ON = every selected pattern (and every member of a
+// chain) plays A then B; OFF = patterns play their selected single section.
+// Entered by pressing ACCENT+SLIDE together, or automatically by selecting a
+// pattern whose SAVED A/B flag is set (or arming a stored chain whose first
+// member's flag is set); exited by pressing ACCENT or SLIDE alone. The
+// per-pattern link flag (reserved[3] bit0 on the A section) is only the saved
+// MEMORY: selection imports it into the mode, the save gestures (chain keys +
+// FN, A+B held + TAP) write it, and FN + a held pattern key clears it together
+// with the stored chain. Playback never reads the flag directly.
+static bool s_ab_mode = false;
+// An A/B pair is always ENTERED at its A section (it then plays A-then-B
 // on its own). Every fresh entry point -- taps, chain commits, queue writes,
 // stored-chain arming, transport start -- routes through this, so playback can
 // never start on the B half. The only paths that select B directly are the
-// explicit SLIDE section button and the intra-pair wrap hand-off.
+// explicit SLIDE section button and the intra-pair wrap hand-off. Selecting a
+// pattern with saved A/B memory re-enters the mode here.
 static uint8_t chain_entry_start(uint8_t pat) {
-  return engine.pair_linked(pat) ? Engine::section_a_of(pat) : pat;
+  if (engine.pair_linked(pat)) s_ab_mode = true;
+  return s_ab_mode ? Engine::section_a_of(pat) : pat;
 }
-// Chain-wide A/B mode: the chain's FIRST member owns the link flag for the
-// whole chain, so A+B means "every member plays A then B" (the panel's A+B
-// LEDs are a chain mode indicator, not a per-member property). Per-member
-// flags still work for patterns played alone.
+// Chain-wide A/B: with a chain live the panel mode makes every member play A
+// then B (the A+B LEDs are a mode indicator, not a per-member property).
 static bool chain_ab_mode() {
-  return s_chain_active && s_chain_len > 1 &&
-         engine.pair_linked(uint8_t(s_chain_pats[0] & 0x0F));
+  return s_chain_active && s_chain_len > 1 && s_ab_mode;
 }
 // Section-bank browse view while a chain is running: 0/1 = pattern keys and
 // A/B LEDs show that bank without touching the playing chain; 0xFF = follow
@@ -302,9 +311,11 @@ static bool arm_stored_chain(uint8_t pat, bool set_first) {
   s_chain_queue_len = 0;
   s_chain_bank      = uint8_t((s_chain_pats[0] >> 3) & 1);
   chain_intent_reset();
+  // Saved A/B memory on the chain's first member re-enters the mode.
+  if (engine.pair_linked(s_chain_pats[0])) s_ab_mode = true;
   if (set_first) {
     uint8_t first = s_chain_pats[0];
-    if (engine.pair_linked(first)) first = Engine::section_a_of(first);
+    if (s_ab_mode) first = Engine::section_a_of(first);
     engine.SetPattern(first, true);
   }
   emit_chain_state();
@@ -367,7 +378,7 @@ static void metro_session_begin() {
     // the gesture (quick tap / parked pair defer) must not yank the session
     // to an un-wiped pattern at the bar-1 wrap.
     chain_intent_reset();
-    engine.SetPattern(engine.pair_linked()
+    engine.SetPattern(s_ab_mode
                           ? Engine::section_a_of(engine.get_patsel())
                           : engine.get_patsel(),
                       true);
@@ -375,11 +386,10 @@ static void metro_session_begin() {
   uint16_t wipe = 0;
   uint8_t  pass_bars = 0;   // bars in one full traversal (linked halves count)
   if (chain_session) {
-    const bool chain_ab = chain_ab_mode();  // chain-wide A/B: every member A+B
     for (uint8_t ci = 0; ci < s_chain_len; ++ci) {
       const uint8_t m = uint8_t(s_chain_pats[ci] & 0x0F);
       wipe |= uint16_t(1u << m);
-      if (chain_ab || engine.pair_linked(m)) {
+      if (s_ab_mode) {
         wipe |= uint16_t((1u << Engine::section_a_of(m)) |
                          (1u << Engine::section_b_of(m)));
         pass_bars = uint8_t(pass_bars + 2);
@@ -391,7 +401,7 @@ static void metro_session_begin() {
     const uint8_t m = engine.get_patsel();
     wipe |= uint16_t(1u << m);
     pass_bars = 1;
-    if (engine.pair_linked(m)) {
+    if (s_ab_mode) {
       wipe |= uint16_t((1u << Engine::section_a_of(m)) |
                        (1u << Engine::section_b_of(m)));
       pass_bars = 2;
@@ -884,7 +894,7 @@ static void send_step_update_for_cursor(Sequence &s) {
   uint8_t slot;
   uint8_t pb = PITCH_EMPTY;
   if (s.edit_slot_index(slot)) pb = s.pitch[slot];
-  midi_send_step_update(engine.get_patsel(), tp, pb, s.time(tp), engine.get_edit_var());
+  midi_send_step_update(engine.get_edit_patsel(), tp, pb, s.time(tp), engine.get_edit_var());
 }
 
 uint8_t input_pitch(bool mod = false, bool clk_run = false) {
@@ -930,7 +940,7 @@ uint8_t input_pitch(bool mod = false, bool clk_run = false) {
           // exit out of PITCH MODE" -- there is nowhere left to append.
           if (s.note_count() >= cap) {
             const uint8_t cur = engine.get_patsel();
-            if (engine.pair_linked(cur) && !Engine::is_section_b(cur)) {
+            if (s_ab_mode && !Engine::is_section_b(cur)) {
               engine.SetPattern(Engine::section_b_of(cur), true);
               Sequence &nb = engine.get_edit_sequence();
               nb.reset     = false;
@@ -975,7 +985,7 @@ void input_time(bool mod = false, bool clk_run = false) {
   // tp as a NOTE and writes the pitch into the wrong stream slot, corrupting
   // pitch[]. Sending tp first lets the editor update time_data at tp so every
   // subsequent step computes the same K-th-NOTE index the firmware did.
-  const uint8_t pat = engine.get_patsel();
+  const uint8_t pat = engine.get_edit_patsel();
   const uint8_t ev = engine.get_edit_var();
   midi_send_step_update(pat, tp, after_pt[tp], written_time, ev);
   for (uint8_t i = 0; i < len; ++i) {
@@ -1041,6 +1051,8 @@ void setup() {
   // A stored chain on the boot pattern re-arms so a saved chain plays from
   // power-on without re-selecting the pattern.
   arm_stored_chain(engine.get_patsel(), false);
+  // Saved A/B memory on the boot pattern re-enters the mode from power-on.
+  if (engine.pair_linked(engine.get_patsel())) s_ab_mode = true;
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
   midi_set_var_channels(GlobalSettings.var2_channel, GlobalSettings.var3_channel);
   Leds::brightness = GlobalSettings.led_brightness;
@@ -1408,9 +1420,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     // real section.
     const bool chain_live = s_chain_active && s_chain_len > 1 && clk_run;
     if (!chain_live) s_section_view = 0xFF;   // browse view only exists mid-chain
-    uint8_t bank = (engine.pair_linked() || chain_ab_mode())
-                       ? 0
-                       : uint8_t(engine.get_patsel() >> 3);
+    uint8_t bank = s_ab_mode ? 0 : uint8_t(engine.get_patsel() >> 3);
     if (chain_live && s_section_view != 0xFF) bank = s_section_view;
     const bool browsing_other_group = clk_run && (s_display_group != engine.get_group());
 
@@ -1436,7 +1446,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     // pattern or chain-wide (spec 1-a): BOTH lit, and the section currently
     // playing / being written to blinks, so during a performance you can see
     // which half of the pattern is running without counting steps.
-    if (engine.pair_linked() || chain_ab_mode()) {
+    if (s_ab_mode) {
       const bool on_b  = Engine::is_section_b(engine.get_patsel());
       const bool blink = bool(clk_run ? (clk_count < 12) : ((millis() >> 8) & 1));
       Leds::Set(ACCENT_KEY_LED, on_b ? true  : blink);
@@ -1475,11 +1485,10 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       for (uint8_t i = 0; i < 8; ++i) {
         if (!inputs[i].rising() || dropped[i]) continue;
         if (s_ab_chain_len == 0) {
-          // First tap: this is a chain build, not a section-link gesture.
+          // First tap: this is a chain build, not an A/B-mode entry -- the
+          // A+B press's mode flip is reverted to what it was.
           if (s_ab_link_pat != 0xff) {
-            engine.set_pair_linked(s_ab_link_pat, s_ab_prev_link);
-            engine.stale = true;
-            midi_send_pattern_update(Engine::section_a_of(s_ab_link_pat));
+            s_ab_mode     = s_ab_prev_link;
             s_ab_link_pat = 0xff;
           }
           s_chain_hold_key        = 0xff;  // cancel single-key tap/hold tracking
@@ -1497,8 +1506,10 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       if (inputs[TAP_NEXT].rising()) {
         if (s_ab_chain_len >= 2) {
           store_chain_on(s_ab_chain_pats[0], s_ab_chain_pats, s_ab_chain_len);
+          engine.set_pair_linked(s_ab_chain_pats[0], s_ab_mode);
         } else if (s_chain_active && s_chain_len >= 2) {
           store_chain_on(s_chain_pats[0], s_chain_pats, s_chain_len);
+          engine.set_pair_linked(s_chain_pats[0], s_ab_mode);
         } else {
           Sequence &cs = engine.pattern[engine.get_patsel() & 0x0F];
           cs.reserved[4] = 0; cs.reserved[5] = 0; cs.reserved[6] = 0;
@@ -1519,12 +1530,14 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
         s_chain_queue_len = 0;
         s_chain_hold_loop = false;
         chain_intent_reset();
+        // Saved A/B memory on the first member re-enters the mode.
+        if (engine.pair_linked(s_chain_pats[0])) s_ab_mode = true;
         if (clk_run) {
           s_chain_pos = uint8_t(s_chain_len - 1); // wrap advances into pats[0]
         } else {
           s_chain_pos = 0;
           uint8_t first = s_chain_pats[0];
-          if (engine.pair_linked(first)) first = Engine::section_a_of(first);
+          if (s_ab_mode) first = Engine::section_a_of(first);
           engine.SetPattern(first, true);
           midi_send_active_pattern(engine.get_patsel());
         }
@@ -1604,6 +1617,8 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
             s_chain_pos       = new_len - 1;
             s_chain_queue_len = 0;
             chain_intent_reset();
+            // Saved A/B memory on the first member re-enters the mode.
+            if (engine.pair_linked(s_chain_pats[0])) s_ab_mode = true;
           }
           emit_chain_state();
           chain_built = true;
@@ -1732,59 +1747,46 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     // Section buttons. Skipped when CLEAR is held so CLEAR+ACCENT
     // (randomize) and CLEAR+SLIDE combos can take the edge, and during a
     // tap-write session (its keys belong to the recorder).
-    // No LIVE chain -- section select (spec 1-a): one button alone picks
-    // that section and UNLINKS the pair; pressing the other while the first
-    // is held LINKS them so the pattern edits and plays A-then-B in serial.
-    // The link lives on the pattern, so reselecting it later comes back
-    // linked. Selecting a section clears any (stopped) chain.
-    // LIVE chain -- the chain-wide A/B branch below: buttons toggle the
-    // chain's A/B mode or browse the other bank, never killing the chain.
+    // A+B together = enter the sticky A/B MODE (every selected pattern plays
+    // A then B until the mode is left). One button alone = leave the mode and
+    // select that section. Saved per-pattern A/B memory is NOT touched here:
+    // the save gestures write it and FN + held pattern clears it.
+    // LIVE chain: the buttons never kill or redirect the chain -- A+B turns
+    // the mode on, a single press turns it off when on, else BROWSES that
+    // bank (pattern keys + LEDs show it, playback untouched).
     const bool acc_edge = inputs[ACCENT_KEY].rising() && !clear_mod && !s_metronome_active;
     const bool sld_edge = inputs[SLIDE_KEY].rising()  && !clear_mod && !s_metronome_active;
     if (acc_edge || sld_edge) {
       const bool link = (acc_edge && inputs[SLIDE_KEY].held()) ||
                         (sld_edge && inputs[ACCENT_KEY].held());
       if (chain_live) {
-        // A LIVE chain is never killed or redirected by the section buttons.
-        // A+B held = chain-wide A/B mode ON, owned by the chain's first
-        // member: every member then plays A then B. A single press turns
-        // the mode OFF when it is on; otherwise it BROWSES that bank -- the
-        // pattern keys and LEDs show it so a pattern there can be picked or
-        // chained, while the chain keeps playing untouched.
-        const uint8_t owner = uint8_t(s_chain_pats[0] & 0x0F);
         if (link) {
           // Builder-restore bookkeeping: a pattern-key tap while A+B stays
-          // held becomes a chain build and reverts this link.
-          s_ab_link_pat  = owner;
-          s_ab_prev_link = engine.pair_linked(owner);
-          engine.set_pair_linked(owner, true);
-          engine.stale   = true;
+          // held becomes a chain build and reverts this mode flip.
+          s_ab_link_pat  = uint8_t(s_chain_pats[0] & 0x0F);
+          s_ab_prev_link = s_ab_mode;
+          s_ab_mode      = true;
           s_section_view = 0xFF;
-          // The flag lives on the owner's A section: push that blob so the
-          // web editor restacks its chain view.
-          midi_send_pattern_update(Engine::section_a_of(owner));
-        } else if (engine.pair_linked(owner)) {
-          engine.set_pair_linked(owner, false);
-          engine.stale   = true;
+        } else if (s_ab_mode) {
+          s_ab_mode      = false;
           s_section_view = 0xFF;
-          midi_send_pattern_update(Engine::section_a_of(owner));
         } else {
           s_section_view = acc_edge ? 0 : 1;
         }
         emit_chain_state();
       } else {
         if (link) {
-          // Remember the pre-link state: a pattern-key tap while A+B stays
+          // Remember the pre-press mode: a pattern-key tap while A+B stays
           // held turns this gesture into a chain build and restores this.
           s_ab_link_pat  = engine.get_patsel();
-          s_ab_prev_link = engine.pair_linked(s_ab_link_pat);
+          s_ab_prev_link = s_ab_mode;
         }
         s_chain_active     = false; s_chain_len       = 0;
         s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
         s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
         chain_intent_reset();
-        engine.set_pair_linked(engine.get_patsel(), link);
-        // Linked entry always lands on A: notes 1-64 fill the A section first.
+        s_ab_mode = link;
+        // A/B-mode entry always lands on A: notes fill the A section first.
         const uint8_t want = (link || acc_edge) ? Engine::section_a_of(engine.get_patsel())
                                                 : Engine::section_b_of(engine.get_patsel());
         engine.SetPattern(want, !clk_run);
@@ -1800,12 +1802,19 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                           || s_pat_cleared_hold;
   const bool in_time  = engine.get_mode() == TIME_MODE;
   const bool in_pitch = engine.get_mode() == PITCH_MODE;
+  // A/B step-edit indicator: while a linked pair (or chain-wide A/B) plays,
+  // the active submode LED shows which section the step edits land on --
+  // solid = A, blinking = B (PITCH held + CLEAR cycles it).
+  bool ab_led_on = true;
+  if (clk_run && (in_pitch || in_time) && s_ab_mode &&
+      Engine::is_section_b(engine.get_edit_patsel()))
+    ab_led_on = clk_count < 12;
   // Tap-write session indicator: TIME LED blinks for as long as a session is
   // active, RECORD or OVERDUB. An all-OVERDUB pass is silent, so without
   // this the user cannot tell a session is still running.
-  Leds::Set(TIME_MODE_LED,     in_time  || pat_clr_flash ||
+  Leds::Set(TIME_MODE_LED,     (in_time && ab_led_on) || pat_clr_flash ||
                                (s_metronome_active && (clk_count & 4)));
-  Leds::Set(PITCH_MODE_LED,    in_pitch || pat_clr_flash);
+  Leds::Set(PITCH_MODE_LED,    (in_pitch && ab_led_on) || pat_clr_flash);
   // FUNCTION_MODE_LED = "normal mode" indicator. Lit whenever the engine is not
   // in TIME/PITCH submode. Driven off NOT-in-submode so that mode-LED edge
   // cases (e.g. brief mode flicker) never leave the indicator dark.
@@ -2016,8 +2025,6 @@ static void ProcessTrackUI(DialMode dial, bool dial_track_write, bool clk_run,
 // =============================================================================
 static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
   Leds::Set(FUNCTION_MODE_LED, true);
-  Leds::Set(PITCH_MODE_LED, !s_step_sel_time);
-  Leds::Set(TIME_MODE_LED,   s_step_sel_time);
   // Resolve the pattern being viewed. With an active chain of >= 2 patterns
   // we view chain[s_step_sel_chain_view]; otherwise we view the engine's
   // active pattern. View is independent of playback: the engine keeps
@@ -2025,9 +2032,25 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
   const bool chain_view_active = s_chain_active && s_chain_len >= 2;
   if (chain_view_active && s_step_sel_chain_view >= s_chain_len)
     s_step_sel_chain_view = 0;
-  const uint8_t view_pat_idx = chain_view_active
+  uint8_t view_pat_idx = chain_view_active
       ? s_chain_pats[s_step_sel_chain_view]
       : engine.get_patsel();
+  // A/B view: with a linked pair (or chain-wide A/B) the view NEVER follows
+  // playback's A/B alternation. It shows section A by default; the mode-key +
+  // CLEAR combo (PITCH or TIME held + CLEAR, either order) pins the other
+  // section via engine.ab_edit_pat_.
+  if (engine.ab_edit_pat_ != 0xFF)
+    view_pat_idx = uint8_t((view_pat_idx & 7) |
+                           (Engine::is_section_b(engine.ab_edit_pat_) ? 8 : 0));
+  else if (s_ab_mode)
+    view_pat_idx = Engine::section_a_of(view_pat_idx);
+  // Sub-mode LEDs double as the A/B view indicator in A/B mode: solid =
+  // viewing section A, blinking = section B. clk_count free-runs at 120 BPM,
+  // so the blink works while stopped too.
+  const bool ab_view_b = s_ab_mode && Engine::is_section_b(view_pat_idx);
+  const bool ab_led_on = !ab_view_b || clk_count < 12;
+  Leds::Set(PITCH_MODE_LED, !s_step_sel_time && ab_led_on);
+  Leds::Set(TIME_MODE_LED,   s_step_sel_time && ab_led_on);
   // Edit the current variation when viewing the active pattern (var2/3 live
   // in the shadow buffers); chained non-active patterns edit variation 1.
   Sequence &seq = (view_pat_idx == engine.get_patsel())
@@ -2041,9 +2064,14 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
   PolyVoice &pv = engine.poly_;
   const uint8_t blen = poly_sel ? uint8_t(pv.length ? pv.length : 1) : seq.length;
   #define SEL_TIME(i) (poly_sel ? pv.time(uint8_t(i)) : seq.time(uint8_t(i)))
+  // An A/B pin flip can land on a shorter section; drop a selection that no
+  // longer exists so the editors cannot write past the viewed length.
+  if (s_step_sel >= int(blen)) s_step_sel = -1;
 
   // Sub-mode switching (outside detail editor to avoid accidental mode changes).
-  if (!s_step_sel_edit) {
+  // !CLEAR held: a mode key rising with CLEAR down is the A/B pin gesture
+  // (either press order), not a sub-mode switch.
+  if (!s_step_sel_edit && !inputs[CLEAR_KEY].held()) {
     if (inputs[TIME_KEY].rising() && !s_step_sel_time) {
       s_step_sel_time = true;
       s_step_sel = -1; // clear selection on mode switch
@@ -2491,7 +2519,7 @@ static uint8_t pair_pitch_at(const Sequence &a, const Sequence &b, uint8_t i) {
 // Total last step across the pair: A alone, or A + B when linked.
 static uint8_t pair_total_length(uint8_t patsel) {
   const Sequence &a = engine.pattern[Engine::section_a_of(patsel)];
-  if (!engine.pair_linked(patsel)) return a.length;
+  if (!s_ab_mode) return a.length;
   const uint16_t t = uint16_t(a.length) + engine.pattern[Engine::section_b_of(patsel)].length;
   return uint8_t(t > 2 * MAX_STEPS ? 2 * MAX_STEPS : t);
 }
@@ -2505,7 +2533,10 @@ static void pair_set_total_length(uint8_t patsel, uint8_t total) {
   if (total < 1) total = 1;
   if (total > 2 * MAX_STEPS) total = uint8_t(2 * MAX_STEPS);
   if (total > MAX_STEPS) {
+    // Growing past the section links the pair structurally (saved memory) and
+    // enters the A/B mode so the B half is heard immediately.
     engine.set_pair_linked(patsel, true);
+    s_ab_mode = true;
     engine.ApplyLength(a, uint8_t(MAX_STEPS));
     engine.ApplyLength(b, uint8_t(total - MAX_STEPS));
   } else {
@@ -2598,7 +2629,7 @@ static void ProcessLengthEditor(bool dial_pattern_write) {
     // A B section selected on its own is an ordinary 1-64 pattern: only a
     // linked pair (or the A section, which can grow into one) edits pair-wide.
     const bool pair_len = (engine.get_edit_var() == 0) &&
-                          !(on_b && !engine.pair_linked(lpat));
+                          !(on_b && !s_ab_mode);
     const bool sec_b    = pair_len && !on_b && inputs[SLIDE_KEY].held();
     const uint8_t cur_len = sec_b
         ? uint8_t(pair_total_length(lpat) > MAX_STEPS
@@ -3216,7 +3247,7 @@ void loop() {
       s_chain_queue_len = 0;
       engine.SetPattern(chain_entry_start(s_chain_pats[0]), true);
       engine.get_sequence().Reset();
-    } else if (engine.pair_linked() && Engine::is_section_b(engine.get_patsel())) {
+    } else if (s_ab_mode && Engine::is_section_b(engine.get_patsel())) {
       // No chain: a run that previously stopped on the B half of a linked
       // pair must restart from A, not resume alternating from B.
       engine.SetPattern(Engine::section_a_of(engine.get_patsel()), true);
@@ -3326,8 +3357,7 @@ void loop() {
     // Chain-wide A/B: the first member's link flag makes EVERY member play
     // A then B; a member's own flag still counts (pattern linked before it
     // was chained).
-    const bool chain_ab   = chain_ab_mode();
-    const bool cur_linked = engine.pair_linked(cur) || chain_ab;
+    const bool cur_linked = s_ab_mode;
     if (wrapped) {
       if (s_chain_expect != 0xFF && cur == s_chain_expect) {
         if (s_chain_expect_handoff && s_chain_queue_len > 0) {
@@ -3381,9 +3411,9 @@ void loop() {
       } else {
         next_pos = uint8_t((s_chain_pos + 1) % s_chain_len);
         next_pat = s_chain_pats[next_pos];
-        // Linked entries are entered at their A section regardless of which
-        // section the chain named, so every pass plays A then B.
-        if (chain_ab || engine.pair_linked(next_pat))
+        // In A/B mode entries are entered at their A section regardless of
+        // which section the chain named, so every pass plays A then B.
+        if (s_ab_mode)
           next_pat = Engine::section_a_of(next_pat);
       }
       s_chain_expect         = next_pat;
@@ -3393,8 +3423,8 @@ void loop() {
     }
 
     if (chain_state_changed) emit_chain_state();
-  } else if (clk_run && !dial_track_mode && engine.pair_linked()) {
-    // Linked A/B pair with no user chain: queue the other section so the
+  } else if (clk_run && !dial_track_mode && s_ab_mode) {
+    // A/B mode with no user chain: queue the other section so the
     // engine hands over at the wrap. A plays, then B, then A again -- one
     // pattern of up to 128 steps (spec 1-a / 5-d / 5-e).
     const uint8_t cur  = engine.get_patsel();
@@ -3601,7 +3631,10 @@ void loop() {
     // TIME_MODE instead of the gesture -- which then blocked the gesture
     // until TIME_MODE auto-exited ("press twice and wait"). The session
     // forces the mode back to NORMAL in metro_session_begin().
-    if (metro_gesture && !fn_mod &&
+    // !s_step_sel_mode: the step editor runs in NORMAL_MODE and owns
+    // TIME + CLEAR as its A/B pin gesture; starting a tap-write session from
+    // there would wipe the unit's time data mid-edit.
+    if (metro_gesture && !fn_mod && !s_step_sel_mode &&
         !inputs[DSHARP_KEY].held() && !inputs[CSHARP_KEY].held() &&
         clk_run && dial_pattern_write &&
         (engine.get_mode() == NORMAL_MODE || engine.get_mode() == TIME_MODE)) {
@@ -3618,9 +3651,12 @@ void loop() {
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].held()) {
           const uint8_t pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
-          // Spec 2: clearing one section leaves the other alone -- unless both
-          // sections are selected, in which case the whole pattern goes.
-          const bool both = engine.pair_linked(pat);
+          // Spec 2: clearing one section leaves the other alone -- unless the
+          // A/B mode is on, in which case the whole pattern goes.
+          const bool both = s_ab_mode;
+          // ClearPattern wipes reserved[], and with it the saved A/B memory
+          // on the A section; restore the flag if it was saved.
+          const bool saved_ab = engine.pair_linked(pat);
           engine.ClearPattern(pat);
           midi_send_pattern_update(pat);
           if (both) {
@@ -3628,9 +3664,8 @@ void loop() {
                                                             : Engine::section_b_of(pat);
             engine.ClearPattern(other);
             midi_send_pattern_update(other);
-            // ClearPattern wipes reserved[], and with it the link flag on A.
-            engine.set_pair_linked(pat, true);
           }
+          if (saved_ab) engine.set_pair_linked(pat, true);
           pattern_cleared_flash_timer = 0;
           s_pat_cleared_hold = true;
           break;
@@ -3659,18 +3694,38 @@ void loop() {
         engine.get_mode() == PITCH_MODE) {
       engine.SetMode(NORMAL_MODE, true);
     }
-    // Chain-save gesture: while the chain-build keys are still held (hold 1,
-    // tap 2/3/4...), pressing FUNCTION stores the chain on its FIRST pattern.
-    // Selecting that pattern later replays the chain (arm_stored_chain); a
-    // pattern without a stored chain plays alone. The press is consumed so the
-    // same FN hold cannot also drive the length editor.
-    if (inputs[FUNCTION_KEY].rising() && dial_pattern_write && s_chain_len >= 2) {
-      bool pat_held = false;
+    // Chain-save / memory-clear gesture. While the chain-build keys are held
+    // (hold 1, tap 2/3/4...) with a chain of >= 2, pressing FUNCTION stores
+    // the chain on its FIRST pattern together with the current A/B mode, so
+    // recalling it re-enters the mode. With a SINGLE pattern key held (no
+    // chain), FUNCTION clears that pattern's stored chain AND its saved A/B
+    // memory. The press is consumed so the same FN hold cannot also drive
+    // the length editor.
+    if (inputs[FUNCTION_KEY].rising() && dial_pattern_write) {
+      int8_t held_key = -1;
       for (uint8_t i = 0; i < 8; ++i)
-        if (inputs[i].held()) { pat_held = true; break; }
-      if (pat_held) {
+        if (inputs[i].held()) { held_key = int8_t(i); break; }
+      if (held_key >= 0 && s_chain_len >= 2) {
         store_chain_on(s_chain_pats[0], s_chain_pats, s_chain_len);
+        engine.set_pair_linked(s_chain_pats[0], s_ab_mode);
         pattern_cleared_flash_timer = 0;  // mode-LED flash = "saved"
+        s_fn_chain_saved = true;
+      } else if (held_key >= 0) {
+        // Single pattern held: store the CURRENT state. A/B mode on = save
+        // the A/B memory on this pattern (stored chain untouched); mode off =
+        // clear its saved A/B memory AND its stored chain (the unlink
+        // gesture).
+        const uint8_t pat = uint8_t((engine.get_patsel() >> 3) * 8 + held_key);
+        if (s_ab_mode) {
+          engine.set_pair_linked(pat, true);
+        } else {
+          Sequence &cs = engine.pattern[pat & 0x0F];
+          cs.reserved[4] = 0; cs.reserved[5] = 0; cs.reserved[6] = 0;
+          engine.set_pair_linked(pat, false);
+        }
+        engine.stale = true;
+        midi_send_pattern_update(Engine::section_a_of(pat));
+        pattern_cleared_flash_timer = 0;  // mode-LED flash = "saved/cleared"
         s_fn_chain_saved = true;
       }
     }
@@ -3987,7 +4042,7 @@ void loop() {
           else            sequence_double_length(seq, cap);
           engine.stale = true;
           midi_send_pattern_update(pat);
-          if (pair_scope && engine.pair_linked(pat))
+          if (pair_scope && s_ab_mode)
             midi_send_pattern_update(Engine::section_b_of(pat));
         }
         if (inputs[DOWN_KEY].rising()) {
@@ -4113,6 +4168,72 @@ void loop() {
       if (!clk_run && engine.get_mode() == TIME_MODE &&
           int(engine.edit_seq_view().time_pos) >= int(engine.edit_seq_view().length) - 1)
         engine.SetMode(NORMAL_MODE, true);
+    }
+  }
+
+  // A/B step-edit target (FN+PITCH step-select and the PITCH/TIME write
+  // modes, running, linked pair or chain-wide A/B): PITCH held + CLEAR
+  // (either press order) cycles which SECTION the view and step edits land
+  // on, instead of following playback's A/B alternation. The pin drops the
+  // moment the context does (mode exit, unlink, chain end, transport stop).
+  {
+    const bool ab_edit_ctx =
+        dial_pattern_write && engine.edit_var_ == 0 &&
+        (s_step_sel_mode ||
+         (clk_run && (engine.get_mode() == PITCH_MODE ||
+                      engine.get_mode() == TIME_MODE))) &&
+        s_ab_mode;
+    if (!ab_edit_ctx) {
+      engine.ab_edit_pat_ = 0xFF;
+    } else {
+      const uint8_t psel = engine.get_patsel();
+      // Step editor: PITCH or TIME held + CLEAR (either order) -- TIME+CLEAR
+      // is safe there because the tap-write gesture is suppressed during
+      // step-select. PITCH/TIME write modes: PITCH-based only (TIME+CLEAR is
+      // tap-write in TIME_MODE).
+      const bool gesture = s_step_sel_mode
+          ? (((pitch_mod || time_mod) && inputs[CLEAR_KEY].rising()) ||
+             (clear_mod && (inputs[PITCH_KEY].rising() ||
+                            inputs[TIME_KEY].rising())))
+          : ((pitch_mod && inputs[CLEAR_KEY].rising()) ||
+             (clear_mod && inputs[PITCH_KEY].rising()));
+      if (gesture) {
+        // Cycle from the section currently viewed/edited: the pin when set,
+        // else the step editor's stable default (section A), else the
+        // playing section (the write modes follow playback until pinned).
+        bool cur_b;
+        if (engine.ab_edit_pat_ != 0xFF)
+          cur_b = Engine::is_section_b(engine.ab_edit_pat_);
+        else if (s_step_sel_mode)
+          cur_b = false;
+        else
+          cur_b = Engine::is_section_b(psel);
+        engine.ab_edit_pat_ = cur_b ? Engine::section_a_of(psel)
+                                    : Engine::section_b_of(psel);
+      } else if (engine.ab_edit_pat_ != 0xFF &&
+                 (engine.ab_edit_pat_ & 7) != (psel & 7)) {
+        // Chain advanced to another member: keep the pinned side, follow the
+        // new pair.
+        engine.ab_edit_pat_ = Engine::is_section_b(engine.ab_edit_pat_)
+                                  ? Engine::section_b_of(psel)
+                                  : Engine::section_a_of(psel);
+      }
+      // PITCH/TIME write modes, pinned to the non-playing section: its cursor
+      // never advances, so mirror the playhead each pass and edits land on
+      // the same step of the pinned half. (Step-select edits explicit steps
+      // and needs no mirror.)
+      if (engine.get_mode() != NORMAL_MODE &&
+          engine.ab_edit_pat_ != 0xFF && engine.ab_edit_pat_ != psel) {
+        Sequence &es = engine.get_edit_sequence();
+        const Sequence &ps = engine.get_sequence();
+        uint8_t tp = uint8_t(ps.time_pos);
+        if (tp >= es.length) tp = uint8_t(tp % es.length);
+        es.time_pos = tp;
+        // NOTE steps only, like Sequence::Advance: TIE/REST keeps the held
+        // note's slot so pitch edits hit the sounding note, not the next one.
+        if (es.time(tp) == 1)
+          es.pitch_pos = int(es.pitch_index_for_note(tp));
+      }
     }
   }
 

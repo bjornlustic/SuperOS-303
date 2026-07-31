@@ -220,8 +220,9 @@
     </table>
     <p class="docs-body">
       With an A section selected, <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">SLIDE</kbd>
-      moves the editor into the B section (steps 33&ndash;64). Picking a step there links the A/B pair
-      automatically, making one long pattern. A B section selected on its own stays capped at 32 steps.
+      moves the editor into the B section (steps 33&ndash;64). Picking a step there saves the pair's
+      A/B memory and turns A/B mode on, making one long pattern. A B section selected on its own
+      stays capped at 32 steps.
     </p>
 
     <h3 class="man-sub">One Step at a Time</h3>
@@ -235,7 +236,8 @@
     <p class="docs-body">
       <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">UP</kbd> doubles the length: it either
       reveals the retained tail or copies the first half into the new second half. Doubling past step 32
-      spills into the B section and links the pair. <kbd class="docs-key">FUNCTION</kbd> +
+      spills into the B section, saving the pair's A/B memory and turning A/B mode on.
+      <kbd class="docs-key">FUNCTION</kbd> +
       <kbd class="docs-key">DOWN</kbd> halves the length (31 &rarr; 15 &rarr; 7 &rarr; 3 &rarr; 1) and
       destroys nothing.
     </p>
@@ -269,6 +271,13 @@
       To edit pitches later, press <kbd class="docs-key">PITCH MODE</kbd> again, or use Step Editing
       (Pattern Editing, section 1).
     </p>
+    <div class="man-note">
+      <strong>A/B mode, while running</strong>
+      Live pitch edits land on whichever section is playing. To pin them to one section instead,
+      hold <kbd class="docs-key">PITCH MODE</kbd> and press <kbd class="docs-key">CLEAR</kbd>; each
+      press flips the target between A and B. The PITCH MODE LED shows the target: solid = section
+      A, blinking = section B. The pin drops when you leave the mode or stop.
+    </div>
   </section>
 
   <section id="time-mode" class="docs-section">
@@ -295,6 +304,12 @@
       Pitch and time are independent streams. Changing a step from note to rest does not discard its
       pitch; the pitch stays in the queue, and writing a note there again plays the same pitch.
     </div>
+    <div class="man-note">
+      <strong>A/B mode, while running</strong>
+      As in PITCH MODE, live time edits follow the playing section; hold
+      <kbd class="docs-key">PITCH MODE</kbd> and press <kbd class="docs-key">CLEAR</kbd> to pin them
+      to one section (TIME MODE LED solid = A, blinking = B).
+    </div>
   </section>
 
   <section id="playing" class="docs-section">
@@ -314,21 +329,35 @@
       Each pattern slot has two sections of up to 32 steps each. Press <kbd class="docs-key">ACCENT</kbd>
       for section A or <kbd class="docs-key">SLIDE</kbd> for section B. Stopped, the switch is immediate;
       running, it takes effect at the next wrap. Selecting a section clears any chain that is not
-      playing, and selecting one section alone unlinks a linked pair. While a chain is playing the
+      playing, and leaves A/B mode if it was on. While a chain is playing the
       section buttons never interrupt it; they control chain A/B mode instead (Chaining Patterns,
       section 3).
     </p>
 
-    <h3 class="man-sub">Linking A + B: 64-Step Patterns</h3>
+    <h3 class="man-sub">A/B Mode: 64-Step Patterns</h3>
     <p class="docs-body">
       Hold one section button and press the other (<kbd class="docs-key">ACCENT</kbd> +
-      <kbd class="docs-key">SLIDE</kbd>): the slot's A and B sections link into one pattern that plays
-      A then B, up to 64 steps. The link is stored with the pattern, so it comes back linked whenever
-      the pattern is selected, and a linked pattern always starts from its A section. Both section
-      LEDs light, with the playing or edited section blinking. <kbd class="docs-key">CLEAR</kbd> on a
-      linked pattern erases both halves. Writing pitches into a linked pattern fills section A first,
-      then hands the cursor to section B. To split the pair again, press
-      <kbd class="docs-key">ACCENT</kbd> or <kbd class="docs-key">SLIDE</kbd> alone.
+      <kbd class="docs-key">SLIDE</kbd>) to enter <strong>A/B mode</strong>. While the mode is on,
+      every pattern you select plays its A section, then its B section: one pattern of up to 64
+      steps. The mode is sticky. It stays on as you press other pattern keys, so you can move
+      through the whole bank in A/B, and it always enters a pattern at its A section. Both section
+      LEDs light, with the playing or edited section blinking. Press <kbd class="docs-key">ACCENT</kbd>
+      or <kbd class="docs-key">SLIDE</kbd> alone to leave the mode and go back to single sections.
+      <kbd class="docs-key">CLEAR</kbd> on a pattern in A/B mode erases both halves. Writing pitches
+      in A/B mode fills section A first, then hands the cursor to section B.
+    </p>
+
+    <h3 class="man-sub">Saving A/B with a Pattern</h3>
+    <p class="docs-body">
+      Selecting a pattern never changes its saved A/B memory by itself. To make a pattern remember
+      the mode, hold its pattern key and press <kbd class="docs-key">FUNCTION</kbd> while in the mode
+      you want kept, or use the chain-save gestures (Chaining Patterns, section 3); the current A/B
+      state is stored with it. Selecting a pattern whose memory is saved (or powering on with it
+      selected) turns A/B mode back on automatically. To erase a pattern's saved memory, hold its
+      pattern key and press <kbd class="docs-key">FUNCTION</kbd> with A/B mode off: that clears both
+      its saved A/B memory and its stored chain in one gesture. The mode LEDs flash to confirm
+      either way. Growing a pattern past step 32 in the length editor also saves its A/B memory, so
+      long patterns come back whole.
     </p>
 
     <h3 class="man-sub">Groups</h3>
@@ -442,9 +471,9 @@
     </div>
     <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN PLAY</kbd></p>
     <p class="docs-body">
-      A chain plays up to four patterns in sequence, wrapping back to the first. A chain entry that is
-      a linked A/B pair plays its A and B sections before the chain advances, and chains always enter
-      a linked pair at its A section. Stopping and restarting the sequencer replays the chain from its
+      A chain plays up to four patterns in sequence, wrapping back to the first. With A/B mode on,
+      every entry plays its A and B sections before the chain advances, and entries are always
+      entered at their A section. Stopping and restarting the sequencer replays the chain from its
       first entry.
     </p>
 
@@ -473,15 +502,15 @@
     <h3 class="man-sub">Chain A/B Mode</h3>
     <p class="docs-body">
       While a chain is playing, the section buttons never stop or redirect it. Hold
-      <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> together to turn chain
+      <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> together to turn
       A/B mode on: every member of the chain plays its A section, then its B section, before the
       chain advances. Both section LEDs light with the playing section blinking, exactly as on a
-      linked pair. The mode is stored as the link flag on the chain's first member, so a saved chain
-      comes back with it. Members that were already linked on their own keep playing A then B either
-      way. With the mode on, a single press of <kbd class="docs-key">ACCENT</kbd> or
+      single pattern. It is the same sticky A/B mode as everywhere else: it follows you to whatever
+      you select next, and saving the chain stores the mode with it, so a saved chain comes back
+      playing A/B. With the mode on, a single press of <kbd class="docs-key">ACCENT</kbd> or
       <kbd class="docs-key">SLIDE</kbd> turns it off. Tapping pattern keys while
       <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> are still held builds a
-      new chain as usual and reverts the link.
+      new chain as usual and reverts the mode flip.
     </p>
 
     <h3 class="man-sub">Browsing While a Chain Plays</h3>
@@ -502,11 +531,16 @@
       <li>while holding <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd>, press <kbd class="docs-key">WRITE/NEXT</kbd> to save the build in progress or the currently playing chain.</li>
     </ul>
     <p class="docs-body">
-      The mode LEDs flash to confirm. Selecting that pattern later while stopped (or powering on with
-      it selected) re-arms the whole chain automatically; a pattern without a stored chain plays alone.
+      Both gestures also store the current A/B mode with the chain, so a chain saved in A/B mode
+      re-enters the mode when it is recalled. The mode LEDs flash to confirm. Selecting that pattern
+      later while stopped (or powering on with it selected) re-arms the whole chain automatically; a
+      pattern without a stored chain plays alone.
       <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> +
       <kbd class="docs-key">WRITE/NEXT</kbd> with no chain active clears the stored chain from the
-      current pattern, and clearing the pattern clears its stored chain with it.
+      current pattern, and clearing the pattern clears its stored chain with it. To clear a
+      pattern's stored chain and saved A/B memory together, hold its pattern key and press
+      <kbd class="docs-key">FUNCTION</kbd> with A/B mode off and no chain playing (Playing Patterns,
+      section 5).
     </p>
   </section>
 
@@ -550,9 +584,9 @@
       click marking the start of each bar. The recorder's timing windows are measured cycle-exact
       against the original mask ROM, so taps land on the same steps they would on a stock 303.
       Press <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">TIME MODE</kbd> (either order)
-      to start a take: the rhythm of the whole take is cleared (the current section, the other
-      half of a linked pair, and every member of an active chain) while all pitches are kept and
-      consumed in order as you tap. The bar restarts from step 1 (a linked pair always starts on its
+      to start a take: the rhythm of the whole take is cleared (the current section, both halves in
+      A/B mode, and every member of an active chain) while all pitches are kept and
+      consumed in order as you tap. The bar restarts from step 1 (in A/B mode always on the
       A section, a chain at its first member) and the <kbd class="docs-key">TIME MODE</kbd> LED
       blinks while the take is running.
     </p>
@@ -571,7 +605,7 @@
       <strong>record</strong> (metronome on, voice silent) and loops until you tap something real
       into it, and once a bar has notes it plays back cleanly while your taps keep recording on top
       (<strong>overdub</strong>). When a full pass has gone by (every chain member's bar, both
-      halves of a linked pair) and something was recorded, the take ends by itself: the patterns
+      halves in A/B mode) and something was recorded, the take ends by itself: the patterns
       simply play what you tapped, and members you never tapped are left empty. A pass where nothing
       was tapped keeps looping with the metronome until the first real take.
     </p>
@@ -613,8 +647,8 @@
       Black keys pick which bank of eight steps you are looking at
       (<kbd class="docs-key">C#</kbd> 1&ndash;8 through <kbd class="docs-key">G#</kbd> 25&ndash;32);
       white keys 1&ndash;8 select a step within that bank.
-      <kbd class="docs-key">BACK</kbd> deselects. The selected step's LED flashes. On a linked A/B
-      pair, each section carries its own probability: select the section first, then edit its steps.
+      <kbd class="docs-key">BACK</kbd> deselects. The selected step's LED flashes. Each section
+      carries its own probability: with A/B mode off, select the section first, then edit its steps.
     </p>
 
     <h3 class="man-sub">Arming Characteristics</h3>
@@ -792,8 +826,18 @@
       lit = note, dim = tie, unlit = rest. The black keys jump between 8-step banks
       (<kbd class="docs-key">C#</kbd> 1&ndash;8, <kbd class="docs-key">D#</kbd> 9&ndash;16,
       <kbd class="docs-key">F#</kbd> 17&ndash;24, <kbd class="docs-key">G#</kbd> 25&ndash;32).
-      On a linked A/B pair, steps 33&ndash;64 are the B section: select section B first, then edit
-      its steps the same way.
+    </p>
+
+    <h3 class="man-sub">A/B Mode: Choosing the Section You Edit</h3>
+    <p class="docs-body">
+      With A/B mode on, the step overview never follows the playing section around: it always opens
+      on section A and stays there while the pattern alternates A and B underneath. To edit the
+      other section, hold <kbd class="docs-key">PITCH MODE</kbd> (or, in the time view,
+      <kbd class="docs-key">TIME MODE</kbd>) and press <kbd class="docs-key">CLEAR</kbd>: the view
+      flips between the two sections. Either press order works. The lit sub-mode LED shows which one
+      you are on: solid = section A, blinking = section B. All step edits, the detail editor, and
+      the web editor mirror follow the viewed section. Leaving step-select or leaving A/B mode
+      drops the flip back to section A.
     </p>
 
     <h3 class="man-sub">Editing a Step's Pitch</h3>
@@ -1209,8 +1253,12 @@
         <tr><td>Hold pattern key + more keys</td><td>Build a chain (up to 4)</td></tr>
         <tr><td>Hold <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> + pattern keys</td><td>Build a chain in any order (repeats allowed)</td></tr>
         <tr><td>&hellip; + <kbd class="docs-key">WRITE/NEXT</kbd>, or build + <kbd class="docs-key">FUNCTION</kbd></td><td>Save the chain on its first pattern (recalled on select)</td></tr>
-        <tr><td><kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd></td><td>Section A / Section B (unlinks a pair)</td></tr>
-        <tr><td>Hold one section button + press the other</td><td>Link A + B into one 64-step pattern</td></tr>
+        <tr><td><kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd></td><td>Section A / Section B (leaves A/B mode)</td></tr>
+        <tr><td>Hold one section button + press the other</td><td>A/B mode on: every selected pattern plays A then B (64 steps)</td></tr>
+        <tr><td>Hold pattern key + <kbd class="docs-key">FUNCTION</kbd> (A/B mode on)</td><td>Save the A/B mode on that pattern (recalled on select)</td></tr>
+        <tr><td>Hold pattern key + <kbd class="docs-key">FUNCTION</kbd> (A/B mode off)</td><td>Clear that pattern's saved A/B memory and stored chain</td></tr>
+        <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> + <kbd class="docs-key">CLEAR</kbd> (PITCH/TIME MODE, running)</td><td>Pin live edits to section A / B (mode LED solid / blinking)</td></tr>
+        <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> or <kbd class="docs-key">TIME MODE</kbd> + <kbd class="docs-key">CLEAR</kbd> (step-select)</td><td>Flip the edited section A / B (sub-mode LED solid / blinking)</td></tr>
         <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> + key</td><td>Transpose (+ <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd> = octave)</td></tr>
         <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> + <kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd></td><td>Force accent / slide (running)</td></tr>
         <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">PITCH MODE</kbd> (Pattern Write)</td><td>Step-select editing</td></tr>
@@ -1251,9 +1299,9 @@
       <li>
         <span class="man-spec-name">Patterns</span>
         64 slots: 4 groups &times; 8 patterns, each with A and B sections of 1&ndash;32 steps
-        (1&ndash;24 in triplet mode). A linked A/B pair plays as one pattern of up to 64 steps, and
-        the link is stored with the pattern. Per step: pitch over a four-octave range, accent, slide,
-        live step lock.
+        (1&ndash;24 in triplet mode). In A/B mode a slot plays as one pattern of up to 64 steps,
+        and the mode can be saved per pattern so it comes back on select. Per step: pitch over a
+        four-octave range, accent, slide, live step lock.
       </li>
       <li>
         <span class="man-spec-name">Variations</span>

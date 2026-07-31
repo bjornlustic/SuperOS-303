@@ -9,8 +9,8 @@ updating and restore them afterwards. D650C-mode patterns and any installed
 mask ROM are stored separately and are not affected.
 
 **Pattern length change:** since the 0.9.8/0.9.9 line, the maximum pattern
-length is now **32 steps per section** (it was 64). Link sections A + B
-(ACCENT + SLIDE) to get one 64-step pattern. This trade is what guarantees
+length is now **32 steps per section** (it was 64). Enter A/B mode
+(ACCENT + SLIDE) to play a slot as one 64-step pattern. This trade is what guarantees
 that every slot, fully loaded (all 3 variations, polyphony, step probability
 on every step, all 8 tracks) always fits in storage alongside the new
 features.
@@ -36,13 +36,23 @@ programmer needed.
 
 ## New since v0.9.9c
 
-- **A/B sections**: every pattern slot is two 32-step sections; link them for
-  one 64-step pattern. Both LEDs lit with the playing half blinking.
-- **Chain memory**: chains can be stored on their first pattern and re-arm
-  automatically when that pattern is selected, surviving power-off.
-- **Chain-wide A/B mode**: with a chain playing, ACCENT + SLIDE makes every
-  member play A then B; a single section button browses the other bank
-  without interrupting playback.
+- **A/B mode**: every pattern slot is two 32-step sections. ACCENT + SLIDE
+  enters a sticky A/B mode in which every pattern you select (and every chain
+  member) plays A then B as one 64-step pattern; a single section button
+  leaves it. Both LEDs lit with the playing half blinking.
+- **A/B + chain memory**: hold a pattern key + FUNCTION in A/B mode to save
+  the mode on that pattern; selecting it later (or powering on with it) turns
+  A/B mode back on. Chains can be stored on their first pattern together with
+  the A/B mode and re-arm automatically when that pattern is selected,
+  surviving power-off. Hold a pattern key + FUNCTION with A/B mode off to
+  clear the pattern's saved A/B memory and stored chain in one gesture.
+- **A/B section editing**: the FN + PITCH step editor always opens on section
+  A instead of following playback; PITCH MODE (or TIME MODE) + CLEAR flips
+  the edited section, with the sub-mode LED solid for A and blinking for B.
+  In PITCH/TIME write modes while running, PITCH MODE + CLEAR pins live edits
+  to one section the same way.
+- **Chain browsing**: with a chain playing and A/B mode off, a single section
+  button browses the other bank without interrupting playback.
 - **Metronome tap-write**: the original 303's TAP time-write, measured
   cycle-exact against the real mask ROM, extended into guided one-pass takes
   with overdub across linked pairs and whole chains.

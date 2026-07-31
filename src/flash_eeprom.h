@@ -17,18 +17,21 @@
 // header; every other page holds exactly one record.
 //
 // Combined build: the SuperOS+D650C image is ~92 KB, so the arena starts at
-// 0x17000 (pages 0x170..0x1DF, 112 pages -> 111 record pages, 110 distinct
-// blocks after the update reserve). Only ~1.9 KB of app headroom is left below
-// it, so watch makesyx's ceiling check when adding code. The SPM service accepts pages
+// 0x17200 (pages 0x172..0x1DF, 110 pages -> 109 record pages, 108 distinct
+// blocks after the update reserve -- the worst-case live set of 107 records
+// plus the reserve fits EXACTLY, see the static_assert in flash_persist.h;
+// the arena cannot move up again without shrinking that set). Only a few
+// hundred bytes of app headroom are left below it, so watch makesyx's ceiling
+// check when adding code. The SPM service accepts pages
 // 0x100..0x1DF, so no service reflash is needed. Keep FLASH_ARENA_BASE in
 // tools/makesyx.py in sync. First boot of a different layout finds no valid
 // header at its base and formats (stored patterns are wiped on a layout change).
-// History: 0x15800 -> 0x16000 -> 0x18000 -> 0x17000. The arena CANNOT grow downward past
+// History: 0x15800 -> 0x16000 -> 0x18000 -> 0x17000 -> 0x17200. The arena CANNOT grow downward past
 // the app: 0x1E000 is the NRWW boundary and the SPM service refuses pages above
 // 0x1DF, so every KB of app code is paid for out of the record budget.
 #ifdef SUPEROS_COMBINED
-static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x170;
-static constexpr uint16_t FE_BANK_PAGES       = 56;           // half the arena (kept for sizing)
+static constexpr uint16_t FE_ARENA_FIRST_PAGE = 0x172;
+static constexpr uint16_t FE_BANK_PAGES       = 55;           // half the arena (kept for sizing)
 #else
 // SuperOS-only build: moved from 0x10000 (112/bank) to 0x12000 for the same
 // reason as the combined image above -- the pattern-write spec pushed the app
