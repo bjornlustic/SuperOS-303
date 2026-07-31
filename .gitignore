@@ -10,3 +10,7 @@ release/
 
 # macOS
 .DS_Store
+
+# Roland mask ROM (reconstructed): never distribute. Local-only; the public
+# release build is combined-norom, users upload their own ROM over SysEx.
+src/d650/emu/tb303_rom.h
