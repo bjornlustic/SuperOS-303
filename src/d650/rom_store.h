@@ -1,8 +1,8 @@
 // rom_store.h -- user-supplied D650C mask ROM: EEPROM persistence + the SysEx
 // receiver (combined build only). Ported from SuperOS-606; see src/d650/SYNC.md.
 //
-// The D650_ROM_IN_RAM build ships WITHOUT the (copyrighted) D650C mask ROM. The
-// user dumps their own chip (or uses a dump they are legally entitled to) and
+// The D650_ROM_IN_RAM build ships WITHOUT the D650C mask ROM. The user
+// supplies their own 2 KB dump and
 // uploads it over DIN MIDI in the following nibble format:
 //
 //   F0 7D 03 03 7E 03 <blk> <2048 nibbles hi,lo> <ck hi> <ck lo> F7   blk = 0,1
