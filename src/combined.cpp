@@ -24,13 +24,13 @@ extern "C" {
 // boot instead of freezing. setup() disables it. The bootloader is not
 // affected (it clears MCUSR + disables the WDT on entry, and this code only
 // runs once it jumps to the app).
-//
-// SUPEROS_OLD_BOOTLOADER build (no USB-C, older "Vox Dei" bootloader that does
-// NOT clear MCUSR/WDRF on entry): every watchdog mechanism is removed. There is
-// no USB, so no PLL-lock hang to recover from, and a watchdog reset would trap
-// the old bootloader in a WDRF reset-loop (the reason firmware switching there
-// only worked after a manual power-cycle). Firmware switching uses a soft reset
-// instead (see combined_switch_firmware).
+// SUPEROS_OLD_BOOTLOADER build (no USB-C, for units running the original
+// OS-303 bootloader, which wdt_disable()s but does NOT clear MCUSR/WDRF on
+// entry): every watchdog mechanism is removed. There is no USB, so no
+// PLL-lock hang to recover from, and a watchdog reset would trap that
+// bootloader in a WDRF reset-loop until power-off (WDRF forces WDE back on,
+// 16 ms timeout). Firmware switching uses a soft reset instead (see
+// combined_switch_firmware).
 extern "C" __attribute__((naked, used, section(".init3")))
 void combined_boot_guard(void) {
   MCUSR = 0;
@@ -50,6 +50,14 @@ static constexpr unsigned kD650Side = sizeof(d650_host) + 2048u; // D650_ROM_SIZ
 static constexpr unsigned kD650Side = sizeof(d650_host);
 #endif
 uint8_t g_fw_arena[sizeof(Engine) > kD650Side ? sizeof(Engine) : kD650Side];
+// midi.cpp parks its SuperOS-only SysEx TX ring at g_fw_arena + sizeof(Engine).
+// If the d650 side ever stops being the larger of the two, that tail is real
+// Engine state and the overlay would corrupt it -- fail the build instead.
+static_assert(sizeof(Engine) + FW_ARENA_SUPEROS_TAIL <= sizeof(g_fw_arena),
+              "arena tail too small for the SuperOS-only overlay (see combined.h)");
+
+// Shared inbound USB SysEx reassembly scratch (see combined.h).
+uint8_t g_usb_sysex_scratch[FW_USB_SYSEX_SCRATCH];
 
 // main.cpp and d650/emu_avr.cpp rename their setup/loop to these.
 void superos_setup(); void superos_loop();
@@ -65,7 +73,6 @@ static uint8_t g_fw = FW_SUPEROS;
 
 void setup() {
   MCUSR = 0;
-#ifndef SUPEROS_OLD_BOOTLOADER
   // Permanent 8 s watchdog, petted every loop() pass. Root-cause evidence
   // (boot-stage breadcrumbs, 1 Hz heartbeat, boot counter over ISP): after a
   // fast firmware swap the host's USB port can come up hosed, and on such
@@ -75,10 +82,11 @@ void setup() {
   // freeze into an automatic recovery reboot; the fresh attach afterwards
   // has always enumerated cleanly. 8 s clears every legitimate long stall
   // (flash GC ~1 s, d650c full-store EEPROM flush ~5 s, swap lockout 4 s).
+#ifndef SUPEROS_OLD_BOOTLOADER
   wdt_enable(WDTO_8S);
 #else
-  wdt_disable(); // no USB, no PLL-hang recovery needed; old bootloader can't
-                 // survive a watchdog reset, so keep the WDT off entirely.
+  wdt_disable(); // no USB, no PLL-hang recovery needed; the original
+                 // bootloader can't survive a watchdog reset, keep WDT off.
 #endif
   const uint8_t sel = eeprom_read_byte(EE_FW_SELECT);
   g_fw = (sel == FW_D650) ? FW_D650 : FW_SUPEROS;
@@ -151,15 +159,15 @@ void combined_switch_firmware(uint8_t fw) {
     }
   }
 #ifdef SUPEROS_OLD_BOOTLOADER
-  // No-USB-C / old-"Vox Dei"-bootloader build: reboot with a SOFT reset (re-enter
-  // the app reset vector) instead of a watchdog reset. The old bootloader does
-  // not clear MCUSR/WDRF on entry, so a watchdog reset would trap it in a reset
-  // loop (switching only completed after a manual power-cycle). A jump to 0x0000
-  // never enters the bootloader at all: crt0 re-runs and setup() reads the new
-  // select byte. The input lockout above guarantees no key is held, so the
-  // re-run of superos_setup() cannot bounce into the bootloader (TAP-at-boot).
-  // Peripherals are not hardware-reset, but both firmwares fully re-init what
-  // they use in setup(), and there is no USB to leave in a bad state.
+  // Original-bootloader build: reboot with a SOFT reset (re-enter the app
+  // reset vector) instead of a watchdog reset. The original bootloader does
+  // not clear MCUSR/WDRF on entry, so a watchdog reset would trap it in a
+  // reset loop until power-off. A jump to 0x0000 never enters the bootloader
+  // at all: crt0 re-runs and setup() reads the new select byte. The input
+  // lockout above guarantees no key is held, so the re-run cannot bounce
+  // into the bootloader (TAP-at-boot). Peripherals are not hardware-reset,
+  // but both firmwares fully re-init what they use in setup(), and there is
+  // no USB to leave in a bad state.
   cli();
   wdt_disable();
   asm volatile("jmp 0");

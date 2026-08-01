@@ -596,6 +596,8 @@
     <div class="group">
       <div class="group-inner">
         <button class="btn" id="btnFwSwitch" disabled>Switch firmware</button>
+        <button class="btn" id="btnBootloader" disabled
+          title="Pick a *-update.syx file: the unit reboots into the SysEx bootloader and the editor sends the update itself (no power-on button combo, no external SysEx tool)">Update OS&#8230;</button>
         <span id="fwModeStatus">Firmware: unknown</span>
       </div>
     </div>
@@ -630,7 +632,7 @@
   </div>
 
   <!-- D650C emulator mask ROM (user-supplied; not distributed with SuperOS). The
-       no-ROM firmware runs the emulator from a ROM you upload here over MIDI. -->
+       device runs the emulator from a ROM you upload here over USB-C or DIN MIDI. -->
   <div class="strip" id="romStrip">
     <div class="group">
       <span class="lbl">D650C mask ROM</span>
@@ -648,7 +650,7 @@
         <button class="btn" id="btnRomSyx" disabled
           title="Save the loaded dump as a .syx in the format the device accepts">&#8595; Save .syx</button>
         <button class="btn" id="btnRomSend" disabled
-          title="Send the ROM to the device over MIDI. The device must be in D650C mode; with no ROM installed it waits there automatically.">&#8593; Send to device</button>
+          title="Send the ROM to the device over MIDI (USB-C or DIN). The device must be in D650C mode; with no ROM installed it waits there automatically.">&#8593; Send to device</button>
       </div>
     </div>
   </div>
@@ -809,7 +811,7 @@
       <div class="seq-toolbar-steps">
         <span class="seq-toolbar-lbl">Steps</span>
         <button class="len-adj-btn" id="patLenDec" title="Fewer steps">−</button>
-        <input type="number" id="patLen" class="seq-pat-len" min="1" max="64" value="16" />
+        <input type="number" id="patLen" class="seq-pat-len" min="1" max="32" value="16" />
         <button class="len-adj-btn" id="patLenInc" title="More steps">+</button>
       </div>
       <div class="seq-toolbar-steps" style="align-items:center;gap:4px">
@@ -841,7 +843,7 @@
         <b>N</b> note &nbsp;&middot;&nbsp; <b>T</b> tie &nbsp;&middot;&nbsp; <b>R</b> rest &nbsp;&mdash;&nbsp;
         vertical drag = pitch &nbsp;&mdash;&nbsp; <b>A</b> accent &nbsp;&middot;&nbsp; <b>S</b> slide
         &nbsp;&mdash;&nbsp;
-        up to <b>64</b> steps (<b>48</b> in triplet mode) &nbsp;&middot;&nbsp; red dot = currently playing step
+        up to <b>32</b> steps per section (<b>24</b> in triplet mode; a linked A/B pair plays 64) &nbsp;&middot;&nbsp; red dot = currently playing step
       </span>
     </div>
     <div class="seq-grid-wrap">
@@ -865,8 +867,8 @@
             <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi,audio/x-midi" style="display:none" />
           </div>
           <div class="ml-field">
-            <label>Steps (max 64)</label>
-            <input type="number" id="midiLoadSteps" min="1" max="64" value="16" disabled />
+            <label>Steps (max 32)</label>
+            <input type="number" id="midiLoadSteps" min="1" max="32" value="16" disabled />
           </div>
           <div class="ml-field">
             <label>Min chord notes</label>
@@ -1040,48 +1042,48 @@
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────────
-  // In-memory blob layout (matches firmware Sequence struct):
-  //   bytes  0..63  pitch[64]    NOTE-event-indexed pitch stream
+  // In-memory blob layout (matches firmware Sequence struct at MAX_STEPS = 32):
+  //   bytes  0..31  pitch[32]    NOTE-event-indexed pitch stream
   //                              (slot K = pitch for the K-th NOTE event in time order)
-  //   bytes 64..79  time_data[16] 2-bit cells, 4 steps/byte (0=REST, 1=NOTE, 2=TIE)
-  //   byte  80      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
-  //   bytes 81..88  reserved[1..8] unused padding
-  //   byte  89      transpose
-  //   byte  90      engine_select (round-tripped untouched)
-  //   byte  91      length (1..64 normal, 1..48 triplet)
+  //   bytes 32..39  time_data[8] 2-bit cells, 4 steps/byte (0=REST, 1=NOTE, 2=TIE)
+  //   byte  40      reserved[0]  bits[2:0]=direction, bit[3]=triplet flag
+  //   bytes 41..48  reserved[1..8] unused padding
+  //   byte  49      transpose
+  //   byte  50      engine_select (round-tripped untouched)
+  //   byte  51      length (1..32 normal, 1..24 triplet)
   //
   // Pitches are NOT indexed by time step. Use noteIdx(blob, s) to map a time
   // step to its stream slot. Time edits never shift pitch[]; the stream
   // auto-extends with PITCH_DEFAULT only when note_count > pitch_count.
   // Removing a NOTE preserves the pitch stream so re-adding NOTEs replays
   // the same pitches in stream order. Same model as the firmware.
-  var PATTERN_SIZE   = 92;
-  var MAX_STEPS      = 64;
-  var TRIPLET_MAX_STEPS = 48;
-  var TIME_OFF       = 64;
-  var TIME_BYTES     = 16;  // MAX_STEPS / 4 (2-bit cells, 4 steps/byte)
-  var RES0_OFF       = 80;
-  var RES1_OFF       = 81;  // reserved[1..8], unused padding
-  var TRANSPOSE_OFF  = 89;
-  var ENGINE_OFF     = 90;
-  var LEN_OFF        = 91;
-  var PACKED_SIZE    = 106; // 92 raw -> 13 full chunks (104 B) + 1 partial (2 B)
+  var MAX_STEPS      = 32;
+  var TRIPLET_MAX_STEPS = 24;
+  var TIME_OFF       = MAX_STEPS;
+  var TIME_BYTES     = MAX_STEPS / 4;  // 2-bit cells, 4 steps/byte
+  var RES0_OFF       = TIME_OFF + TIME_BYTES;
+  var RES1_OFF       = RES0_OFF + 1;   // reserved[1..8], unused padding
+  var TRANSPOSE_OFF  = RES0_OFF + 9;
+  var ENGINE_OFF     = TRANSPOSE_OFF + 1;
+  var LEN_OFF        = ENGINE_OFF + 1;
+  var PATTERN_SIZE   = LEN_OFF + 1;    // 52
+  var PACKED_SIZE    = PATTERN_SIZE + Math.ceil(PATTERN_SIZE / 7); // 60
 
   // Variation-3 poly blob (matches firmware poly.h, chord-list model). A CHORD STREAM
   // (notes pack 4x6 bits = 3 bytes/chord, accent/slide per chord) plus an independent
-  // per-step TIME stream; the K-th NOTE step pulls chord K. 227 raw -> 260 packed.
-  var POLY_BLOB_SIZE = 227;
+  // per-step TIME stream; the K-th NOTE step pulls chord K. 115 raw -> 132 packed.
   var POLY_VOICES    = 4;
   var POLY_EMPTY     = 0x3F;
   var POLY_DEFAULT   = 0x10;  // semi=0, oct=1 (centre C)
-  var POLY_CHORDS    = 64;    // max chords = max NOTE events
-  var POLY_TIME_OFF  = 192;   // POLY_CHORDS*3
-  var POLY_ACC_OFF   = 208;   // + MAX_STEPS/4
-  var POLY_SLD_OFF   = 216;   // + POLY_CHORDS/8
-  var POLY_CNT_OFF   = 224;   // chord_count
-  var POLY_DIR_OFF   = 225;
-  var POLY_LEN_OFF   = 226;
-  var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 260
+  var POLY_CHORDS    = MAX_STEPS;           // max chords = max NOTE events
+  var POLY_TIME_OFF  = POLY_CHORDS * 3;
+  var POLY_ACC_OFF   = POLY_TIME_OFF + MAX_STEPS / 4;
+  var POLY_SLD_OFF   = POLY_ACC_OFF + POLY_CHORDS / 8;
+  var POLY_CNT_OFF   = POLY_SLD_OFF + POLY_CHORDS / 8;
+  var POLY_DIR_OFF   = POLY_CNT_OFF + 1;
+  var POLY_LEN_OFF   = POLY_DIR_OFF + 1;
+  var POLY_BLOB_SIZE = POLY_LEN_OFF + 1;    // 115
+  var PACKED_POLY    = POLY_BLOB_SIZE + Math.ceil(POLY_BLOB_SIZE / 7); // 132
 
   // Per-step characteristic probability (variation 1 only; SysEx 0x2B step /
   // 0x2C req / 0x2D table). THREE bytes per step so accent, slide, a down
@@ -1091,8 +1093,8 @@
   //   byte0: bits[3:0] accent level (0=off), bits[7:4] slide level (0=off)
   //   byte1: bits[3:0] down level (0=off),   bits[7:4] up level (0=off)
   //   byte2: bit0 up-double (up = +24 when set, else +12)
-  // 192 raw -> packed.
-  var PROB_RAW       = 192;
+  // 3 * MAX_STEPS raw -> packed.
+  var PROB_RAW       = 3 * MAX_STEPS;
   var PACKED_PROB    = PROB_RAW + Math.ceil(PROB_RAW / 7);
   var PROB_LEVEL_MAX = 13;
   function probAccLvl(b0)  { return b0 & 15; }
@@ -1127,7 +1129,7 @@
   // Linear pitch range: 0..48 semitones (4 octaves)
   var PITCH_FULL_LIN_MIN = 0;
   var PITCH_FULL_LIN_MAX = 48;
-  var NUM_GROUPS         = 4;
+  var NUM_GROUPS         = 4;   // pattern groups I-IV (the knob's 7 detents pair up)
   var LS_PITCH_MODE      = 'superos303_pitch_mode';
   var PATS_PER_GROUP     = 16; // 2 banks of 8
 
@@ -1427,10 +1429,8 @@
     }
     if (allTie) setTime(blob, 0, 1);
     if (getTime(blob, 0) === 2) setTime(blob, 0, 1);
-    for (var j = 0; j < len; j++) {
-      var nxt = (j + 1) % len;
-      if (getTime(blob, j) === 0 && getTime(blob, nxt) === 2) setTime(blob, j, 1);
-    }
+    // Rest-then-tie stays as written (matches firmware): an orphaned tie is
+    // silence at playback; promoting it to a NOTE created phantom notes.
     ensurePitchStream(blob);
   }
 
@@ -1529,8 +1529,8 @@
   }
 
   // ── Storage ────────────────────────────────────────────────────────
-  // Each slot (g,p) holds 3 VARIATIONS, each a full 92-byte pattern blob.
-  //   varStore[g][p][v]  = Uint8Array(92), v = 0..2 (variations 1/2/3 = C/D/E)
+  // Each slot (g,p) holds 3 VARIATIONS, each a full PATTERN_SIZE-byte blob.
+  //   varStore[g][p][v]  = Uint8Array(PATTERN_SIZE), v = 0..2 (variations 1/2/3 = C/D/E)
   //   slotVar[g][p]      = which variation is currently active/displayed (0..2)
   //   groups[g][p]       = REFERENCE to varStore[g][p][slotVar[g][p]] (so all the
   //                        existing editor code that operates on groups[g][p]
@@ -1547,7 +1547,7 @@
   var polyStore = []; // [g][p] -> Uint8Array(POLY_BLOB_SIZE) or null (variation-3 poly data)
   var probStore = []; // [g][p] -> Uint8Array(128) per-step probability (var1, 2 bytes/step)
   var groups = []; // [4][16] -> reference into varStore[g][p][slotVar[g][p]]
-  var LS_KEY = 'superos303_groups_v8'; // bumped for per-slot variations; old key dropped
+  var LS_KEY = 'superos303_groups_v11'; // bumped for the 32-step (52-byte blob) layout; old key dropped
   var LS_SCALE_LOCK = 'superos303_scale_lock';
 
   // ── Scale definitions ──────────────────────────────────────────────
@@ -1671,7 +1671,7 @@
   }
   function saveGroupsToLSNow() {
     try {
-      var ser = { v: 8, groups: [] };
+      var ser = { v: 10, groups: [] };
       for (var g = 0; g < NUM_GROUPS; g++) {
         ser.groups[g] = [];
         for (var p = 0; p < PATS_PER_GROUP; p++) {
@@ -1694,7 +1694,7 @@
       var raw = localStorage.getItem(LS_KEY);
       if (!raw) return false;
       var ser = JSON.parse(raw);
-      if (!ser || ser.v !== 8 || !Array.isArray(ser.groups) || ser.groups.length !== NUM_GROUPS) return false;
+      if (!ser || ser.v !== 10 || !Array.isArray(ser.groups) || ser.groups.length !== NUM_GROUPS) return false;
       for (var g = 0; g < NUM_GROUPS; g++) {
         for (var p = 0; p < PATS_PER_GROUP; p++) {
           var s = ser.groups[g][p];
@@ -2210,6 +2210,11 @@
     var fwBtn = document.getElementById('btnFwSwitch');
     fwBtn.disabled = !ok || deviceMode === 'unknown';
     fwBtn.textContent = deviceMode === 'd650' ? 'Switch to SuperOS' : 'Switch to D650C';
+    // Enabled whenever an output port is bound: with a live device the update
+    // reboots it into the bootloader itself (0x4A); with no identified device
+    // the flow assumes the unit is ALREADY in the bootloader (original
+    // OS-303 bootloader units: hold TAP at power-on, then update from here).
+    document.getElementById('btnBootloader').disabled = !midiOut;
     document.getElementById('d650Banner').classList.toggle('visible', ok && d650);
     recomputeDirty();
   }
@@ -2222,7 +2227,7 @@
     document.body.classList.toggle('mode-d650', mode === 'd650');
     var el = document.getElementById('fwModeStatus');
     el.textContent = 'Firmware: ' + (mode === 'superos' ? 'SuperOS' + (hwVersion ? ' v' + hwVersion : '')
-                                    : mode === 'd650'    ? 'D650C emulator' + (hwVersion ? ' v' + hwVersion : '')
+                                    : mode === 'd650'    ? 'D650C emulator'
                                     : 'unknown');
     updateButtons();
   }
@@ -2264,46 +2269,85 @@
     return false;
   }
 
+  // A/B pair link flag: reserved[3] bit0 (blob byte 43), stored on the A
+  // section's VAR-1 blob. Read var1 directly so viewing var2/3 doesn't hide
+  // the link.
+  function pairLinked(g, p) {
+    var ab = varStore[g][p & 7][0];
+    return !!(ab && (ab[43] & 1));
+  }
+  // The rendered section list: active chain entries (or just the active
+  // pattern) with linked A/B pairs expanded to A,B so both sections stay
+  // visible in playback order (1A, 1B, 2A, ...) instead of the view flipping
+  // between the halves.
+  function displayChainList() {
+    var base = (patChain.length > 1) ? patChain : [activePat];
+    // Chain-wide A/B (hardware rule): the chain's FIRST member owns the link
+    // flag for the whole chain, so every member expands to A,B when it is
+    // set; a member's own flag still counts for patterns linked before they
+    // were chained.
+    var chainAB = (patChain.length > 1) && pairLinked(activeGroup, patChain[0]);
+    var out = [];
+    for (var i = 0; i < base.length; i++) {
+      var p = base[i] & 15;
+      if (chainAB || pairLinked(activeGroup, p)) { out.push(p & 7); out.push((p & 7) + 8); }
+      else out.push(p);
+    }
+    return out;
+  }
+  function sectionLabel(pi) {
+    return 'Pattern ' + ((pi & 7) + 1) + ((pi & 8) ? 'B' : 'A');
+  }
+
+  function renderChainSections(grid, view) {
+    grid.className = 'chain-view';
+    for (var ci = 0; ci < view.length; ci++) {
+      var pi = view[ci];
+      var isActive = (pi === activePat);
+      var cblob = groups[activeGroup][pi];
+      var clen = getLength(cblob);
+      normalizePatternTimes(cblob, clen);
+
+      var section = document.createElement('div');
+      var secCls = 'chain-pat-section' + (isActive ? ' is-active' : '');
+      if (pi === playingPat) secCls += ' is-playing-pat';
+      section.className = secCls;
+      section.dataset.chainPat = pi;
+
+      var header = document.createElement('div');
+      header.className = 'chain-pat-header';
+      var label = document.createElement('span');
+      label.textContent = sectionLabel(pi);
+      header.appendChild(label);
+      var playDot = document.createElement('div');
+      playDot.className = 'chain-pat-play-dot';
+      header.appendChild(playDot);
+      (function(p) {
+        header.addEventListener('click', function() { switchToPat(p); });
+      })(pi);
+      section.appendChild(header);
+
+      var innerGrid = document.createElement('div');
+      innerGrid.className = 'seq-grid'; // always 8 per row
+      renderPatternCards(cblob, pi, clen, innerGrid, isActive);
+      section.appendChild(innerGrid);
+      grid.appendChild(section);
+    }
+  }
+
   function renderGrid() {
     var grid = document.getElementById('seqGrid');
     grid.innerHTML = '';
 
+    var view = displayChainList();
     if (patChain.length > 1) {
-      grid.className = 'chain-view';
-      for (var ci = 0; ci < patChain.length; ci++) {
-        var pi = patChain[ci];
-        var isActive = (pi === activePat);
-        var cblob = groups[activeGroup][pi];
-        var clen = getLength(cblob);
-        normalizePatternTimes(cblob, clen);
-
-        var section = document.createElement('div');
-        var secCls = 'chain-pat-section' + (isActive ? ' is-active' : '');
-        if (pi === playingPat) secCls += ' is-playing-pat';
-        section.className = secCls;
-        section.dataset.chainPat = pi;
-
-        var header = document.createElement('div');
-        header.className = 'chain-pat-header';
-        var label = document.createElement('span');
-        label.textContent = 'Pattern ' + (pi + 1);
-        header.appendChild(label);
-        var playDot = document.createElement('div');
-        playDot.className = 'chain-pat-play-dot';
-        header.appendChild(playDot);
-        (function(p) {
-          header.addEventListener('click', function() { switchToPat(p); });
-        })(pi);
-        section.appendChild(header);
-
-        var innerGrid = document.createElement('div');
-        innerGrid.className = 'seq-grid'; // always 8 per row
-        renderPatternCards(cblob, pi, clen, innerGrid, isActive);
-        section.appendChild(innerGrid);
-        grid.appendChild(section);
-      }
+      renderChainSections(grid, view);
     } else if (slotVar[activeGroup][activePat] === 2 && isVar3Poly(activeGroup, activePat)) {
       renderPolyEditor(grid, currentPatLen());
+    } else if (view.length > 1) {
+      // Linked A/B pair without a chain: show both sections stacked, playhead
+      // walks across them, edits stay on the active section.
+      renderChainSections(grid, view);
     } else {
       var blob = activeBlob();
       var len = currentPatLen();
@@ -3236,8 +3280,11 @@
       queuedPat = -1;
 
       // Auto-follow hardware: switch editor grid to the playing pattern.
-      // Suppress in chain view (all patterns already visible) and Edit Live mode.
-      if (activeGroup === hwGroup && !editLiveMode && patChain.length <= 1) {
+      // Suppress in chain view (all patterns already visible), in a linked
+      // A/B pair view when playback moves to the other section (both are
+      // already on screen), and in Edit Live mode.
+      if (activeGroup === hwGroup && !editLiveMode && patChain.length <= 1 &&
+          !(pairLinked(activeGroup, activePat) && (pat & 7) === (activePat & 7))) {
         switchToPat(pat);
       }
 
@@ -3252,12 +3299,8 @@
     // Show playing-step dot in the correct card
     var old = document.querySelector('.step-card.is-playing-step');
     if (old) old.classList.remove('is-playing-step');
-    var dotRoot;
-    if (patChain.length > 1) {
-      dotRoot = document.querySelector('.chain-pat-section[data-chain-pat="' + pat + '"]') || null;
-    } else if (pat === activePat) {
-      dotRoot = document;
-    }
+    var dotRoot = document.querySelector('.chain-pat-section[data-chain-pat="' + pat + '"]') || null;
+    if (!dotRoot && pat === activePat) dotRoot = document;
     if (dotRoot) {
       var cards = dotRoot.querySelectorAll('.step-card');
       for (var i = 0; i < cards.length; i++) {
@@ -3290,7 +3333,10 @@
   function requestProbTable(pat) { sendSysex(new Uint8Array([0x7d, 0x2c, pat & 15])); }
   function sendProbStep(pat, s, b0, b1, b2) {
     if (activeGroup !== hwGroup) return;
-    sendSysex(new Uint8Array([0x7d, 0x2b, pat & 15, s & 0x3f, b0 & 0x7f, b1 & 0x7f, b2 & 0x7f]));
+    // Trailing msbs byte: bit0/1/2 = bit 7 of b0/b1/b2 (high-nibble levels
+    // 8-13 set bit 7, which a bare SysEx data byte cannot carry).
+    var msbs = ((b0 >> 7) & 1) | ((b1 >> 6) & 2) | ((b2 >> 5) & 4);
+    sendSysex(new Uint8Array([0x7d, 0x2b, pat & 15, s & 0x3f, b0 & 0x7f, b1 & 0x7f, b2 & 0x7f, msbs]));
   }
   function sendProbTable(pat) {
     if (activeGroup !== hwGroup) return;
@@ -3571,7 +3617,8 @@
   //   F0 7D 03 03 7E 03 <blk> <2048 nibbles hi,lo> <ck hi> <ck lo> F7  (blk 0,1)
   //   F0 7D 03 03 7F 00 F7                                             (end)
   // ck = sum of the block's 1024 decoded bytes, mod 256. Byte-exact to the
-  // firmware receiver (src/d650/rom_store.h). Status: 0x36 query -> 0x37 reply.
+  // firmware receiver (src/d650/rom_store.h). Sent over the selected MIDI output,
+  // so it works over USB-C or DIN. Status: 0x36 query -> 0x37 reply.
   var ROM_SIZE = 2048;
   var maskRom = null;
 
@@ -3679,9 +3726,8 @@
   });
   // Poll every 2 s regardless of firmware mode: 0x36 (ROM status, both firmwares
   // answer) and 0x40 (D650C status). The 0x40 probe keeps re-detecting a unit in
-  // D650C mode over DIN (it replies 0x41 -> setDeviceMode('d650')), so the editor
-  // shows it connected without the user re-clicking Connect. Harmless in SuperOS
-  // mode (no 0x40 handler there).
+  // D650C mode (it replies 0x41 -> setDeviceMode('d650')), so the editor shows it
+  // connected without the user re-clicking Connect. Harmless in SuperOS mode.
   setInterval(function() {
     if (!midiOut) return;
     sendSysex(new Uint8Array([0x7d, 0x36]));
@@ -3774,6 +3820,16 @@
         if (activeGroup === g && pat === activePat) {
           syncPatternToolbar();
           refreshScaleUI(); // the blob carries the pattern's scale in reserved[1..2]
+          renderGrid();
+        } else if (activeGroup === g && (pat & 7) === (activePat & 7)) {
+          // Partner section of the on-screen slot: the A/B link flag or the
+          // other half's contents changed, and the pair view shows both.
+          renderGrid();
+        } else if (activeGroup === g && patChain.length > 1 &&
+                   patChain.some(function(cp) { return (cp & 7) === (pat & 7); })) {
+          // A chain member (or its partner section) changed: the chain view
+          // shows every member, and the first member's blob carries the
+          // chain-wide A/B flag that restacks the whole view.
           renderGrid();
         }
       }
@@ -3889,7 +3945,7 @@
       // is corrected. Also resets subtick to 0 (we just hit a 16th boundary).
       var sPat = bytes[2] & 0x0f;
       var sStep = bytes[3] & 0x3f;
-      var sGrp = bytes[4] & 0x03;
+      var sGrp = bytes[4] & 0x07;
       if (sGrp !== hwGroup) {
         hwGroup = sGrp;
         switchGroup(sGrp);
@@ -3925,7 +3981,7 @@
 
     if (cmd === 0x1e && bytes.length >= 4) {
       var aPat = bytes[2] & 0x0f;
-      var aGrp = bytes.length >= 4 ? bytes[3] & 0x03 : 0;
+      var aGrp = bytes.length >= 4 ? bytes[3] & 0x07 : 0;
       if (aGrp !== hwGroup) {
         hwGroup = aGrp;
         switchGroup(aGrp);
@@ -3936,7 +3992,7 @@
     }
 
     if (cmd === 0x1c && bytes.length >= 3) {
-      var newGrp = bytes[2] & 0x03;
+      var newGrp = bytes[2] & 0x07;
       var grpChanged = (newGrp !== hwGroup) || !initialSyncDone;
       hwGroup = newGrp;
       log('Hardware group: ' + (newGrp + 1) + (grpChanged ? (initialSyncDone ? ' (changed)' : ' (initial sync)') : ' (echo)'), 'log-ack');
@@ -3997,7 +4053,12 @@
         }
       }
       saveGroupsToLS();
-      if (activeGroup === hwGroup && rPat === activePat && shown) renderGrid();
+      // Re-render when the edited slot is on screen: the active pattern, any
+      // chain-view section, or the partner half of a linked A/B pair.
+      if (activeGroup === hwGroup && shown &&
+          (rPat === activePat ||
+           document.querySelector('.chain-pat-section[data-chain-pat="' + rPat + '"]')))
+        renderGrid();
       recomputeDirty();
       if (shown) {
         if (reflect303HistTimer) clearTimeout(reflect303HistTimer);
@@ -4093,9 +4154,10 @@
       var psPat = bytes[2] & 0x0f, psStep = bytes[3] & 0x3f;
       var psG = (hwGroup >= 0) ? hwGroup : activeGroup;
       var pt = getProb(psG, psPat);
-      pt[psStep * 3] = bytes[4] & 0x7f;
-      pt[psStep * 3 + 1] = bytes[5] & 0x7f;
-      pt[psStep * 3 + 2] = bytes[6] & 0x7f;
+      var psMsbs = bytes.length >= 8 ? bytes[7] : 0; // bit0/1/2 = bit 7 of b0/b1/b2
+      pt[psStep * 3] = (bytes[4] & 0x7f) | ((psMsbs & 1) << 7);
+      pt[psStep * 3 + 1] = (bytes[5] & 0x7f) | ((psMsbs & 2) << 6);
+      pt[psStep * 3 + 2] = (bytes[6] & 0x7f) | ((psMsbs & 4) << 5);
       saveGroupsToLS();
       if (activeGroup === psG && psPat === activePat) renderGrid();
       log('Prob step pat ' + (psPat+1) + ' step ' + (psStep+1), 'log-ack');
@@ -4176,17 +4238,6 @@
       expectDump = 0; bulkNextPat = -1;
       hideSyncOverlay();
       var wasD650 = deviceMode === 'd650';
-      // Bytes 46+ are the emulator firmware version as ASCII (older firmware
-      // sends only the 46 telemetry bytes). Set before setDeviceMode so the
-      // 'Firmware:' line can show it.
-      if (bytes.length > 46) {
-        var dvs = '';
-        for (var dvi = 46; dvi < bytes.length; dvi++) {
-          var dvc = bytes[dvi];
-          if (dvc >= 0x20 && dvc < 0x7f) dvs += String.fromCharCode(dvc);
-        }
-        hwVersion = dvs;
-      }
       setDeviceMode('d650');
       // Status doubles as the config read/write ack: clock source, channel, BPM.
       if (bytes.length >= 6) {
@@ -5471,6 +5522,185 @@
     showErrorToast('Switching to ' + goingTo + '…');
   };
 
+  // ── In-editor OS update ─────────────────────────────────────────────
+  // Full flow, no external SysEx tool: pick a *-update.syx, validate every
+  // page against the same XOR checksum the bootloader verifies (a corrupt
+  // file must never start: the bootloader halts on the first bad page until
+  // power cycle), reboot the unit into the SysEx bootloader (0x4A, handled
+  // by BOTH firmware sides; pending edits are flushed first), wait for it to
+  // come back (over USB it re-enumerates as "SuperOS-303 Bootloader"; over
+  // DIN the interface port never changes), then stream the messages with a
+  // fixed gap -- the bootloader has no per-page ACK, so pacing is the
+  // throttle, same as SysEx Librarian's. The file's trailing 0x02 reboots
+  // into the new firmware and the remembered-port reconnect takes over.
+  var OS_PAGE_GAP_MS   = 50;
+  var OS_BOOT_WAIT_MS  = 12000; // give USB re-enumeration time before giving up
+  var OS_BOOT_GRACE_MS = 2500;  // settle time before the first page
+  var osUpd = null;             // active update: {msgs, pages, name, origOut, port, sent, t0}
+
+  function osUpdateParse(buf) {
+    var d = new Uint8Array(buf), msgs = [], pages = 0, exec = false, i = 0;
+    while (i < d.length) {
+      if (d[i] !== 0xF0) return { err: 'stray byte 0x' + d[i].toString(16) + ' at offset ' + i };
+      var j = i + 1;
+      while (j < d.length && d[j] !== 0xF7) {
+        if (d[j] & 0x80) return { err: 'status byte inside a message at offset ' + j };
+        j++;
+      }
+      if (j >= d.length) return { err: 'unterminated SysEx message' };
+      var m = d.subarray(i, j + 1);
+      if (m.length < 4 || m[1] !== 0x7D) return { err: 'not a SuperOS update file' };
+      var cmd = m[2];
+      if (cmd === 0x01) {
+        if (m.length < 11) return { err: 'truncated page message' };
+        var page = (m[3] << 7) | m[4];
+        var plen = (m[5] << 7) | m[6];
+        if (page >= 0x1F0 && page <= 0x1FD)
+          return { err: 'file writes bootloader page 0x' + page.toString(16).toUpperCase() + '; refusing' };
+        if (9 + plen + 1 !== m.length) return { err: 'bad packed length on page 0x' + page.toString(16).toUpperCase() };
+        // Decode the 7-bit groups and XOR-verify, exactly as bootload.c does.
+        var ck = ((m[7] & 0x0F) << 4) | (m[8] & 0x0F);
+        var k = 9, end = 9 + plen;
+        while (k < end) {
+          var msb = m[k++];
+          for (var b = 0; b < 7 && k < end; b++, k++)
+            ck ^= m[k] | (((msb >> b) & 1) << 7);
+        }
+        if (ck) return { err: 'checksum mismatch on page 0x' + page.toString(16).toUpperCase() + ' (corrupt file?)' };
+        pages++;
+      } else if (cmd === 0x02) {
+        exec = true;
+      } else {
+        return { err: 'unexpected command 0x' + cmd.toString(16) + ' in file' };
+      }
+      msgs.push(new Uint8Array(m));
+      i = j + 1;
+    }
+    if (!pages) return { err: 'no page-write messages in file' };
+    if (!exec)  return { err: 'file has no trailing run-app (0x02) message' };
+    return { msgs: msgs, pages: pages };
+  }
+
+  function osUpdateFindPort() {
+    if (!midiAccess || !osUpd) return null;
+    var outs = Array.from(midiAccess.outputs.values());
+    // USB: the bootloader enumerates as its own device.
+    var boot = outs.find(function(p) { return /bootloader/i.test(p.name || ''); });
+    if (boot) return boot;
+    // DIN: the MIDI interface port never went away; after the settle time,
+    // keep using the output the update started on.
+    if (Date.now() - osUpd.t0 >= OS_BOOT_GRACE_MS && osUpd.origOut) {
+      return outs.find(function(p) {
+        return p.id === osUpd.origOut.id || (p.name && p.name === osUpd.origOut.name);
+      }) || null;
+    }
+    return null;
+  }
+
+  function osUpdateStatus(msg) {
+    document.getElementById('fwModeStatus').textContent = msg;
+    showErrorToast(msg);
+  }
+
+  function osUpdateTick() {
+    if (!osUpd) return;
+    if (!osUpd.port) {
+      osUpd.port = osUpdateFindPort();
+      if (!osUpd.port) {
+        if (Date.now() - osUpd.t0 > OS_BOOT_WAIT_MS) {
+          osUpdateStatus('Update aborted: bootloader never appeared');
+          log('OS update: no bootloader port after ' + OS_BOOT_WAIT_MS + ' ms. ' +
+              'The unit may be waiting in the bootloader (four LEDs lit): ' +
+              'send the file with SysEx Librarian / MIDI-OX or power cycle.', 'log-err');
+          osUpd = null;
+          return;
+        }
+        setTimeout(osUpdateTick, 250);
+        return;
+      }
+      log('OS update: sending via "' + (osUpd.port.name || osUpd.port.id) + '"', 'log-syx');
+    }
+    if (osUpd.sent >= osUpd.msgs.length) {
+      var name = osUpd.name;
+      osUpd = null;
+      osUpdateStatus('Update sent - the unit is rebooting');
+      log('OS update: ' + name + ' sent completely; the unit reboots into the new firmware', 'log-ack');
+      return;
+    }
+    try {
+      osUpd.port.send(osUpd.msgs[osUpd.sent]);
+    } catch (e) {
+      osUpdateStatus('Update aborted: ' + e.message);
+      log('OS update: send failed at message ' + (osUpd.sent + 1) + '/' + osUpd.msgs.length +
+          ': ' + e.message + '. The unit is still in the bootloader; retry Update OS or ' +
+          'send the file with SysEx Librarian.', 'log-err');
+      osUpd = null;
+      return;
+    }
+    osUpd.sent++;
+    if (osUpd.sent === osUpd.msgs.length || osUpd.sent % 16 === 0)
+      osUpdateStatus('Updating OS: ' + Math.floor(100 * osUpd.sent / osUpd.msgs.length) + '%');
+    setTimeout(osUpdateTick, OS_PAGE_GAP_MS);
+  }
+
+  document.getElementById('btnBootloader').onclick = function() {
+    if (!midiOut || osUpd) return;
+    // Identified device: reboot it into the bootloader ourselves (0x4A).
+    // Unidentified: assume the unit is ALREADY in the bootloader (original
+    // OS-303 bootloader has no SysEx entry; the user held TAP at power-on)
+    // and stream straight to the selected output port.
+    var live = deviceMode !== 'unknown';
+    var fi = document.createElement('input');
+    fi.type = 'file';
+    fi.accept = '.syx';
+    fi.onchange = function() {
+      var f = fi.files && fi.files[0];
+      if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function() {
+        var parsed = osUpdateParse(rd.result);
+        if (parsed.err) {
+          showErrorToast('Not sent: ' + parsed.err);
+          log('OS update: rejected ' + f.name + ': ' + parsed.err, 'log-err');
+          return;
+        }
+        var mins = 'about ' + Math.ceil(parsed.pages * OS_PAGE_GAP_MS / 1000) + ' seconds';
+        var msg = live
+          ? ('Update the firmware with "' + f.name + '"?\n\n' +
+             parsed.pages + ' flash pages will be written (' + mins + ').\n' +
+             'Pending edits are saved first, then the unit reboots into the ' +
+             'bootloader and the file is sent automatically.\n\n' +
+             'Do not power off the unit while the update runs.')
+          : ('Send "' + f.name + '" to a unit already in the bootloader?\n\n' +
+             'This assumes the unit is in bootloader mode NOW (hold WRITE/NEXT ' +
+             'while powering on; four mode LEDs lit solid) on output "' +
+             (midiOut.name || midiOut.id) + '".\n' +
+             parsed.pages + ' flash pages will be written (' + mins + ').\n\n' +
+             'Do not power off the unit while the update runs.');
+        if (!confirm(msg)) return;
+        clearCfgReadRetry();
+        expectDump = 0; bulkNextPat = -1;
+        hideSyncOverlay();
+        osUpd = { msgs: parsed.msgs, pages: parsed.pages, name: f.name,
+                  origOut: midiOut, port: null, sent: 0, t0: Date.now() };
+        if (live) {
+          sendSysex(new Uint8Array([0x7d, 0x4a]));
+          setDeviceMode('unknown');
+          log('→ 0x4A: rebooting into the SysEx bootloader for ' + f.name, 'log-syx');
+          osUpdateStatus('Waiting for the bootloader…');
+          setTimeout(osUpdateTick, OS_BOOT_GRACE_MS);
+        } else {
+          osUpd.port = midiOut;
+          log('OS update: sending ' + f.name + ' to the already-running bootloader', 'log-syx');
+          osUpdateStatus('Updating OS: 0%');
+          setTimeout(osUpdateTick, 100);
+        }
+      };
+      rd.readAsArrayBuffer(f);
+    };
+    fi.click();
+  };
+
   // ── D650C native pattern store backup/restore (SysEx 0x46/0x47/0x48) ────
   // The d650 side exposes its full uPD444 pattern memory (3072 nibbles packed
   // 2/byte = 1536 bytes) as 8 raw blocks of 192 bytes, 7-bit packed to 220
@@ -5625,8 +5855,8 @@
         layoutPitchKnob(wrap, nameEl, blob, si, len);
       }
     }
-    if (patChain.length > 1) {
-      var sections = document.querySelectorAll('#seqGrid .chain-pat-section');
+    var sections = document.querySelectorAll('#seqGrid .chain-pat-section');
+    if (sections.length) {
       for (var k = 0; k < sections.length; k++) {
         var pi = parseInt(sections[k].dataset.chainPat, 10);
         if (isNaN(pi)) continue;
@@ -5654,7 +5884,7 @@
   })();
 
   // ── Library ───────────────────────────────────────────────────────────
-  var LIB_LS_KEY = 'superos303_library_v1';
+  var LIB_LS_KEY = 'superos303_library_v2'; // 32-step blobs; v1 held 92-byte blobs
   var libEntries = []; // [{src, group, pattern, length, pd}]
 
   function libLoadFromLS() {

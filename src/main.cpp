@@ -52,14 +52,14 @@ static Engine &engine = *(Engine *)g_fw_arena;  // overlays the d650 machine;
                                                 // placement-new'ed in setup
 #endif
 
-static PinState inputs[INPUT_COUNT];
+// Non-static: midi.cpp's 0x34 panel diagnostic reads the debounced states.
+PinState inputs[INPUT_COUNT];
 
 static uint8_t s_prev_tracknum = 0xff; // 0xff = not yet initialized
 static uint8_t s_display_group = 0;    // group shown by dial (may differ from playing group when running)
 static uint8_t s_group_debounce_val   = 0xff; // pending new group value
 static uint8_t s_group_debounce_count = 0;    // consecutive frames seen
 static constexpr uint8_t GROUP_DEBOUNCE_FRAMES = 5;
-static bool step_counter = false;
 static bool midi_clk = false;
 static uint8_t s_time_edit_steps = 0; // counts writes in the current TIME_MODE edit session
 
@@ -82,14 +82,60 @@ static constexpr uint16_t PATTERN_CLEARED_FLASH_MS = 400;
 // so the user sees confirmation for as long as they keep CLEAR held.
 static bool s_pat_cleared_hold = false;
 
-// Metronome tap-write state (CLEAR+write+clk_run in NORMAL_MODE)
+// Metronome tap-write state (CLEAR+write+clk_run in NORMAL_MODE).
+//
+// The recorder is a port of the REAL TB-303 ROM's tap time-write, measured
+// cycle-exactly against the mask ROM on the desktop emulator core
+// (tools-side tapmode_sweep.c). The ROM's laws:
+//   * The session is ONE BAR from a bar reset; afterwards the pattern plays.
+//   * Taps are accepted on clock ticks 2..5 of each 6-tick step (1/3 in and
+//     later). An accept requires the key STILL HELD; accept at tick 2 writes
+//     the CURRENT step, ticks 3..5 write the NEXT step (so up to 2/3 step
+//     early aims at the next beat; more than that and the press is stale by
+//     the next decision tick and DROPS -- "don't tap between measures").
+//   * Each step's fate is decided at ITS tick 2: fresh accept = NOTE, key
+//     still held from an earlier note = TIE, released = REST; holding any
+//     SELECTOR key (pattern keys 1-8) turns would-be RESTs into TIEs once a
+//     note exists (the manual's SUSTAIN).
+//   * The monitor voice gates from the accept tick until physical release at
+//     the note's pitch; metronome clicks (low at bar start, high on other
+//     8ths, 2 ticks long) are suppressed while it sounds; the engine's own
+//     gate stays silent for the whole session.
 static bool s_metronome_active                  = false;
-static bool s_metro_tap_released_since_last_beat = false; // TAP fell during this beat → next press = NOTE, not TIE
-static bool s_metro_prev_note                   = false;
-static bool s_metro_has_activity                = false;  // any TAP seen this pass; exit at wrap if true
+static bool s_metro_press_pending               = false;  // TAP press awaiting an accept tick
+static bool s_metro_note_active                 = false;  // tapped note's finger still down (tie source)
+static bool s_metro_any_note                    = false;  // sustain tie-fill arms after the first note
+static bool s_metro_pass_accept                 = false;  // a tap was HELD at its accept tick this pass
+static bool s_metro_bar_started                 = false;  // bar reset reached step 0; writes enabled
+static bool s_metro_step_prewritten             = false;  // upcoming step already holds a next-step NOTE
+// Two per-pattern phases while the session runs. RECORD = the ROM's measure
+// (clicks on, engine voice silent, monitor under the finger), looping until
+// the bar wraps with content. OVERDUB = the pattern has been input: clicks
+// stop, the pattern plays clean, taps still record on top.
+// Session lifecycle: ONE guided pass through the whole unit (every chain
+// member's bar, linked halves counted), then the session AUTO-EXITS at the
+// pass-completing wrap IF anything was recorded. An all-empty pass loops the
+// metronome (the ROM's endless empty measure) until the first real take or
+// a manual exit (transport stop / dial off Pattern Write).
+static bool     s_metro_record_phase            = true;
+static uint16_t s_metro_recorded_mask           = 0;      // patterns that finished a pass with notes
+static uint16_t s_metro_unit_mask               = 0;      // patterns wiped at entry = the session's unit
+static uint8_t  s_metro_pass_bars               = 1;      // bars in one full pass of the unit
+static uint8_t  s_metro_bar_count               = 0;      // bars completed since the pass began
 static bool s_metro_gate_pulse                  = false;
 static uint8_t s_metro_pitch_cv                 = 63;     // final DAC pitch for metronome click
 static uint8_t s_metro_gate_ticks               = 0;      // click length in clock ticks (tempo-scaled)
+static uint8_t s_metro_prev_pat                 = 0;      // pattern playing during the last step window
+static bool    s_metro_monitor_gate             = false;  // monitor voice sounding (accept -> release)
+static uint8_t s_metro_tap_monitor_cv           = 63;
+static bool    s_metro_tap_monitor_accent       = false;
+static uint8_t s_metro_tail_cv                  = 63;     // pitch held through decay tails (click or tapped note)
+// TAP ownership guard: while tap-write runs (and until the finger comes UP
+// after it exits), TAP belongs to tap-write ONLY. Without this, the session
+// auto-exiting at the wrap with TAP still held dropped straight into the
+// edit-variation picker (TAP_NEXT held in Pattern Write/normal = picker).
+static bool    s_metro_tap_swallow              = false;
+static uint8_t s_metro_step_tick                = 0;      // clock ticks since the current window began
 static elapsedMillis s_metro_gate_timer;
 
 // Direction mode (FN + TIME_KEY)
@@ -187,6 +233,106 @@ static bool     s_chain_hold_loop       = false; // true this frame: loop when t
 static uint8_t  s_chain_hold_target_pat = 0xff;  // actual pattern to loop (0xff = any/none)
 static uint8_t  s_chain_queued[4]    = {0, 0, 0, 0};
 static uint8_t  s_chain_queue_len    = 0;     // ≥1 = pattern(s) waiting to activate
+
+// Wrap-intent tracking for the chain advance (see the advance block in loop()):
+// what we queued for the next wrap, and whether it was the end-of-chain handoff
+// to s_chain_queued. Also the chainless linked-pair defer slot.
+static uint8_t s_chain_prev_tp        = 0xFF;
+static uint8_t s_chain_expect         = 0xFF; // slot we queued (0xFF = none)
+static uint8_t s_chain_expect_pos     = 0;    // cursor value once it lands
+static bool    s_chain_expect_handoff = false; // expect = queued-chain handoff
+static uint8_t s_pair_defer           = 0xFF; // switch waiting for the B half to finish
+static uint8_t s_pair_defer_pair      = 0xFF; // pair (slot & 7) the defer was parked on
+// Forget queued-wrap intent. Must be called whenever chain contents or position
+// are set from OUTSIDE the advance block (arm, build commit, web apply, run
+// start): a stale expect from the previous run/chain would otherwise satisfy
+// the first wrap and snap the cursor to a stale index.
+static void chain_intent_reset() {
+  s_chain_prev_tp        = 0xFF;
+  s_chain_expect         = 0xFF;
+  s_chain_expect_handoff = false;
+  s_pair_defer           = 0xFF;
+  s_pair_defer_pair      = 0xFF;
+}
+
+// Persistent chains: a chain saved with A+B held + TAP lives in its first
+// pattern's reserved[4..6] (len, then 4-bit slot entries), so it persists with
+// the pattern and re-arms whenever that pattern is selected while stopped (and
+// at boot). Clearing the pattern clears the stored chain with it.
+static void emit_chain_state();
+// Sticky panel A/B MODE. ON = every selected pattern (and every member of a
+// chain) plays A then B; OFF = patterns play their selected single section.
+// Entered by pressing ACCENT+SLIDE together, or automatically by selecting a
+// pattern whose SAVED A/B flag is set (or arming a stored chain whose first
+// member's flag is set); exited by pressing ACCENT or SLIDE alone. The
+// per-pattern link flag (reserved[3] bit0 on the A section) is only the saved
+// MEMORY: selection imports it into the mode, the save gestures (chain keys +
+// FN, A+B held + TAP) write it, and FN + a held pattern key clears it together
+// with the stored chain. Playback never reads the flag directly.
+static bool s_ab_mode = false;
+// An A/B pair is always ENTERED at its A section (it then plays A-then-B
+// on its own). Every fresh entry point -- taps, chain commits, queue writes,
+// stored-chain arming, transport start -- routes through this, so playback can
+// never start on the B half. The only paths that select B directly are the
+// explicit SLIDE section button and the intra-pair wrap hand-off. Selecting a
+// pattern with saved A/B memory re-enters the mode here.
+static uint8_t chain_entry_start(uint8_t pat) {
+  if (engine.pair_linked(pat)) s_ab_mode = true;
+  return s_ab_mode ? Engine::section_a_of(pat) : pat;
+}
+// Chain-wide A/B: with a chain live the panel mode makes every member play A
+// then B (the A+B LEDs are a mode indicator, not a per-member property).
+static bool chain_ab_mode() {
+  return s_chain_active && s_chain_len > 1 && s_ab_mode;
+}
+// Section-bank browse view while a chain is running: 0/1 = pattern keys and
+// A/B LEDs show that bank without touching the playing chain; 0xFF = follow
+// the playing pattern. Only meaningful while a chain is live (see
+// ProcessDefault); reset whenever the chain ends or the transport stops.
+static uint8_t s_section_view = 0xFF;
+static void store_chain_on(uint8_t pat, const uint8_t *pats, uint8_t len) {
+  Sequence &s = engine.pattern[pat & 0x0F];
+  s.reserved[4] = uint8_t(len & 0x07);
+  s.reserved[5] = uint8_t((pats[0] & 0x0F) | ((len > 1 ? pats[1] & 0x0F : 0) << 4));
+  s.reserved[6] = uint8_t((len > 2 ? pats[2] & 0x0F : 0) | ((len > 3 ? pats[3] & 0x0F : 0) << 4));
+  engine.stale = true;
+  midi_send_pattern_update(pat & 0x0F);
+}
+static bool arm_stored_chain(uint8_t pat, bool set_first) {
+  const Sequence &s = engine.pattern[pat & 0x0F];
+  const uint8_t len = uint8_t(s.reserved[4] & 0x07);
+  if (len < 2 || len > 4) return false;
+  s_chain_pats[0] = uint8_t(s.reserved[5] & 0x0F);
+  s_chain_pats[1] = uint8_t((s.reserved[5] >> 4) & 0x0F);
+  s_chain_pats[2] = uint8_t(s.reserved[6] & 0x0F);
+  s_chain_pats[3] = uint8_t((s.reserved[6] >> 4) & 0x0F);
+  s_chain_len       = len;
+  s_chain_pos       = 0;
+  s_chain_active    = true;
+  s_chain_queue_len = 0;
+  s_chain_bank      = uint8_t((s_chain_pats[0] >> 3) & 1);
+  chain_intent_reset();
+  // Saved A/B memory on the chain's first member re-enters the mode.
+  if (engine.pair_linked(s_chain_pats[0])) s_ab_mode = true;
+  if (set_first) {
+    uint8_t first = s_chain_pats[0];
+    if (s_ab_mode) first = Engine::section_a_of(first);
+    engine.SetPattern(first, true);
+  }
+  emit_chain_state();
+  return true;
+}
+
+// A+B (ACCENT+SLIDE) held chain builder: tap pattern keys in ANY order (repeats
+// allowed) while both section buttons are down; releasing commits the chain.
+// Unlike the hold+tap builder this is not limited to an ascending run.
+static uint8_t s_ab_chain_pats[4] = {0, 0, 0, 0};
+static uint8_t s_ab_chain_len     = 0;     // 0 = no A+B build in progress
+static bool    s_ab_prev_link     = false; // pair-link state before the A+B press
+static uint8_t s_ab_link_pat      = 0xff;  // pattern the A+B press linked (0xff = none)
+// FN pressed while chain-build keys were held = "save this chain"; the same
+// FN hold must not also drive the length editor. Cleared on FN release.
+static bool    s_fn_chain_saved   = false;
 static uint8_t  s_chain_hold_key     = 0xff;  // key being tracked for tap/hold
 static uint32_t s_chain_hold_ms      = 0;     // millis() when hold key was pressed
 static bool     s_chain_hold_crossed = false; // hold threshold crossed
@@ -197,6 +343,96 @@ static void emit_chain_state() {
   midi_send_chain_state(
     s_chain_active ? s_chain_len : 0, s_chain_pats,
     s_chain_queue_len, s_chain_queued);
+}
+
+// (Re)start a tap-write session. ROM entry semantics: clear the time data,
+// BAR RESET (session starts at step 0, like the d650c's CLEAR-while-running),
+// start the metronome. Pitch streams are preserved so tapped NOTEs consume
+// the user's pitches in stream order.
+// The session's UNIT is everything the playhead will traverse: the entry
+// section, the other half of a linked pair, and every member of an active
+// chain (plus their linked halves). The WHOLE unit is wiped to RECORD --
+// otherwise members with content join in OVERDUB, the clicks cut off there,
+// and after one recorded pass no member ever re-enters RECORD again. A chain
+// session restarts at member 0 (and a linked pair at its A section -- same
+// normalization as transport start), so which members get the metronome does
+// not depend on which slot happened to be playing at the gesture. Patterns
+// pulled in AFTER entry (new chain builds, queued taps) keep their content
+// and join in OVERDUB.
+// Callable MID-SESSION (CLEAR+TIME while active = restart from the top), so
+// it also silences any sounding click / monitor voice before resetting.
+static void metro_session_begin() {
+  midi_metronome_stop();
+  midi_audition_note_off();
+  // The gesture also fires from an accidentally opened TIME_MODE (see the
+  // simultaneous-press note at the gesture); the session runs in NORMAL.
+  engine.SetMode(NORMAL_MODE, false);
+  const bool chain_session = s_chain_active && s_chain_len > 1;
+  if (chain_session) {
+    s_chain_pos       = 0;
+    s_chain_queue_len = 0;
+    chain_intent_reset();
+    engine.SetPattern(chain_entry_start(s_chain_pats[0]), true);
+    emit_chain_state();
+  } else {
+    // Pin the engine to the session start: a pattern switch queued before
+    // the gesture (quick tap / parked pair defer) must not yank the session
+    // to an un-wiped pattern at the bar-1 wrap.
+    chain_intent_reset();
+    engine.SetPattern(s_ab_mode
+                          ? Engine::section_a_of(engine.get_patsel())
+                          : engine.get_patsel(),
+                      true);
+  }
+  uint16_t wipe = 0;
+  uint8_t  pass_bars = 0;   // bars in one full traversal (linked halves count)
+  if (chain_session) {
+    for (uint8_t ci = 0; ci < s_chain_len; ++ci) {
+      const uint8_t m = uint8_t(s_chain_pats[ci] & 0x0F);
+      wipe |= uint16_t(1u << m);
+      if (s_ab_mode) {
+        wipe |= uint16_t((1u << Engine::section_a_of(m)) |
+                         (1u << Engine::section_b_of(m)));
+        pass_bars = uint8_t(pass_bars + 2);
+      } else {
+        pass_bars = uint8_t(pass_bars + 1);
+      }
+    }
+  } else {
+    const uint8_t m = engine.get_patsel();
+    wipe |= uint16_t(1u << m);
+    pass_bars = 1;
+    if (s_ab_mode) {
+      wipe |= uint16_t((1u << Engine::section_a_of(m)) |
+                       (1u << Engine::section_b_of(m)));
+      pass_bars = 2;
+    }
+  }
+  for (uint8_t p = 0; p < NUM_PATTERNS; ++p) {
+    if (!(wipe & uint16_t(1u << p))) continue;
+    Sequence &ws = engine.pattern[p];
+    for (uint8_t i = 0; i < ws.length; ++i) sequence_set_time_at(ws, i, 0);
+    midi_send_pattern_update(p);
+  }
+  s_metro_unit_mask = wipe;
+  s_metro_pass_bars = pass_bars ? pass_bars : 1;
+  s_metro_bar_count = 0;
+  engine.Reset();                       // bar reset: next tick = step 0
+  s_metro_prev_pat        = engine.get_patsel();
+  s_metro_tail_cv         = 63;   // idle tail starts at the click pitch
+  s_metro_step_tick       = 0;
+  s_metro_press_pending   = false;
+  s_metro_pass_accept     = false;
+  s_metro_note_active     = false;
+  s_metro_any_note        = false;
+  s_metro_bar_started     = false;
+  s_metro_step_prewritten = false;
+  s_metro_monitor_gate    = false;
+  s_metro_gate_pulse      = false;
+  s_metro_gate_ticks      = 0;
+  s_metro_record_phase    = true;
+  s_metro_recorded_mask   = 0;
+  engine.stale = true;   // wiped patterns re-sent in the wipe loop above
 }
 
 // Broadcast track-mode state (SysEx 0x23) for the web editor's Track view.
@@ -399,7 +635,9 @@ static void ProcessProbabilityMode(bool clk_run, bool dial_pattern_write) {
       midi_send_prob_table(engine.get_patsel()); // one full-table push to the web
     }
   } else if (!level_layer) {
-    if (inputs[ASHARP_KEY].rising()) {
+    // A# extended half only exists above 32 steps; at MAX_STEPS = 32 the four
+    // black-key banks cover the whole section.
+    if (MAX_STEPS > 32 && inputs[ASHARP_KEY].rising()) {
       s_prob_ext = !s_prob_ext;
       s_prob_base = uint8_t((s_prob_base & 31) + (s_prob_ext ? 32 : 0));
     }
@@ -596,13 +834,20 @@ static void process_config_menu() {
   // pending saves (same set as transport stop), then reboot.
   Leds::Set(GSHARP_KEY_LED, true);
   if (inputs[GSHARP_KEY].rising()) {
-    if (engine.stale) engine.Save();
+    // persist_shadows() FIRST: variation 2/3 and poly edits live in RAM and
+    // Save() skips them when !stale, so without this a firmware switch threw
+    // them away. Matches the SysEx switch path in midi.cpp.
+    engine.persist_shadows();
+    if (engine.stale || engine.aux_dirty()) engine.Save();
     if (engine.track_stale) engine.SaveTrack();
     midi_flush_pending_saves();
     midi_flush_pending_pattern_saves(engine);
     combined_switch_firmware(FW_D650);   // does not return
   }
 
+#ifdef SUPEROS_OLD_BOOTLOADER
+  // nousbc builds only: the USB combined build sits ~50 bytes under the
+  // flash-EEPROM arena base and this block does not fit.
   // C# held 2 s = factory reset. Wipes the flash arena (patterns, variations,
   // poly, tracks, probability tables, settings) and invalidates the d650 EEPROM
   // magic (its settings + uPD444 store re-default on its next boot). The mask
@@ -620,6 +865,7 @@ static void process_config_menu() {
   } else {
     s_cfg_fr_hold = 0;
   }
+#endif
 #endif
 
   if (inputs[CLEAR_KEY].rising()) {
@@ -671,7 +917,7 @@ static void send_step_update_for_cursor(Sequence &s) {
   uint8_t slot;
   uint8_t pb = PITCH_EMPTY;
   if (s.edit_slot_index(slot)) pb = s.pitch[slot];
-  midi_send_step_update(engine.get_patsel(), tp, pb, s.time(tp), engine.get_edit_var());
+  midi_send_step_update(engine.get_edit_patsel(), tp, pb, s.time(tp), engine.get_edit_var());
 }
 
 uint8_t input_pitch(bool mod = false, bool clk_run = false) {
@@ -700,9 +946,37 @@ uint8_t input_pitch(bool mod = false, bool clk_run = false) {
         const uint8_t flags = (inputs[ACCENT_KEY].held() << 6) |
                               (inputs[SLIDE_KEY].held()   << 7);
         engine.SetPitch(pack_pitch(i, oct), flags);
-        send_step_update_for_cursor(s);
         const uint8_t written_note = uint8_t(36 + unpack_pitch_linear(pack_pitch(i, oct)));
-        s.advance_pitch_to_next_note();
+        // Spec 3-a: appending past the last NOTE grows the pattern by a step,
+        // so a blank pattern ends up exactly as long as the run of notes just
+        // played in. Inside existing content this is a plain overwrite and the
+        // cursor walks the stream as before (spec 4-d).
+        const uint8_t cap = s.is_triplet_mode() ? uint8_t(TRIPLET_MAX_STEPS)
+                                                : uint8_t(MAX_STEPS);
+        if (sequence_append_note_step(s, cap)) {
+          sequence_ensure_pitch_for_notes(s);
+          send_step_update_for_cursor(s);
+          midi_send_length_update(engine.get_patsel(), s.length, engine.get_edit_var());
+          // Section full. Spec 3-b: with both sections selected, notes 65-128
+          // carry on into the B section, so hand the cursor over instead of
+          // stopping. Otherwise "if 64 NOTES are entered, you'll automatically
+          // exit out of PITCH MODE" -- there is nowhere left to append.
+          if (s.note_count() >= cap) {
+            const uint8_t cur = engine.get_patsel();
+            if (s_ab_mode && !Engine::is_section_b(cur)) {
+              engine.SetPattern(Engine::section_b_of(cur), true);
+              Sequence &nb = engine.get_edit_sequence();
+              nb.reset     = false;
+              nb.pitch_pos = int(nb.note_count());
+              nb.sync_time_pos_to_pitch_pos();
+            } else {
+              engine.SetMode(NORMAL_MODE, true);
+            }
+          }
+        } else {
+          send_step_update_for_cursor(s);
+          s.advance_pitch_to_next_note();
+        }
         return written_note;
       }
     }
@@ -734,7 +1008,7 @@ void input_time(bool mod = false, bool clk_run = false) {
   // tp as a NOTE and writes the pitch into the wrong stream slot, corrupting
   // pitch[]. Sending tp first lets the editor update time_data at tp so every
   // subsequent step computes the same K-th-NOTE index the firmware did.
-  const uint8_t pat = engine.get_patsel();
+  const uint8_t pat = engine.get_edit_patsel();
   const uint8_t ev = engine.get_edit_var();
   midi_send_step_update(pat, tp, after_pt[tp], written_time, ev);
   for (uint8_t i = 0; i < len; ++i) {
@@ -797,6 +1071,11 @@ void setup() {
 
   flash_persist_begin(); // mount flash-as-EEPROM (formats on first boot)
   engine.Load();
+  // A stored chain on the boot pattern re-arms so a saved chain plays from
+  // power-on without re-selecting the pattern.
+  arm_stored_chain(engine.get_patsel(), false);
+  // Saved A/B memory on the boot pattern re-enters the mode from power-on.
+  if (engine.pair_linked(engine.get_patsel())) s_ab_mode = true;
   midi_apply_settings(GlobalSettings.midi_channel, GlobalSettings.midi_clock_receive, GlobalSettings.midi_thru);
   midi_set_var_channels(GlobalSettings.var2_channel, GlobalSettings.var3_channel);
   Leds::brightness = GlobalSettings.led_brightness;
@@ -822,8 +1101,33 @@ void setup() {
 static void show_pitch_leds(uint8_t packed) {
   Leds::Set(pitch_leds[packed & 0x0F], true);
   const uint8_t oct = (packed >> 4) & 0x03;
-  Leds::Set(DOWN_KEY_LED, oct == 0 || oct == 3);
-  Leds::Set(UP_KEY_LED,   oct == 2 || oct == 3);
+  // Spec 4-a: a single transposition lights its LED solid, a DOUBLE one blinks
+  // it. Octave 1 is centre, so 0 = one down, 2 = one up, 3 = two up.
+  const bool dbl = bool((millis() >> 7) & 1);
+  Leds::Set(DOWN_KEY_LED, oct == 0);
+  Leds::Set(UP_KEY_LED,   oct == 2 || (oct == 3 && dbl));
+}
+
+// Spec 4: PITCH MODE step/page display. The 1-8 LEDs show the cursor's step
+// within its 8-step page; the black keys show how many pages the pattern has,
+// with the viewed page blinking (A# marks the extended half, pages 5-8).
+static void PrintPitchStepPage() {
+  const Sequence &s = engine.edit_seq_view();
+  const uint8_t tp       = uint8_t(s.time_pos & (MAX_STEPS - 1));
+  const uint8_t pages    = uint8_t((s.length + 7) / 8);   // 1..8
+  const uint8_t cur_page = uint8_t(tp >> 3);
+  const bool    ext      = cur_page >= 4;
+  const bool    blink    = bool((millis() >> 7) & 1);
+  static const OutputIndex kPageLeds[4] =
+      {CSHARP_KEY_LED, DSHARP_KEY_LED, FSHARP_KEY_LED, GSHARP_KEY_LED};
+  Leds::Set(OutputIndex(tp & 0x7), true);
+  Leds::Set(ASHARP_KEY_LED, ext ? blink : (pages > 4));
+  const uint8_t base = ext ? 4 : 0;
+  for (uint8_t i = 0; i < 4; ++i) {
+    const uint8_t p = uint8_t(base + i);
+    if (p >= pages) continue;
+    Leds::Set(kPageLeds[i], (p == cur_page) ? blink : true);
+  }
 }
 
 void PrintPitch() {
@@ -1105,15 +1409,12 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                const bool &clk_run, const bool &dial_pattern_write) {
   switch (engine.get_mode()) {
   case PITCH_MODE:
-    if (clk_run) {
-      PrintPitch();
-      const uint8_t tp = engine.get_edit_time_pos();
-      Leds::Set(OutputIndex(tp & 0x7), true);
-      // Bank indicator (C#/D#/F#/G# + A# blink for the 8-step block) disabled
-      // in live pitch edit: it collides with the note-key display.
-      // Leds::Set(OutputIndex(CSHARP_KEY_LED + ((tp & 31) >> 3)), true);
-      // if (tp >= 32) Leds::Set(ASHARP_KEY_LED, clk_count & 4);
-    }
+    // Spec 4: stopped, the step/page display shows where in the pattern the
+    // cursor sits (TAP held swaps this for the note itself -- ProcessEdit owns
+    // that frame). Running, "the chase light will turn off": only the note
+    // being played is shown, no step or page LEDs.
+    if (clk_run) PrintPitch();
+    else         PrintPitchStepPage();
     if (!write_mode) engine.SetMode(NORMAL_MODE);
     break;
 
@@ -1133,7 +1434,17 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     break;
 
   case NORMAL_MODE: {
-    const uint8_t bank = engine.get_patsel() >> 3;
+    // Pattern-key target section. A linked pair alternates patsel between its
+    // A and B slots as it PLAYS, so the raw section bit follows playback, not
+    // the user's selection: a key tapped while the B half happened to be
+    // playing targeted the B-section pattern (press 2 during 1B -> 2B). A
+    // linked pair's home is its A section, so taps, queues and chain builds
+    // target section A while one is selected; an unlinked selection keeps its
+    // real section.
+    const bool chain_live = s_chain_active && s_chain_len > 1 && clk_run;
+    if (!chain_live) s_section_view = 0xFF;   // browse view only exists mid-chain
+    uint8_t bank = s_ab_mode ? 0 : uint8_t(engine.get_patsel() >> 3);
+    if (chain_live && s_section_view != 0xFF) bank = s_section_view;
     const bool browsing_other_group = clk_run && (s_display_group != engine.get_group());
 
     // ── LEDs ──
@@ -1153,8 +1464,20 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       }
       Leds::Set(OutputIndex(engine.get_patsel() & 0x7), clk_count < 12);
     }
-    Leds::Set(ACCENT_KEY_LED, !bank); // A
-    Leds::Set(SLIDE_KEY_LED,   bank); // B
+    // Section indicator. Unlinked: the selected section's LED alone (the
+    // BROWSED bank while section-browsing a live chain). Linked -- per
+    // pattern or chain-wide (spec 1-a): BOTH lit, and the section currently
+    // playing / being written to blinks, so during a performance you can see
+    // which half of the pattern is running without counting steps.
+    if (s_ab_mode) {
+      const bool on_b  = Engine::is_section_b(engine.get_patsel());
+      const bool blink = bool(clk_run ? (clk_count < 12) : ((millis() >> 8) & 1));
+      Leds::Set(ACCENT_KEY_LED, on_b ? true  : blink);
+      Leds::Set(SLIDE_KEY_LED,  on_b ? blink : true);
+    } else {
+      Leds::Set(ACCENT_KEY_LED, !bank); // A
+      Leds::Set(SLIDE_KEY_LED,   bank); // B
+    }
 
     // Step chase: Pattern Write only. Pattern Play hides the chase to keep the
     // performance display calm.
@@ -1166,20 +1489,121 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
     }
 
     // ── Pattern select inputs ──
-    if (clk_run && clear_mod) {
+    // A+B chain builder: while ACCENT and SLIDE are both held, pattern-key taps
+    // append to a chain (any order, repeats allowed, cap 4, current bank).
+    // Releasing either button commits it: stopped -> starts now, running ->
+    // takes over at the next pattern wrap. The first tap converts the gesture
+    // from "link the pair" to "build a chain", so the link side effect of the
+    // A+B press is restored to what it was.
+    const bool ab_hold = inputs[ACCENT_KEY].held() && inputs[SLIDE_KEY].held() &&
+                         !clear_mod && !s_metronome_active;
+    if (ab_hold) {
+      // Ghost guard (same rule as keyboard play): with both modifiers down, a
+      // real key press in the ACCENT/SLIDE columns can phantom its row
+      // partner (keys 3/4 and 7/8). Both rising together cannot be told
+      // apart -- drop the pair rather than chain a wrong pattern.
+      bool dropped[8] = {false};
+      if (inputs[2].rising() && inputs[3].rising()) dropped[2] = dropped[3] = true;
+      if (inputs[6].rising() && inputs[7].rising()) dropped[6] = dropped[7] = true;
+      for (uint8_t i = 0; i < 8; ++i) {
+        if (!inputs[i].rising() || dropped[i]) continue;
+        if (s_ab_chain_len == 0) {
+          // First tap: this is a chain build, not an A/B-mode entry -- the
+          // A+B press's mode flip is reverted to what it was.
+          if (s_ab_link_pat != 0xff) {
+            s_ab_mode     = s_ab_prev_link;
+            s_ab_link_pat = 0xff;
+          }
+          s_chain_hold_key        = 0xff;  // cancel single-key tap/hold tracking
+          s_chain_hold_crossed    = false;
+          s_chain_hold_target_pat = 0xff;
+          s_chain_anchor_key      = 0xff;
+        }
+        if (s_ab_chain_len < 4)
+          s_ab_chain_pats[s_ab_chain_len++] = uint8_t(bank * 8 + i);
+      }
+      // A+B + TAP: persist the chain. Mid-build saves the build; otherwise the
+      // active chain is saved onto its first pattern. With nothing to save,
+      // it clears a stored chain from the current pattern. The mode LEDs
+      // flash as the acknowledgement.
+      if (inputs[TAP_NEXT].rising()) {
+        if (s_ab_chain_len >= 2) {
+          store_chain_on(s_ab_chain_pats[0], s_ab_chain_pats, s_ab_chain_len);
+          engine.set_pair_linked(s_ab_chain_pats[0], s_ab_mode);
+        } else if (s_chain_active && s_chain_len >= 2) {
+          store_chain_on(s_chain_pats[0], s_chain_pats, s_chain_len);
+          engine.set_pair_linked(s_chain_pats[0], s_ab_mode);
+        } else {
+          Sequence &cs = engine.pattern[engine.get_patsel() & 0x0F];
+          cs.reserved[4] = 0; cs.reserved[5] = 0; cs.reserved[6] = 0;
+          engine.stale = true;
+          midi_send_pattern_update(engine.get_patsel());
+        }
+        pattern_cleared_flash_timer = 0;
+        s_pat_cleared_hold = true;
+      }
+    } else if (s_ab_chain_len) {
+      // A or B released: commit the build.
+      if (s_ab_chain_len >= 2) {
+        s_chain_bank = bank;
+        s_chain_len  = s_ab_chain_len;
+        for (uint8_t ci = 0; ci < s_ab_chain_len; ++ci)
+          s_chain_pats[ci] = s_ab_chain_pats[ci];
+        s_chain_active    = true;
+        s_chain_queue_len = 0;
+        s_chain_hold_loop = false;
+        chain_intent_reset();
+        // Saved A/B memory on the first member re-enters the mode.
+        if (engine.pair_linked(s_chain_pats[0])) s_ab_mode = true;
+        if (clk_run) {
+          s_chain_pos = uint8_t(s_chain_len - 1); // wrap advances into pats[0]
+        } else {
+          s_chain_pos = 0;
+          uint8_t first = s_chain_pats[0];
+          if (s_ab_mode) first = Engine::section_a_of(first);
+          engine.SetPattern(first, true);
+          midi_send_active_pattern(engine.get_patsel());
+        }
+      } else {
+        // Single tap: behave like a plain pattern tap.
+        const uint8_t pat = chain_entry_start(s_ab_chain_pats[0]);
+        if (clk_run && s_chain_active && s_chain_len > 1) {
+          s_chain_queue_len = 1;
+          s_chain_queued[0] = pat;
+        } else {
+          engine.SetPattern(pat, !clk_run);
+          if (!clk_run) midi_send_active_pattern(engine.get_patsel());
+        }
+      }
+      emit_chain_state();
+      s_ab_chain_len = 0;
+    }
+    if (!ab_hold && !inputs[ACCENT_KEY].held() && !inputs[SLIDE_KEY].held())
+      s_ab_link_pat = 0xff;  // gesture fully released with no taps: link stands
+
+    if (s_metronome_active) {
+      // Tap-write session: pattern keys 1-8 are the ROM's SUSTAIN modifier
+      // (metro_sustain_held); no selection, chains, or bank switches here.
+    } else if (clk_run && clear_mod) {
       // CLEAR held while running: pat keys reserved for global copy/paste.
     } else if (clk_run && browsing_other_group) {
       // Running in a different group: queue the group switch + pattern to start at next wrap
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].rising()) {
           engine.QueueGroup(s_display_group);
-          engine.SetPattern(bank * 8 + i, false);
+          // A live chain would re-queue its own next pattern every loop pass
+          // and stomp this queued switch, so a group change ends the chain.
+          s_chain_active    = false;
+          s_chain_len       = 0;
+          s_chain_queue_len = 0;
+          chain_intent_reset();
+          engine.SetPattern(chain_entry_start(uint8_t(bank * 8 + i)), false);
           emit_chain_state();
           break;
         }
       }
     }
-    if (clk_run && !browsing_other_group && !clear_mod) {
+    if (clk_run && !browsing_other_group && !clear_mod && !ab_hold) {
       // Running: chain building always available (whether or not a chain is currently active).
       //   two keys pressed simultaneously / hold+tap → build or queue a chain
       //   single key tap (quick press+release)       → queue single pattern (or chain pattern)
@@ -1215,6 +1639,9 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
               s_chain_pats[ci] = bank * 8 + lo2 + ci;
             s_chain_pos       = new_len - 1;
             s_chain_queue_len = 0;
+            chain_intent_reset();
+            // Saved A/B memory on the first member re-enters the mode.
+            if (engine.pair_linked(s_chain_pats[0])) s_ab_mode = true;
           }
           emit_chain_state();
           chain_built = true;
@@ -1249,14 +1676,33 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
         // Hold key released
         if (s_chain_hold_key != 0xff && inputs[s_chain_hold_key].falling()) {
           if (!s_chain_hold_crossed) {
-            // Tap: queue single pattern
+            // Tap: queue single pattern -- or, when the target carries a
+            // STORED chain (FN-saved), queue/arm that whole chain so "press 1
+            // plays 1-2" works live as well as stopped.
+            const uint8_t tgt = uint8_t(bank * 8 + s_chain_hold_key);
+            const Sequence &ts = engine.pattern[tgt & 0x0F];
+            const uint8_t  sl  = uint8_t(ts.reserved[4] & 0x07);
             if (s_chain_active && s_chain_len > 1) {
-              // In chain: queue as single → deactivates chain when reached
-              s_chain_queue_len = 1;
-              s_chain_queued[0] = bank * 8 + s_chain_hold_key;
+              if (sl >= 2 && sl <= 4) {
+                // In chain: queue the target's stored chain (promotes on arrival)
+                s_chain_queue_len = sl;
+                s_chain_queued[0] = chain_entry_start(uint8_t(ts.reserved[5] & 0x0F));
+                s_chain_queued[1] = uint8_t((ts.reserved[5] >> 4) & 0x0F);
+                s_chain_queued[2] = uint8_t(ts.reserved[6] & 0x0F);
+                s_chain_queued[3] = uint8_t((ts.reserved[6] >> 4) & 0x0F);
+              } else {
+                // In chain: queue as single → deactivates chain when reached
+                s_chain_queue_len = 1;
+                s_chain_queued[0] = chain_entry_start(tgt);
+              }
+            } else if (sl >= 2 && sl <= 4) {
+              // Not in chain: the stored chain takes over at the next wrap
+              // (same mechanics as committing an A+B build while running).
+              arm_stored_chain(tgt, false);
+              s_chain_pos = uint8_t(s_chain_len - 1); // wrap advances into pats[0]
             } else {
               // Not in chain: direct pattern switch
-              engine.SetPattern(bank * 8 + s_chain_hold_key, false);
+              engine.SetPattern(chain_entry_start(tgt), false);
             }
             emit_chain_state();
           }
@@ -1270,7 +1716,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       // Hold-to-loop: only active while key still held past threshold
       s_chain_hold_loop = (s_chain_hold_key != 0xff && s_chain_hold_crossed);
 
-    } else if (!clk_run) {
+    } else if (!clk_run && !ab_hold) {
       // Stopped: chain building.  When CLEAR is held, pat keys are reserved for
       // global copy/paste handlers below — do nothing here.
       s_chain_hold_key = 0xff; // clear stale running state
@@ -1285,7 +1731,7 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
             s_chain_len        = 1;
             s_chain_active     = false;
             s_chain_hold_loop  = false;
-            engine.SetPattern(bank * 8 + i, true);
+            engine.SetPattern(chain_entry_start(uint8_t(bank * 8 + i)), true);
             // Stopped: notify web editor of new active pattern (no 0x15 stream while stopped).
             midi_send_active_pattern(engine.get_patsel());
             break;
@@ -1307,9 +1753,13 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
           if (s_chain_len > 1) {
             s_chain_active = true;
             s_chain_pos    = 0;
-            engine.SetPattern(s_chain_pats[0], true);
+            chain_intent_reset();
+            engine.SetPattern(chain_entry_start(s_chain_pats[0]), true);
           } else {
             s_chain_active = false;
+            // Plain select: a pattern with a stored chain re-arms it, so a
+            // saved chain "always plays" when its pattern is chosen.
+            arm_stored_chain(uint8_t(s_chain_bank * 8 + s_chain_anchor_key), false);
           }
           s_chain_anchor_key = 0xff;
           emit_chain_state();
@@ -1317,23 +1767,55 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
       }
     }
 
-    // Bank switch — always clears chain.  Skipped when CLEAR is held so
-    // CLEAR+ACCENT (randomize) and CLEAR+SLIDE combos can take the edge.
-    if (inputs[ACCENT_KEY].rising() && !clear_mod) {
-      s_chain_active     = false; s_chain_len       = 0;
-      s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
-      s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
-      engine.SetPattern(engine.get_patsel() % 8, !clk_run); // A
-      if (!clk_run) midi_send_active_pattern(engine.get_patsel());
-      emit_chain_state();
-    }
-    if (inputs[SLIDE_KEY].rising() && !clear_mod) {
-      s_chain_active     = false; s_chain_len       = 0;
-      s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
-      s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
-      engine.SetPattern(engine.get_patsel() % 8 + 8, !clk_run); // B
-      if (!clk_run) midi_send_active_pattern(engine.get_patsel());
-      emit_chain_state();
+    // Section buttons. Skipped when CLEAR is held so CLEAR+ACCENT
+    // (randomize) and CLEAR+SLIDE combos can take the edge, and during a
+    // tap-write session (its keys belong to the recorder).
+    // A+B together = enter the sticky A/B MODE (every selected pattern plays
+    // A then B until the mode is left). One button alone = leave the mode and
+    // select that section. Saved per-pattern A/B memory is NOT touched here:
+    // the save gestures write it and FN + held pattern clears it.
+    // LIVE chain: the buttons never kill or redirect the chain -- A+B turns
+    // the mode on, a single press turns it off when on, else BROWSES that
+    // bank (pattern keys + LEDs show it, playback untouched).
+    const bool acc_edge = inputs[ACCENT_KEY].rising() && !clear_mod && !s_metronome_active;
+    const bool sld_edge = inputs[SLIDE_KEY].rising()  && !clear_mod && !s_metronome_active;
+    if (acc_edge || sld_edge) {
+      const bool link = (acc_edge && inputs[SLIDE_KEY].held()) ||
+                        (sld_edge && inputs[ACCENT_KEY].held());
+      if (chain_live) {
+        if (link) {
+          // Builder-restore bookkeeping: a pattern-key tap while A+B stays
+          // held becomes a chain build and reverts this mode flip.
+          s_ab_link_pat  = uint8_t(s_chain_pats[0] & 0x0F);
+          s_ab_prev_link = s_ab_mode;
+          s_ab_mode      = true;
+          s_section_view = 0xFF;
+        } else if (s_ab_mode) {
+          s_ab_mode      = false;
+          s_section_view = 0xFF;
+        } else {
+          s_section_view = acc_edge ? 0 : 1;
+        }
+        emit_chain_state();
+      } else {
+        if (link) {
+          // Remember the pre-press mode: a pattern-key tap while A+B stays
+          // held turns this gesture into a chain build and restores this.
+          s_ab_link_pat  = engine.get_patsel();
+          s_ab_prev_link = s_ab_mode;
+        }
+        s_chain_active     = false; s_chain_len       = 0;
+        s_chain_queue_len  = 0;     s_chain_anchor_key = 0xff;
+        s_chain_hold_key   = 0xff;  s_chain_hold_target_pat = 0xff;
+        chain_intent_reset();
+        s_ab_mode = link;
+        // A/B-mode entry always lands on A: notes fill the A section first.
+        const uint8_t want = (link || acc_edge) ? Engine::section_a_of(engine.get_patsel())
+                                                : Engine::section_b_of(engine.get_patsel());
+        engine.SetPattern(want, !clk_run);
+        if (!clk_run) midi_send_active_pattern(engine.get_patsel());
+        emit_chain_state();
+      }
     }
     break;
   }
@@ -1343,13 +1825,49 @@ void ProcessDefault(const bool &write_mode, const bool &clear_mod,
                           || s_pat_cleared_hold;
   const bool in_time  = engine.get_mode() == TIME_MODE;
   const bool in_pitch = engine.get_mode() == PITCH_MODE;
-  Leds::Set(TIME_MODE_LED,     in_time  || pat_clr_flash);
-  Leds::Set(PITCH_MODE_LED,    in_pitch || pat_clr_flash);
+  // A/B step-edit indicator: while a linked pair (or chain-wide A/B) plays,
+  // the active submode LED shows which section the step edits land on --
+  // solid = A, blinking = B (PITCH held + CLEAR cycles it).
+  bool ab_led_on = true;
+  if (clk_run && (in_pitch || in_time) && s_ab_mode &&
+      Engine::is_section_b(engine.get_edit_patsel()))
+    ab_led_on = clk_count < 12;
+  // Tap-write session indicator: TIME LED blinks for as long as a session is
+  // active, RECORD or OVERDUB. An all-OVERDUB pass is silent, so without
+  // this the user cannot tell a session is still running.
+  Leds::Set(TIME_MODE_LED,     (in_time && ab_led_on) || pat_clr_flash ||
+                               (s_metronome_active && (clk_count & 4)));
+  Leds::Set(PITCH_MODE_LED,    (in_pitch && ab_led_on) || pat_clr_flash);
   // FUNCTION_MODE_LED = "normal mode" indicator. Lit whenever the engine is not
   // in TIME/PITCH submode. Driven off NOT-in-submode so that mode-LED edge
   // cases (e.g. brief mode flicker) never leave the indicator dark.
   Leds::Set(FUNCTION_MODE_LED, !in_time && !in_pitch && !pat_clr_flash);
   if (pat_clr_flash) Leds::Set(ASHARP_KEY_LED, true);
+}
+
+// Tap-write monitor (ROM-exact): starts at the PRESS with the pitch the
+// aimed-at NOTE will consume from the stream, sounds until physical release.
+// Scale and transpose applied like playback; MIDI mirrors it via the
+// audition channel.
+static void metro_start_monitor(const Sequence &s, uint8_t step) {
+  const uint8_t k  = s.pitch_index_for_note(step);
+  const uint8_t pb = (k < s.get_pitch_count()) ? s.pitch[k] : PITCH_DEFAULT;
+  const uint8_t lin = s.scale_quantize_linear(unpack_pitch_linear(pb));
+  s_metro_tap_monitor_cv     = clamp_cv(int(lin) + total_transpose);
+  s_metro_tap_monitor_accent = (pb & 0x40) != 0;
+  s_metro_tail_cv            = s_metro_tap_monitor_cv;
+  s_metro_monitor_gate       = true;
+  uint16_t mn = uint16_t(36 + lin) + total_transpose;
+  if (mn > 127) mn = 127;
+  midi_audition_note_on(uint8_t(mn), s_metro_tap_monitor_accent ? 127 : 80);
+}
+
+// The ROM's SUSTAIN modifier: any SELECTOR (pattern key 1-8) held during the
+// session turns would-be RESTs into TIEs once a note exists.
+static bool metro_sustain_held() {
+  for (uint8_t i = 0; i < 8; ++i)
+    if (inputs[i].held()) return true;
+  return false;
 }
 
 // PITCH modifier: live transpose root / octave for performance
@@ -1530,8 +2048,6 @@ static void ProcessTrackUI(DialMode dial, bool dial_track_write, bool clk_run,
 // =============================================================================
 static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
   Leds::Set(FUNCTION_MODE_LED, true);
-  Leds::Set(PITCH_MODE_LED, !s_step_sel_time);
-  Leds::Set(TIME_MODE_LED,   s_step_sel_time);
   // Resolve the pattern being viewed. With an active chain of >= 2 patterns
   // we view chain[s_step_sel_chain_view]; otherwise we view the engine's
   // active pattern. View is independent of playback: the engine keeps
@@ -1539,9 +2055,25 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
   const bool chain_view_active = s_chain_active && s_chain_len >= 2;
   if (chain_view_active && s_step_sel_chain_view >= s_chain_len)
     s_step_sel_chain_view = 0;
-  const uint8_t view_pat_idx = chain_view_active
+  uint8_t view_pat_idx = chain_view_active
       ? s_chain_pats[s_step_sel_chain_view]
       : engine.get_patsel();
+  // A/B view: with a linked pair (or chain-wide A/B) the view NEVER follows
+  // playback's A/B alternation. It shows section A by default; the mode-key +
+  // CLEAR combo (PITCH or TIME held + CLEAR, either order) pins the other
+  // section via engine.ab_edit_pat_.
+  if (engine.ab_edit_pat_ != 0xFF)
+    view_pat_idx = uint8_t((view_pat_idx & 7) |
+                           (Engine::is_section_b(engine.ab_edit_pat_) ? 8 : 0));
+  else if (s_ab_mode)
+    view_pat_idx = Engine::section_a_of(view_pat_idx);
+  // Sub-mode LEDs double as the A/B view indicator in A/B mode: solid =
+  // viewing section A, blinking = section B. clk_count free-runs at 120 BPM,
+  // so the blink works while stopped too.
+  const bool ab_view_b = s_ab_mode && Engine::is_section_b(view_pat_idx);
+  const bool ab_led_on = !ab_view_b || clk_count < 12;
+  Leds::Set(PITCH_MODE_LED, !s_step_sel_time && ab_led_on);
+  Leds::Set(TIME_MODE_LED,   s_step_sel_time && ab_led_on);
   // Edit the current variation when viewing the active pattern (var2/3 live
   // in the shadow buffers); chained non-active patterns edit variation 1.
   Sequence &seq = (view_pat_idx == engine.get_patsel())
@@ -1555,9 +2087,14 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
   PolyVoice &pv = engine.poly_;
   const uint8_t blen = poly_sel ? uint8_t(pv.length ? pv.length : 1) : seq.length;
   #define SEL_TIME(i) (poly_sel ? pv.time(uint8_t(i)) : seq.time(uint8_t(i)))
+  // An A/B pin flip can land on a shorter section; drop a selection that no
+  // longer exists so the editors cannot write past the viewed length.
+  if (s_step_sel >= int(blen)) s_step_sel = -1;
 
   // Sub-mode switching (outside detail editor to avoid accidental mode changes).
-  if (!s_step_sel_edit) {
+  // !CLEAR held: a mode key rising with CLEAR down is the A/B pin gesture
+  // (either press order), not a sub-mode switch.
+  if (!s_step_sel_edit && !inputs[CLEAR_KEY].held()) {
     if (inputs[TIME_KEY].rising() && !s_step_sel_time) {
       s_step_sel_time = true;
       s_step_sel = -1; // clear selection on mode switch
@@ -1571,8 +2108,9 @@ static void ProcessStepSelect(bool clk_run, bool dial_pattern_write) {
   // ── Picker (shared between pitch and time sub-modes) ──
   if (!s_step_sel_edit) {
     // A# toggles the extended half (steps 32..63); keep the same black-key
-    // offset when flipping so the picker stays on the same column.
-    if (inputs[ASHARP_KEY].rising()) {
+    // offset when flipping so the picker stays on the same column. Above 32
+    // steps only: at MAX_STEPS = 32 the four banks cover the whole section.
+    if (MAX_STEPS > 32 && inputs[ASHARP_KEY].rising()) {
       s_step_sel_ext = !s_step_sel_ext;
       s_step_sel_base = uint8_t((s_step_sel_base & 31) + (s_step_sel_ext ? 32 : 0));
     }
@@ -1982,6 +2520,108 @@ static void ProcessKeyboardPlay() {
 // =============================================================================
 // FN held: pattern length editor + length LED display (Pattern Write only).
 // =============================================================================
+// =============================================================================
+// A/B pair length helpers (spec 5-b..5-e). A linked pair is one pattern whose
+// steps run 1..64 in the A section and 65..128 in the B section, so these walk
+// the two Sequences as a single stream.
+// =============================================================================
+static uint8_t pair_time_at(const Sequence &a, const Sequence &b, uint8_t i) {
+  return (i < MAX_STEPS) ? a.time(i) : b.time(uint8_t(i - MAX_STEPS));
+}
+
+// Pitch of the NOTE event at pair step `i`, or PITCH_EMPTY if that step is not
+// a NOTE. Each section owns its own NOTE-indexed pitch stream.
+static uint8_t pair_pitch_at(const Sequence &a, const Sequence &b, uint8_t i) {
+  const Sequence &s = (i < MAX_STEPS) ? a : b;
+  const uint8_t k = (i < MAX_STEPS) ? i : uint8_t(i - MAX_STEPS);
+  if (s.time(k) != 1) return PITCH_EMPTY;
+  const uint8_t slot = s.pitch_index_for_note(k);
+  return (slot < MAX_STEPS) ? s.pitch[slot] : PITCH_EMPTY;
+}
+
+// Total last step across the pair: A alone, or A + B when linked.
+static uint8_t pair_total_length(uint8_t patsel) {
+  const Sequence &a = engine.pattern[Engine::section_a_of(patsel)];
+  if (!s_ab_mode) return a.length;
+  const uint16_t t = uint16_t(a.length) + engine.pattern[Engine::section_b_of(patsel)].length;
+  return uint8_t(t > 2 * MAX_STEPS ? 2 * MAX_STEPS : t);
+}
+
+// Set the pair's last step to `total` (1..128). Past 64 the B section takes
+// over and the pair is linked automatically (spec 5-d / 5-e); at or below 64
+// the pattern is a plain A-section pattern again.
+static void pair_set_total_length(uint8_t patsel, uint8_t total) {
+  Sequence &a = engine.pattern[Engine::section_a_of(patsel)];
+  Sequence &b = engine.pattern[Engine::section_b_of(patsel)];
+  if (total < 1) total = 1;
+  if (total > 2 * MAX_STEPS) total = uint8_t(2 * MAX_STEPS);
+  if (total > MAX_STEPS) {
+    // Growing past the section links the pair structurally (saved memory) and
+    // enters the A/B mode so the B half is heard immediately.
+    engine.set_pair_linked(patsel, true);
+    s_ab_mode = true;
+    engine.ApplyLength(a, uint8_t(MAX_STEPS));
+    engine.ApplyLength(b, uint8_t(total - MAX_STEPS));
+  } else {
+    engine.set_pair_linked(patsel, false);
+    engine.ApplyLength(a, total);
+  }
+}
+
+// Spec 5-b/5-c/5-e: FUNCTION + UP doubles the pair's last step, up to 128. A
+// tail that already holds NOTES (retained from an earlier halve) is simply
+// revealed; an empty tail is filled with a copy of the first half, time and
+// pitch alike, spilling into the B section and linking the pair when it must.
+static void pair_double_length(uint8_t patsel) {
+  Sequence &a = engine.pattern[Engine::section_a_of(patsel)];
+  Sequence &b = engine.pattern[Engine::section_b_of(patsel)];
+  const uint8_t sec_cap = a.is_triplet_mode() ? uint8_t(TRIPLET_MAX_STEPS)
+                                              : uint8_t(MAX_STEPS);
+  const uint8_t len = pair_total_length(patsel);
+  uint16_t want = uint16_t(len) * 2;
+  const uint16_t cap = uint16_t(sec_cap) * 2;
+  if (want > cap) want = cap;
+  const uint8_t nlen = uint8_t(want);
+  if (nlen <= len) return;
+
+  bool tail_empty = true;
+  for (uint8_t i = len; i < nlen; ++i)
+    if (pair_time_at(a, b, i) != 0) { tail_empty = false; break; }
+
+  // Snapshot the source half before the sections are resized: the copy reads
+  // from the same pair it writes into, and growing B renumbers nothing but
+  // does make its own tail readable.
+  if (tail_empty) {
+    uint8_t src_t[MAX_STEPS];
+    uint8_t src_p[MAX_STEPS];
+    for (uint8_t j = 0; j < len && j < MAX_STEPS; ++j) {
+      src_t[j] = pair_time_at(a, b, j);
+      src_p[j] = pair_pitch_at(a, b, j);
+    }
+    pair_set_total_length(patsel, nlen);
+    for (uint8_t i = len; i < nlen; ++i) {
+      const uint8_t j = uint8_t(i - len);
+      Sequence &d = (i < MAX_STEPS) ? a : b;
+      const uint8_t di = (i < MAX_STEPS) ? i : uint8_t(i - MAX_STEPS);
+      sequence_set_time_at(d, di, src_t[j]);
+      if (src_t[j] == 1 && src_p[j] != PITCH_EMPTY) {
+        const uint8_t slot = d.pitch_index_for_note(di);
+        if (slot < MAX_STEPS) {
+          d.pitch[slot] = src_p[j];
+          if (slot >= d.get_pitch_count()) d.set_pitch_count(uint8_t(slot + 1));
+        }
+      }
+    }
+    sequence_rebuild_pitch_count(a);
+    sequence_ensure_pitch_for_notes(a);
+    sequence_rebuild_pitch_count(b);
+    sequence_ensure_pitch_for_notes(b);
+    engine.stale = true;
+  } else {
+    pair_set_total_length(patsel, nlen);
+  }
+}
+
 static void ProcessLengthEditor(bool dial_pattern_write) {
   // Always-solid FUNCTION_MODE_LED so it stays visible when the clock is stopped
   // (clk_count is frozen and may sit at 0, hiding any blink mask).
@@ -2002,9 +2642,25 @@ static void ProcessLengthEditor(bool dial_pattern_write) {
     // LED: show current length position
     // White key: remainder within current 8-step block
     // Black keys: cumulative block coverage (solid = covered, blink = extended block covered)
-    const uint8_t cur_len = engine.edit_seq_view().length;
+    // Spec 5-d: holding the B (SLIDE) button while FUNCTION moves the whole
+    // editor into steps 65-128, i.e. the B section's own 1-64. Picking a last
+    // step there links the pair automatically. A pattern that is already on
+    // the B section alone cannot exceed step 64, so the modifier is ignored
+    // there ("the LAST STEP cannot exceed the 64th step").
+    const uint8_t lpat  = engine.get_patsel();
+    const bool on_b     = Engine::is_section_b(lpat);
+    // A B section selected on its own is an ordinary 1-64 pattern: only a
+    // linked pair (or the A section, which can grow into one) edits pair-wide.
+    const bool pair_len = (engine.get_edit_var() == 0) &&
+                          !(on_b && !s_ab_mode);
+    const bool sec_b    = pair_len && !on_b && inputs[SLIDE_KEY].held();
+    const uint8_t cur_len = sec_b
+        ? uint8_t(pair_total_length(lpat) > MAX_STEPS
+                      ? pair_total_length(lpat) - MAX_STEPS
+                      : 0)
+        : engine.edit_seq_view().length;
     const bool blink_w = bool((millis() >> 8) & 1); // ~2 Hz, clock-independent
-    Leds::Set(OutputIndex((cur_len - 1) & 0x7), true);
+    if (cur_len) Leds::Set(OutputIndex((cur_len - 1) & 0x7), true);
     if (s_len_extended || cur_len > 32) {
       Leds::Set(ASHARP_KEY_LED, blink_w);
       Leds::Set(CSHARP_KEY_LED, cur_len > 32 ? blink_w : false);
@@ -2019,7 +2675,7 @@ static void ProcessLengthEditor(bool dial_pattern_write) {
       Leds::Set(GSHARP_KEY_LED, cur_len > 24);
     }
 
-    if (inputs[ASHARP_KEY].rising()) s_len_extended = !s_len_extended;
+    if (MAX_STEPS > 32 && inputs[ASHARP_KEY].rising()) s_len_extended = !s_len_extended;
 
     const uint8_t ext_add = s_len_extended ? 32 : 0;
     // Black key → select base range only; white key below applies the length.
@@ -2033,8 +2689,19 @@ static void ProcessLengthEditor(bool dial_pattern_write) {
     for (uint8_t wi = 0; wi < 8; ++wi) {
       if (inputs[kCfgWhiteKeys[wi]].rising()) {
         const uint8_t base = s_len_black_pressed ? s_len_black_base : 0;
-        engine.SetLength(base + wi + 1);
-        midi_send_length_update(engine.get_patsel(), engine.edit_seq_view().length, engine.get_edit_var());
+        const uint8_t sel  = uint8_t(base + wi + 1);
+        if (sec_b) {
+          // Step 64 + sel: crosses into the B section, so the pair links.
+          pair_set_total_length(lpat, uint8_t(MAX_STEPS + sel));
+          midi_send_pattern_update(lpat);
+          midi_send_pattern_update(Engine::section_b_of(lpat));
+        } else if (pair_len) {
+          pair_set_total_length(lpat, sel);
+          midi_send_length_update(lpat, engine.edit_seq_view().length, 0);
+        } else {
+          engine.SetLength(sel);
+          midi_send_length_update(lpat, engine.edit_seq_view().length, engine.get_edit_var());
+        }
       }
     }
   }
@@ -2047,28 +2714,39 @@ static void ProcessLengthEditor(bool dial_pattern_write) {
 static void ProcessClearCombos(bool clear_mod, bool fn_mod, bool dial_pattern_write,
                                bool pitch_mod, bool time_mod, bool clk_run) {
   if (!clear_mod || fn_mod || !dial_pattern_write) return;
+  // Matrix ghost guard (no diodes): in Pattern Write the mode dial closes
+  // (PH0,PA0), so a held pattern key (PH0/PH1, PBc) plus CLEAR (PH2,PA0)
+  // reads a phantom same-column key on the CLEAR row -- DOWN/UP/ACCENT/SLIDE.
+  // The phantom fired the combo on the clear gesture itself (pat key + CLEAR
+  // randomized/rotated/mutated the just-cleared pattern) and then masked the
+  // real press's rising edge ("randomize does nothing after clear"). No CLEAR
+  // combo on these four keys involves a held pattern key (copy/paste uses
+  // C#/D#), so drop their edges while any pattern key is down.
+  bool pat_key_down = false;
+  for (uint8_t i = 0; i < 8; ++i)
+    if (inputs[i].held()) { pat_key_down = true; break; }
   bool pat_changed = false;
   // CLEAR + ACCENT rising: randomize the whole pattern.
-  if (inputs[ACCENT_KEY].rising()) {
+  if (inputs[ACCENT_KEY].rising() && !pat_key_down) {
     engine.RandomizeFullPattern();
     pat_changed = true;
   }
   // CLEAR + DOWN rising: rotate time data one step LEFT within length.
   // CLEAR + PITCH + DOWN rising: rotate pitch data only one step LEFT.
-  if (inputs[DOWN_KEY].rising()) {
+  if (inputs[DOWN_KEY].rising() && !pat_key_down) {
     if (pitch_mod) engine.RotatePitchLeft();
     else           engine.RotateTimeLeft();
     pat_changed = true;
   }
   // CLEAR + UP rising: rotate time data one step RIGHT within length.
   // CLEAR + PITCH + UP rising: rotate pitch data only one step RIGHT.
-  if (inputs[UP_KEY].rising()) {
+  if (inputs[UP_KEY].rising() && !pat_key_down) {
     if (pitch_mod) engine.RotatePitchRight();
     else           engine.RotateTimeRight();
     pat_changed = true;
   }
   // CLEAR + SLIDE rising: Mutate current pattern (small random perturbation).
-  if (inputs[SLIDE_KEY].rising()) {
+  if (inputs[SLIDE_KEY].rising() && !pat_key_down) {
     engine.Mutate();
     pat_changed = true;
   }
@@ -2185,21 +2863,39 @@ static void OutputDAC(bool clk_run, bool write_mode, bool track_mode, bool edit_
     const bool gate_running = force_slide_live
         ? !engine.resting
         : engine.get_gate();
-    // Metronome click: override pitch with the fixed click CV, and KEEP it
-    // there through the envelope's decay tail after the gate drops (until
-    // the sequencer itself gates a note). Snapping the pitch latch back to
-    // the pattern's low resting pitch mid-decay played the tail low: an
-    // audible low-end thump the d650c doesn't have (its ROM leaves the
-    // pitch latch at the click pitch until the next event).
+    // Tap-write voice (one shared voice): the metronome click cuts through
+    // for its 2 ticks even over a held note (user request: the beat stays
+    // audible while holding; the gate stays high so the note is not
+    // retriggered, the pitch just dips to the click), then the monitor
+    // (accept tick until release), then the pattern. In the RECORD phase the
+    // engine voice is SILENT, exactly the ROM's measure (its notes doubling
+    // the monitor was audible glitching); in the OVERDUB phase the recorded
+    // pattern plays clean with no clicks. The idle decay tail holds the last
+    // event's pitch -- snapping back to the resting pitch mid-decay played
+    // the tail low, a thump the d650c doesn't have.
+    const bool tap_monitor  = s_metronome_active && s_metro_monitor_gate;
+    const bool engine_voice = !s_metronome_active || !s_metro_record_phase;
     uint8_t pitch_cv;
-    if (s_metro_gate_pulse || (s_metronome_active && !gate_running))
+    if (s_metro_gate_pulse)
       pitch_cv = s_metro_pitch_cv;
+    else if (tap_monitor)
+      pitch_cv = s_metro_tap_monitor_cv;
+    else if (engine_voice && gate_running)
+      pitch_cv = clamp_cv(int(engine.get_pitch_scaled()) + total_transpose);
+    else if (s_metronome_active && s_metro_record_phase)
+      // RECORD only: hold the last click/monitor pitch through the decay.
+      // In OVERDUB the engine is the voice; its decays must ring at the
+      // pattern's own pitch exactly like normal playback, not at a stale
+      // click pitch.
+      pitch_cv = s_metro_tail_cv;
     else
       pitch_cv = clamp_cv(int(engine.get_pitch_scaled()) + total_transpose);
     DAC::SetPitch(pitch_cv);
-    DAC::SetSlide(engine.get_slide_dac() || force_slide_live);
-    DAC::SetAccent(engine.get_accent() || force_accent_live);
-    DAC::SetGate(gate_running || s_metro_gate_pulse);
+    DAC::SetSlide((engine_voice && engine.get_slide_dac()) || force_slide_live);
+    DAC::SetAccent((tap_monitor ? s_metro_tap_monitor_accent
+                                : (engine_voice && engine.get_accent())) ||
+                   force_accent_live);
+    DAC::SetGate((engine_voice && gate_running) || s_metro_gate_pulse || tap_monitor);
   } else {
     bool gate = midi_live_gate();
     // Live MIDI play (clock stopped): drive the CV from the received note, not the
@@ -2371,11 +3067,15 @@ void loop() {
   // the dial loses the edits. Save when stopped and quiet (2s) so the flash stall
   // happens between keypresses, not on every one.
   {
+    // Covers aux_dirty() too: variation 2/3, poly and probability edits do not
+    // set `stale`, so gating on `stale` alone left them in RAM until a slot
+    // change or transport stop and a power-off lost them.
     static bool     s_stale_prev = false;
     static uint32_t s_stale_ms   = 0;
-    if (engine.stale && !s_stale_prev) s_stale_ms = millis();
-    s_stale_prev = engine.stale;
-    if (engine.stale && !clk_run && (millis() - s_stale_ms) >= 2000) engine.Save();
+    const bool dirty = engine.stale || engine.aux_dirty();
+    if (dirty && !s_stale_prev) s_stale_ms = millis();
+    s_stale_prev = dirty;
+    if (dirty && !clk_run && (millis() - s_stale_ms) >= 2000) engine.Save();
   }
   // Detect MIDI clock Start rising edge (midi_clk just became true this frame).
   const bool midi_clk_rose = (!prev_midi_clk && midi_clk && GlobalSettings.midi_clock_receive);
@@ -2514,23 +3214,34 @@ void loop() {
       } else {
         // Apply new chain state from web
         if (rx_al > 1) {
-          s_chain_active = true;
-          s_chain_len    = rx_al;
-          for (uint8_t ci = 0; ci < rx_al; ++ci) s_chain_pats[ci] = rx_ap[ci];
-          if (!clk_run) {
-            s_chain_pos = 0;
-            engine.SetPattern(rx_ap[0], true);
-          } else {
-            s_chain_pos = s_chain_len - 1; // chain advance will queue pats[0] next
+          // Same active chain re-sent (the web echoes the full state when it
+          // only queued something): keep the running position and wrap intent
+          // untouched, or the chain would jump to its last entry.
+          bool same_active = s_chain_active && (s_chain_len == rx_al);
+          for (uint8_t ci = 0; same_active && ci < rx_al; ++ci)
+            if (s_chain_pats[ci] != rx_ap[ci]) same_active = false;
+          if (!same_active) {
+            s_chain_active = true;
+            s_chain_len    = rx_al;
+            for (uint8_t ci = 0; ci < rx_al; ++ci) s_chain_pats[ci] = rx_ap[ci];
+            chain_intent_reset();
+            if (!clk_run) {
+              s_chain_pos = 0;
+              engine.SetPattern(chain_entry_start(rx_ap[0]), true);
+            } else {
+              s_chain_pos = s_chain_len - 1; // chain advance will queue pats[0] next
+            }
           }
         } else if (rx_al == 1) {
           s_chain_active = false;
           s_chain_len    = 1;
           s_chain_pats[0] = rx_ap[0];
-          engine.SetPattern(rx_ap[0], !clk_run);
+          chain_intent_reset();
+          engine.SetPattern(chain_entry_start(rx_ap[0]), !clk_run);
         } else {
           s_chain_active = false;
           s_chain_len    = 0;
+          chain_intent_reset();
         }
         s_chain_queue_len = rx_ql;
         for (uint8_t ci = 0; ci < rx_ql; ++ci) s_chain_queued[ci] = rx_qp[ci];
@@ -2549,11 +3260,21 @@ void loop() {
   if (run_rising_effective || midi_clk_rose) {
     // midi_poll already called engine.Reset() on MIDI Start; only reset for hardware button.
     if (!midi_clk_rose) engine.Reset();
+    chain_intent_reset();
     // Restart chain from first pattern on every start (hardware or MIDI clock).
+    // The Reset() above only reset the sequence selected AT STOP; when either
+    // branch moves patsel, the landed sequence still holds its old position
+    // and the run would start mid-pattern -- reset it too.
     if (s_chain_active && s_chain_len > 1) {
       s_chain_pos       = 0;
       s_chain_queue_len = 0;
-      engine.SetPattern(s_chain_pats[0], true);
+      engine.SetPattern(chain_entry_start(s_chain_pats[0]), true);
+      engine.get_sequence().Reset();
+    } else if (s_ab_mode && Engine::is_section_b(engine.get_patsel())) {
+      // No chain: a run that previously stopped on the B half of a linked
+      // pair must restart from A, not resume alternating from B.
+      engine.SetPattern(Engine::section_a_of(engine.get_patsel()), true);
+      engine.get_sequence().Reset();
     }
     emit_chain_state();
     if (dial_track_mode) emit_track_state(dial, /*clk_run=*/true, cur_tracknum & 0x07);
@@ -2623,11 +3344,14 @@ void loop() {
     } else if (time_mod) {
       Leds::Set(FUNCTION_MODE_LED, true);
       // TODO: performance time effects
-    } else if (fn_mod) {
+    } else if (fn_mod && !s_fn_chain_saved) {
       ProcessLengthEditor(dial_pattern_write);
     } else if (edit_mode && dial_pattern_write && !fn_mod && !clear_mod &&
-               !s_metronome_active && engine.get_mode() == NORMAL_MODE) {
+               !s_metronome_active && !s_metro_tap_swallow &&
+               engine.get_mode() == NORMAL_MODE) {
       // Hold TAP_NEXT in Pattern Write/normal mode: edit-variation picker.
+      // s_metro_tap_swallow keeps a tap-write session's held TAP from landing
+      // here when the session auto-exits at the wrap.
       ProcessEditVarPicker(clk_run);
     } else {
       ProcessDefault(write_mode, clear_mod, clk_run, dial_pattern_write);
@@ -2641,43 +3365,123 @@ void loop() {
     const uint8_t cur = engine.get_patsel();
     bool chain_state_changed = false;
 
-    // Activate queued item when its first pattern starts playing
-    if (s_chain_queue_len > 0 && cur == s_chain_queued[0]) {
-      if (s_chain_queue_len > 1) {
-        // Promote full queued chain
-        for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
-          s_chain_pats[ci] = s_chain_queued[ci];
-        s_chain_len = s_chain_queue_len;
-        s_chain_pos = 0;
+    // Position tracking by INTENT: we remember what we queued for the next
+    // wrap (s_chain_expect / s_chain_expect_pos / s_chain_expect_handoff) and
+    // act when the wrap lands on it. Deriving position or queue promotion
+    // from the playing pattern VALUE alone aliases chains with repeated
+    // entries: 2,1,2 would snap back to the first 2, and a queued chain
+    // starting with a pattern the current chain also contains would promote
+    // mid-pass instead of at the end of the chain. The value search below is
+    // only the fallback for external moves (user tap, run start).
+    const uint8_t tp      = engine.get_time_pos();
+    const bool    wrapped = (tp == 0 && s_chain_prev_tp != 0 && s_chain_prev_tp != 0xFF);
+    s_chain_prev_tp = tp;
+
+    // Chain-wide A/B: the first member's link flag makes EVERY member play
+    // A then B; a member's own flag still counts (pattern linked before it
+    // was chained).
+    const bool cur_linked = s_ab_mode;
+    if (wrapped) {
+      if (s_chain_expect != 0xFF && cur == s_chain_expect) {
+        if (s_chain_expect_handoff && s_chain_queue_len > 0) {
+          // The end-of-chain handoff we queued has landed: promote the queued
+          // chain (or drop to a single pattern) exactly at the chain boundary.
+          if (s_chain_queue_len > 1) {
+            for (uint8_t ci = 0; ci < s_chain_queue_len; ++ci)
+              s_chain_pats[ci] = s_chain_queued[ci];
+            s_chain_len = s_chain_queue_len;
+            s_chain_pos = 0;
+          } else {
+            s_chain_active = false;
+            s_chain_len    = 0;
+          }
+          s_chain_queue_len   = 0;
+          chain_state_changed = true;
+        } else {
+          s_chain_pos = s_chain_expect_pos;
+        }
       } else {
-        // Single pattern: deactivate chain, just play this pattern
-        s_chain_active = false;
-        s_chain_len    = 0;
+        // External move: re-derive by value, searching from the cursor. A
+        // linked pair's B half matches its entry too.
+        for (uint8_t k = 0; k < s_chain_len; ++k) {
+          const uint8_t ci = uint8_t((s_chain_pos + k) % s_chain_len);
+          const uint8_t e  = s_chain_pats[ci];
+          if (e == cur || (cur_linked && (e & 7) == (cur & 7))) { s_chain_pos = ci; break; }
+        }
       }
-      s_chain_queue_len    = 0;
-      chain_state_changed  = true;
+      s_chain_expect_handoff = false;
     }
 
     if (s_chain_active && s_chain_len > 1) {
-      // Update position in active chain
-      for (uint8_t ci = 0; ci < s_chain_len; ++ci)
-        if (s_chain_pats[ci] == cur) { s_chain_pos = ci; break; }
-
-      // Queue next: hold-loop (only when chain reaches held pattern) > queued chain > advance
+      // Queue next: linked-pair B half > hold-loop > queued chain > advance.
       uint8_t next_pat;
-      if (s_chain_hold_loop && (s_chain_hold_target_pat == 0xff || cur == s_chain_hold_target_pat)) {
-        // Loop: either any pattern (legacy) or specifically the held one
-        next_pat = cur;
+      uint8_t next_pos = s_chain_pos;
+      bool    handoff  = false;
+      if (cur_linked && !Engine::is_section_b(cur)) {
+        // A linked pair inside a chain plays its whole A-B before the chain
+        // advances: hand the wrap to the B section of the SAME chain entry.
+        next_pat = Engine::section_b_of(cur);
+      } else if (s_chain_hold_loop && (s_chain_hold_target_pat == 0xff || cur == s_chain_hold_target_pat ||
+                 (cur_linked && (s_chain_hold_target_pat & 7) == (cur & 7)))) {
+        // Loop: a linked pair loops A->B->A->B, an unlinked pattern loops itself
+        next_pat = cur_linked ? Engine::section_a_of(cur) : cur;
       } else if (s_chain_queue_len > 0 && s_chain_pos == s_chain_len - 1) {
-        // At the last pattern of the current chain: hand off to the queued chain
-        next_pat = s_chain_queued[0];
+        // At the last pattern of the current chain: hand off to the queued
+        // chain. Entered at A when the named entry is a linked pair (the tap
+        // paths normalize queued[0], the hold+tap build path does not).
+        next_pat = chain_entry_start(s_chain_queued[0]);
+        handoff  = true;
       } else {
-        next_pat = s_chain_pats[(s_chain_pos + 1) % s_chain_len];
+        next_pos = uint8_t((s_chain_pos + 1) % s_chain_len);
+        next_pat = s_chain_pats[next_pos];
+        // In A/B mode entries are entered at their A section regardless of
+        // which section the chain named, so every pass plays A then B.
+        if (s_ab_mode)
+          next_pat = Engine::section_a_of(next_pat);
       }
+      s_chain_expect         = next_pat;
+      s_chain_expect_pos     = next_pos;
+      s_chain_expect_handoff = handoff;
       engine.SetPattern(next_pat);
     }
 
     if (chain_state_changed) emit_chain_state();
+  } else if (clk_run && !dial_track_mode && s_ab_mode) {
+    // A/B mode with no user chain: queue the other section so the
+    // engine hands over at the wrap. A plays, then B, then A again -- one
+    // pattern of up to 128 steps (spec 1-a / 5-d / 5-e).
+    const uint8_t cur  = engine.get_patsel();
+    const uint8_t nxt  = engine.get_next();
+    const uint8_t want = Engine::is_section_b(cur) ? Engine::section_a_of(cur)
+                                                   : Engine::section_b_of(cur);
+    // A defer parked on a different pair is stale (the pair was unlinked or
+    // the pattern moved externally before it could land): drop it.
+    if (s_pair_defer != 0xFF && s_pair_defer_pair != (cur & 7)) {
+      s_pair_defer      = 0xFF;
+      s_pair_defer_pair = 0xFF;
+    }
+    if (nxt == cur) {
+      // Idle wrap: steer the A/B alternation -- or land a deferred switch now
+      // that the B half has finished (the pair is ONE pattern; a switch never
+      // cuts it in half).
+      if (s_pair_defer != 0xFF && Engine::is_section_b(cur)) {
+        engine.SetPattern(s_pair_defer);
+        s_pair_defer      = 0xFF;
+        s_pair_defer_pair = 0xFF;
+      } else {
+        engine.SetPattern(want);
+      }
+    } else if (!Engine::is_section_b(cur) && nxt != Engine::section_b_of(cur) &&
+               engine.pending_group_ == 0xff) {
+      // A switch queued while the A half plays waits for the pair to finish:
+      // park it, hand the wrap to B, and land it at B's wrap (first branch).
+      // A later tap overwrites the parked target, so the newest choice wins.
+      // Group-switch queues are exempt: the pending group applies at the very
+      // next wrap regardless, so deferring the pattern would strand it.
+      s_pair_defer      = nxt;
+      s_pair_defer_pair = uint8_t(cur & 7);
+      engine.SetPattern(Engine::section_b_of(cur));
+    }
   }
 
   // show all pressed buttons. Probability mode renders its own step / picker /
@@ -2702,20 +3506,49 @@ void loop() {
       Leds::Set(ASHARP_KEY_LED, true);
   }
 
-  // Metronome: auto-exit if transport stopped or write mode released
+  // Metronome: auto-exit if transport stopped or write mode released. These
+  // are the ONLY session exits -- CLEAR+TIME while active RESTARTS the
+  // session (see the gesture below), it never toggles off.
   if (s_metronome_active && (!clk_run || !write_mode)) {
     s_metronome_active = false;
     s_metro_gate_pulse = false;
     midi_metronome_stop();
+    midi_audition_note_off();
   }
-  // Per-frame: latch TAP state for metronome recording at next beat boundary
+  // Per-frame TAP tracking for the recorder. A press ARMS the pending flag
+  // and starts the monitor voice IMMEDIATELY (ROM-measured: the heard note
+  // follows the finger from the press, not from the accept tick). The write
+  // itself still lands on the tick grid below. Release ends the monitor and
+  // the tie chain immediately.
   if (s_metronome_active) {
-    if (inputs[TAP_NEXT].falling()) s_metro_tap_released_since_last_beat = true;
+    if (inputs[TAP_NEXT].rising()) {
+      s_metro_press_pending = true;
+      if (s_metro_bar_started) {
+        // Predict the step this press is aimed at (same rule the accept tick
+        // applies) so the monitor previews the pitch that note will consume.
+        // Pre-write, pitch_index_for_note gives the same stream slot the
+        // write will map, so the pitch matches the accept-time result.
+        const uint8_t t_dec = (engine.step_period() >= 8) ? 3 : 2;
+        const uint8_t k     = engine.get_time_pos();
+        const uint8_t tgt   = (s_metro_step_tick < t_dec) ? k : uint8_t(k + 1);
+        metro_start_monitor(engine.get_sequence(), tgt);
+      }
+    }
+    if (inputs[TAP_NEXT].falling()) {
+      s_metro_note_active  = false;
+      s_metro_monitor_gate = false;
+      midi_audition_note_off();     // monitor follows the finger's release
+    }
   }
+  // TAP stays owned by tap-write until released, even across the auto-exit.
+  if (s_metronome_active && inputs[TAP_NEXT].held()) s_metro_tap_swallow = true;
+  else if (!inputs[TAP_NEXT].held())                 s_metro_tap_swallow = false;
 
   Leds::Swap();
 
-  // Pattern group dial (positions 1-2=group0, 3-4=group1, 5-6=group2, 7=group3)
+  // Pattern group dial (positions 1-2=group0, 3-4=group1, 5-6=group2, 7=group3):
+  // the knob's 7 detents pair into the panel's 4 pattern groups I-IV. Track mode
+  // uses the raw 0..7 for its 8 track slots.
   // Debounced: require GROUP_DEBOUNCE_FRAMES consecutive frames before accepting a new group.
   if (!inputs[TRACK_SEL].held()) {
     const uint8_t new_group = uint8_t(cur_tracknum <= 1 ? 0 : cur_tracknum <= 3 ? 1 : cur_tracknum <= 5 ? 2 : 3);
@@ -2778,8 +3611,11 @@ void loop() {
     // step-select made bare step presses open the audition gate).
     const bool overlay_mode = s_dir_mode || s_scale_mode || s_step_sel_mode || s_prob_mode;
     const bool in_poly_edit = (engine.get_mode() == PITCH_MODE && engine.edit_var_ == 2 && engine.poly_active_);
-    if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode && !in_poly_edit && !overlay_mode) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
-    if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod && !overlay_mode) engine.SetMode(PITCH_MODE, !clk_run);
+    // !s_metronome_active: a stray TIME/PITCH press during a tap-write
+    // session would leave NORMAL_MODE and dead-lock the CLEAR+TIME restart
+    // gesture (it requires NORMAL_MODE); the recorder owns the panel.
+    if (inputs[TIME_KEY].rising()  && dial_pattern_write && !clear_mod && !fn_mod && !edit_mode && !in_poly_edit && !overlay_mode && !s_metronome_active) { engine.SetMode(TIME_MODE, !clk_run); s_time_edit_steps = 0; }
+    if (inputs[PITCH_KEY].rising() && dial_pattern_write && !fn_mod && !edit_mode && !clear_mod && !overlay_mode && !s_metronome_active) engine.SetMode(PITCH_MODE, !clk_run);
 
     // Keyboard play mode toggle: FN + PITCH_KEY rising while dial is in Pattern Play.
     if (fn_mod && inputs[PITCH_KEY].rising() && (dial == DialMode::PatternPlay) &&
@@ -2792,35 +3628,69 @@ void loop() {
       }
     }
 
-    // CLEAR + TIME_KEY: toggle metronome tap-write (running + Pattern Write + NORMAL_MODE).
-    if (clear_mod && inputs[TIME_KEY].rising() && !fn_mod &&
-        clk_run && dial_pattern_write && engine.get_mode() == NORMAL_MODE) {
-      s_metronome_active = !s_metronome_active;
-        if (!s_metronome_active) {
-          midi_metronome_stop();
-        } else {
-          s_metro_prev_note    = false;
-          s_metro_has_activity = false;
-          // Clear time only; pitch stream is preserved so newly-tapped NOTE
-          // steps consume the user's existing pitches in stream order.
-          Sequence &seq = engine.get_sequence();
-          const uint8_t len = engine.get_length();
-          for (uint8_t i = 0; i < len; ++i) sequence_set_time_at(seq, i, 0);
-          engine.stale = true;
-          midi_send_pattern_update(engine.get_patsel());
-        }
+    // CLEAR + TIME_KEY: START metronome tap-write (running + Pattern Write +
+    // NORMAL_MODE). NOT a toggle: with the session looping endlessly and an
+    // all-OVERDUB pass being silent (no clicks, patterns play normally), the
+    // user cannot HEAR whether a session is still active -- a blind toggle
+    // made every other CLEAR+TIME an invisible no-op exit ("tap-write only
+    // works every second try / after a transport restart"). Now the gesture
+    // always means "record from the top": inactive = begin, active = restart
+    // the session fresh. A session ends on transport stop or leaving
+    // Pattern Write (flick the dial to Pattern Play and back to exit without
+    // stopping).
+    // D# guard: with CLEAR + D# held (paste gesture) the diode-less matrix reads a
+    // phantom TIME via the dial contact (PH0,PA0) -- same ghost class as the
+    // ProcessClearCombos pattern-key guard -- which would start a tap-write
+    // session mid-paste and wipe the pattern's time data.
+    // Either press order fires: CLEAR held + TIME pressed, or TIME held +
+    // CLEAR pressed. With only the first form, pressing both together could
+    // miss (TIME's edge debouncing in a frame before CLEAR reads held), and
+    // the press was silently swallowed -- "I had to press it twice".
+    const bool metro_gesture =
+        (clear_mod && inputs[TIME_KEY].rising()) ||
+        (inputs[CLEAR_KEY].rising() && inputs[TIME_KEY].held());
+    // TIME_MODE is accepted too: when both keys go down together, TIME's
+    // edge can debounce one frame before CLEAR reads held, opening
+    // TIME_MODE instead of the gesture -- which then blocked the gesture
+    // until TIME_MODE auto-exited ("press twice and wait"). The session
+    // forces the mode back to NORMAL in metro_session_begin().
+    // !s_step_sel_mode: the step editor runs in NORMAL_MODE and owns
+    // TIME + CLEAR as its A/B pin gesture; starting a tap-write session from
+    // there would wipe the unit's time data mid-edit.
+    if (metro_gesture && !fn_mod && !s_step_sel_mode &&
+        !inputs[DSHARP_KEY].held() && !inputs[CSHARP_KEY].held() &&
+        clk_run && dial_pattern_write &&
+        (engine.get_mode() == NORMAL_MODE || engine.get_mode() == TIME_MODE)) {
+      s_metronome_active = true;
+      metro_session_begin();
     }
 
     // CLEAR rising with a pat key held: clear that pattern (only clear path).
-    // Pattern Write only -- destructive op.
-    if (inputs[CLEAR_KEY].rising() && !fn_mod && !edit_mode && dial_pattern_write) {
+    // Pattern Write only -- destructive op. Suppressed during tap-write:
+    // pattern keys mean SUSTAIN there, and CLEAR is half of the restart
+    // gesture, so CLEAR while sustaining must not wipe a pattern.
+    if (inputs[CLEAR_KEY].rising() && !fn_mod && !edit_mode &&
+        dial_pattern_write && !s_metronome_active) {
       for (uint8_t i = 0; i < 8; ++i) {
         if (inputs[i].held()) {
           const uint8_t pat = uint8_t((engine.get_patsel() >> 3) * 8 + i);
+          // Spec 2: clearing one section leaves the other alone -- unless the
+          // A/B mode is on, in which case the whole pattern goes.
+          const bool both = s_ab_mode;
+          // ClearPattern wipes reserved[], and with it the saved A/B memory
+          // on the A section; restore the flag if it was saved.
+          const bool saved_ab = engine.pair_linked(pat);
           engine.ClearPattern(pat);
+          midi_send_pattern_update(pat);
+          if (both) {
+            const uint8_t other = Engine::is_section_b(pat) ? Engine::section_a_of(pat)
+                                                            : Engine::section_b_of(pat);
+            engine.ClearPattern(other);
+            midi_send_pattern_update(other);
+          }
+          if (saved_ab) engine.set_pair_linked(pat, true);
           pattern_cleared_flash_timer = 0;
           s_pat_cleared_hold = true;
-          midi_send_pattern_update(pat);
           break;
         }
       }
@@ -2828,15 +3698,70 @@ void loop() {
 
     // Global CLEAR combos: rotate / randomize / mutate / shift / reverse /
     // clear-only / copy-paste. Destructive, Pattern Write only. Suppressed in
-    // probability mode, which uses CLEAR for its own randomize gestures.
-    if (!s_prob_mode)
+    // probability mode (CLEAR runs its randomize gestures) and during
+    // tap-write (TAP belongs to the recorder; with CLEAR still held from the
+    // entry gesture, every tap would also fire CLEAR+TAP = shift right).
+    if (!s_prob_mode && !s_metronome_active)
       ProcessClearCombos(clear_mod, fn_mod, dial_pattern_write, pitch_mod,
                          time_mod, clk_run);
 
+    // Spec 5-a: holding FUNCTION opens on the page that CONTAINS the current
+    // last step, so the display starts where the pattern actually ends instead
+    // of at page 1. Nothing is written until a white key picks a new last step,
+    // so paging past the end to look around is free.
+    // Spec 3-a: "Once the desired PATTERN length is reached, press the
+    // FUNCTION BUTTON to exit PITCH MODE." The same press must not also open
+    // the length editor, so it is consumed here and the editor picks up on the
+    // next FUNCTION hold (spec 5, "adjusted after the fact").
+    if (inputs[FUNCTION_KEY].rising() && dial_pattern_write && !clk_run &&
+        engine.get_mode() == PITCH_MODE) {
+      engine.SetMode(NORMAL_MODE, true);
+    }
+    // Chain-save / memory-clear gesture. While the chain-build keys are held
+    // (hold 1, tap 2/3/4...) with a chain of >= 2, pressing FUNCTION stores
+    // the chain on its FIRST pattern together with the current A/B mode, so
+    // recalling it re-enters the mode. With a SINGLE pattern key held (no
+    // chain), FUNCTION clears that pattern's stored chain AND its saved A/B
+    // memory. The press is consumed so the same FN hold cannot also drive
+    // the length editor.
+    if (inputs[FUNCTION_KEY].rising() && dial_pattern_write) {
+      int8_t held_key = -1;
+      for (uint8_t i = 0; i < 8; ++i)
+        if (inputs[i].held()) { held_key = int8_t(i); break; }
+      if (held_key >= 0 && s_chain_len >= 2) {
+        store_chain_on(s_chain_pats[0], s_chain_pats, s_chain_len);
+        engine.set_pair_linked(s_chain_pats[0], s_ab_mode);
+        pattern_cleared_flash_timer = 0;  // mode-LED flash = "saved"
+        s_fn_chain_saved = true;
+      } else if (held_key >= 0) {
+        // Single pattern held: store the CURRENT state. A/B mode on = save
+        // the A/B memory on this pattern (stored chain untouched); mode off =
+        // clear its saved A/B memory AND its stored chain (the unlink
+        // gesture).
+        const uint8_t pat = uint8_t((engine.get_patsel() >> 3) * 8 + held_key);
+        if (s_ab_mode) {
+          engine.set_pair_linked(pat, true);
+        } else {
+          Sequence &cs = engine.pattern[pat & 0x0F];
+          cs.reserved[4] = 0; cs.reserved[5] = 0; cs.reserved[6] = 0;
+          engine.set_pair_linked(pat, false);
+        }
+        engine.stale = true;
+        midi_send_pattern_update(Engine::section_a_of(pat));
+        pattern_cleared_flash_timer = 0;  // mode-LED flash = "saved/cleared"
+        s_fn_chain_saved = true;
+      }
+    }
+    if (inputs[FUNCTION_KEY].rising() && dial_pattern_write && !s_fn_chain_saved) {
+      const uint8_t cl = engine.edit_seq_view().length;
+      s_len_extended      = (MAX_STEPS > 32) && (cl > 32);
+      s_len_black_base    = uint8_t(((cl - 1) / 8) * 8);
+      s_len_black_pressed = true;
+    }
     if (inputs[FUNCTION_KEY].falling()) {
-      step_counter = false;
       s_len_black_pressed = false;
       s_len_extended = false;
+      s_fn_chain_saved = false;
     }
   }
 
@@ -2883,50 +3808,178 @@ void loop() {
           }
           s_anchor_prev_tp = tp;
         }
-        // Metronome tap-write: record time data for the step that just played
+        // Metronome tap-write, boundary duties: bar/chain bookkeeping and the
+        // metronome click. All WRITING happens on the tick grid below, where
+        // the ROM does it (accept/decision ticks), not at boundaries.
         if (s_metronome_active) {
-          const uint8_t len = engine.get_length();
-          const uint8_t write_step =
-              uint8_t((engine.get_time_pos() + len - 1) % len);
-          // Use current held() state at the beat boundary (not accumulated).
-          // This correctly handles: long hold then release before boundary → REST,
-          // and fast re-press (released + new press this beat) → NOTE (not TIE).
-          const bool tap_now   = inputs[TAP_NEXT].held();
-          const bool tap_broke = s_metro_tap_released_since_last_beat;
-          const uint8_t tval = tap_now
-              ? uint8_t((s_metro_prev_note && !tap_broke) ? 2 : 1)  // TIE only if continuous hold
-              : 0;                                                     // not held at boundary: REST
-          if (tval != 0) s_metro_has_activity = true;
-          s_metro_prev_note = (tval != 0);
-          s_metro_tap_released_since_last_beat = false;
-          Sequence &wseq = engine.get_sequence();
-          sequence_write_time_with_pitch_sync(wseq, write_step, tval);
-          engine.stale = true;
-          {
-            uint8_t pb = PITCH_EMPTY;
-            if (tval == 1) {
-              const uint8_t slot = wseq.pitch_index_for_note(write_step);
-              if (slot < wseq.get_pitch_count()) pb = wseq.pitch[slot];
+          const uint8_t cur_pat = engine.get_patsel();
+          const uint8_t tp      = engine.get_time_pos();
+          if (tp == 0) {
+            if (!s_metro_bar_started) {
+              s_metro_bar_started = true;        // bar reset landed: recording on
+            } else {
+              if (s_metro_record_phase && !s_metro_pass_accept) {
+                // ROM bar validation: a RECORD pass none of whose taps was
+                // still held at its accept tick ends as an EMPTY bar -- stale
+                // writes are discarded and the metronome keeps looping,
+                // exactly like the ROM's endless empty-measure record loop.
+                Sequence &pseq = engine.pattern[s_metro_prev_pat];
+                if (pseq.note_count()) {
+                  for (uint8_t i = 0; i < pseq.length; ++i)
+                    sequence_set_time_at(pseq, i, 0);
+                  engine.stale = true;
+                  midi_send_pattern_update(s_metro_prev_pat);
+                }
+              }
+              // One guided pass through the whole unit, then DONE: at the
+              // wrap that completes a full pass (every chain member's bar,
+              // linked halves counted), the session AUTO-EXITS if anything
+              // was recorded -- the take is finished, the metronome and the
+              // TIME LED stop, and the patterns play what was tapped. An
+              // all-empty pass keeps looping with the metronome so the
+              // clicks guide until the first real take (the ROM's endless
+              // empty measure). Runs AFTER the bar validation above so a
+              // discarded all-stale take does not count as recorded.
+              if (++s_metro_bar_count >= s_metro_pass_bars) {
+                s_metro_bar_count = 0;
+                bool recorded = false;
+                for (uint8_t p = 0; p < NUM_PATTERNS; ++p)
+                  if ((s_metro_unit_mask & uint16_t(1u << p)) &&
+                      engine.pattern[p].note_count()) { recorded = true; break; }
+                if (recorded) {
+                  s_metronome_active   = false;
+                  s_metro_monitor_gate = false;
+                  s_metro_gate_pulse   = false;
+                  s_metro_gate_ticks   = 0;
+                  midi_metronome_stop();
+                  midi_audition_note_off();
+                }
+              }
             }
-            midi_send_step_update(engine.get_patsel(), write_step, pb, tval);
+            if (s_metronome_active) {
+              // Patterns pulled in AFTER entry (new chain builds, queued
+              // taps) keep their content and play clean in OVERDUB (the
+              // phase computation below sees their notes), taps recording
+              // on top. Later passes preserve earlier ones -- see the
+              // rest-skip in the tick decision below.
+              s_metro_prev_pat    = cur_pat;
+              s_metro_pass_accept = false;   // fresh validation window per pass
+              // Phase for the pass that starts NOW: a pattern that has
+              // content graduates to OVERDUB (clicks off, engine voice on);
+              // an empty one stays in RECORD (metronome keeps guiding).
+              if (engine.get_sequence().note_count())
+                s_metro_recorded_mask |= uint16_t(1u << cur_pat);
+              else
+                s_metro_recorded_mask &= uint16_t(~(1u << cur_pat));
+              s_metro_record_phase =
+                  !(s_metro_recorded_mask & uint16_t(1u << cur_pat));
+              if (!s_metro_record_phase) {
+                // An OVERDUB pass begins: the pattern is the voice. A finger
+                // still held from the recording bar must not carry over --
+                // the tie chain would write TIEs over this pattern's rests
+                // (permanently extending its saved notes), and the monitor
+                // voice would override the engine's pitch while both gate.
+                // Holds still tie across RECORD wraps (a linked pair being
+                // recorded is one 64-step pattern), only content-bearing
+                // passes cut them.
+                s_metro_note_active = false;
+                if (s_metro_monitor_gate) {
+                  s_metro_monitor_gate = false;
+                  midi_audition_note_off();
+                }
+              }
+            }
           }
-          // Original 303 time-write metronome, measured on the d650c: bar
-          // start rings ~327 Hz (E4) and every other 8th ~656 Hz (E5). On
-          // the factory trim (code 23 = C2) that is DAC 51 and 63 -- the
-          // high click is the DAC's top code. Short 25 ms click (expired in
-          // the DAC section below, matching the d650c's brief gate).
-          if ((engine.get_time_pos() % 2) == 0) {
+          // Metronome click (measured on the d650c): LOW (DAC 51, ~327 Hz on
+          // factory trim) at the bar start, HIGH (DAC 63) on the other 8ths,
+          // 2 clock ticks long. Unlike the ROM (which mutes the click under a
+          // held note), the click keeps ticking THROUGH held notes -- user
+          // request: the beat must stay audible while holding. Clicks only
+          // run in the RECORD phase; an input pattern plays clean.
+          if (s_metronome_active && s_metro_record_phase && (tp % 2) == 0) {
             s_metro_gate_pulse = true;
             s_metro_gate_ticks = 2;
             s_metro_gate_timer = 0;
-            const bool bar_start = (engine.get_time_pos() == 0);
+            const bool bar_start = (tp == 0);
             s_metro_pitch_cv = bar_start ? 51 : 63;
+            // A click during a held note must not steal the release tail:
+            // the decay after letting go should ring at the note, not 63.
+            if (!s_metro_monitor_gate) s_metro_tail_cv = s_metro_pitch_cv;
             midi_metronome_tick(bar_start);
           }
-          // Exit at pattern wrap (step 0) if any TAP activity occurred this pass
-          if (engine.get_time_pos() == 0 && s_metro_has_activity) {
-            s_metronome_active = false;
-            midi_metronome_stop();
+        }
+      }
+      // Tap-write tick grid (the ROM's actual sampling). Tick 0 = the step
+      // boundary; accepts run on ticks t_dec..period-1, the step's own
+      // note/tie/rest decision on tick t_dec (1/3 into the step).
+      if (s_metronome_active) {
+        if (step_boundary) s_metro_step_tick = 0;
+        else if (s_metro_step_tick < 250) ++s_metro_step_tick;
+      }
+      if (s_metronome_active && s_metro_bar_started) {
+        const uint8_t period = engine.step_period();
+        const uint8_t t_dec  = (period >= 8) ? 3 : 2;
+        const uint8_t t      = s_metro_step_tick;
+        Sequence &sseq       = engine.get_sequence();
+        const uint8_t k      = engine.get_time_pos();
+        const uint8_t len    = engine.get_length();
+        const bool held      = inputs[TAP_NEXT].held();
+        bool wrote_note_now  = false;
+        if (t >= t_dec && s_metro_press_pending) {
+          // Accept tick with an armed press. ROM-measured law: the note is
+          // written whether or not the key is still held (a "stale" press
+          // still lands on its target step). Held state only feeds the tie
+          // chain and the pass-validation flag; a RECORD pass none of whose
+          // taps were held at their accept tick is discarded at the wrap,
+          // which is the ROM's endless empty-bar loop.
+          s_metro_press_pending = false;
+          uint8_t target = k;
+          bool ok = true;
+          if (t > t_dec) {
+            // Late accept: the tap was aimed at the NEXT step's downbeat.
+            // Past the bar end it drops (the manual's "you cannot write
+            // correctly if tapping between two measures").
+            if (uint8_t(k + 1) >= len) ok = false;
+            else target = uint8_t(k + 1);
+          }
+          if (ok) {
+            sequence_write_time_with_pitch_sync(sseq, target, 1);
+            engine.stale = true;
+            s_metro_any_note = true;
+            if (held) {
+              s_metro_note_active = true;
+              s_metro_pass_accept = true;
+            }
+            if (target != k) s_metro_step_prewritten = true;
+            else             wrote_note_now = true;
+            uint8_t pb = PITCH_EMPTY;
+            const uint8_t slot = sseq.pitch_index_for_note(target);
+            if (slot < sseq.get_pitch_count()) pb = sseq.pitch[slot];
+            midi_send_step_update(engine.get_patsel(), target, pb, 1);
+          }
+        }
+        if (t == t_dec) {
+          // This step's decision instant. RESTs are never WRITTEN: the entry
+          // clear made the bar empty, so pass one is identical to the ROM,
+          // and later overdub passes preserve what earlier ones recorded. A
+          // held note's TIE claims the step outright; SELECTOR sustain only
+          // fills steps that are still RESTs.
+          if (s_metro_step_prewritten) {
+            s_metro_step_prewritten = false;   // a late accept already wrote it
+          } else if (!wrote_note_now) {
+            // A TIE never overwrites an existing NOTE: later passes (and the
+            // saved content of chained / linked patterns playing in OVERDUB)
+            // are preserved. A held finger crossing a NOTE step gets cut by
+            // that note instead of erasing it.
+            bool tie = false;
+            if (s_metro_note_active && held && sseq.time(k) != 1) tie = true;
+            else if (s_metro_any_note && metro_sustain_held() &&
+                     sseq.time(k) == 0)                           tie = true;
+            if (tie) {
+              sequence_write_time_with_pitch_sync(sseq, k, 2);
+              engine.stale = true;
+              midi_send_step_update(engine.get_patsel(), k, PITCH_EMPTY, 2);
+            }
           }
         }
       }
@@ -2979,39 +4032,60 @@ void loop() {
   }
 
   if (s_cfg_menu == CfgMenu::Off) {
-    // FN + UP_KEY rising: toggle triplet step mode on the active pattern.
-    // Pattern Write only. UP_KEY isn't otherwise bound under FN. When the
-    // toggle turns triplets ON, length is clamped to <=24 (max in triplet
-    // mode = ~2 bars of 4/4: 4 quarters * 3 trips * 2 bars = 24 steps).
-    if (inputs[UP_KEY].rising() && fn_mod && !pitch_mod && dial_pattern_write) {
+    // FN + UP / FN + DOWN, Pattern Write. The pair does two different jobs
+    // depending on the submode, exactly as the spec splits them:
+    //   TIME MODE (spec 7)   -- UP toggles triplet timing for this SECTION.
+    //   otherwise (spec 5-b) -- UP doubles the last step, DOWN halves it.
+    // Both length moves are non-volatile: halving only pulls the last step in,
+    // and doubling either restores the retained tail or copies the first half.
+    if (fn_mod && !pitch_mod && dial_pattern_write) {
       Sequence &seq = engine.get_edit_sequence();
-      const bool now_triplet = !seq.is_triplet_mode();
-      seq.set_triplet_mode(now_triplet);
-      if (now_triplet && seq.length > 24) {
-        seq.length = 24;
-        midi_send_length_update(engine.get_patsel(), seq.length, engine.get_edit_var());
-      }
-      engine.stale = true;
-    }
-    // While FN is held in Pattern Write, light UP_KEY_LED to indicate the
-    // current triplet state of the active pattern (lit = triplets, off = 16ths).
-    if (fn_mod && dial_pattern_write) {
-      Leds::Set(UP_KEY_LED, engine.edit_seq_view().is_triplet_mode());
-    }
-    // FN + DOWN_KEY: tap-to-count pattern length. Pattern Write only.
-    // First tap resets length to 1; each subsequent tap adds one step.
-    if (inputs[DOWN_KEY].rising() && fn_mod && !pitch_mod && dial_pattern_write) {
-      if (!step_counter) {
-        step_counter = true;
-        s_len_extended = false; // clear extended state on fresh count
-        engine.get_edit_sequence().pitch_pos = 0;
-        engine.SetLength(1);
+      if (engine.get_mode() == TIME_MODE) {
+        if (inputs[UP_KEY].rising()) {
+          // Triplet pages are 12 steps instead of 16, so the ceiling drops
+          // from 64 to 48. The time stream is NOT re-paged: it stays linear,
+          // so notes that sat on steps 13-16 land on the next page's 1-4
+          // (spec 7-a) and the steps past 48 are retained, not deleted.
+          const bool now_triplet = !seq.is_triplet_mode();
+          seq.set_triplet_mode(now_triplet);
+          if (now_triplet && seq.length > TRIPLET_MAX_STEPS)
+            engine.ApplyLength(seq, uint8_t(TRIPLET_MAX_STEPS));
+          engine.stale = true;
+          midi_send_length_update(engine.get_patsel(), seq.length, engine.get_edit_var());
+        }
       } else {
-        uint8_t cl = engine.edit_seq_view().length;
-        engine.SetLength(cl < 64 ? cl + 1 : 64);
+        // Variation 1 doubles/halves across the A/B pair (spec 5-e); the
+        // MIDI-only shadows have no sections, so they use the plain form.
+        const bool pair_scope = (engine.get_edit_var() == 0);
+        const uint8_t pat = engine.get_patsel();
+        const uint8_t cap = seq.is_triplet_mode() ? uint8_t(TRIPLET_MAX_STEPS)
+                                                  : uint8_t(MAX_STEPS);
+        if (inputs[UP_KEY].rising()) {
+          if (pair_scope) pair_double_length(pat);
+          else            sequence_double_length(seq, cap);
+          engine.stale = true;
+          midi_send_pattern_update(pat);
+          if (pair_scope && s_ab_mode)
+            midi_send_pattern_update(Engine::section_b_of(pat));
+        }
+        if (inputs[DOWN_KEY].rising()) {
+          if (pair_scope) {
+            const uint8_t t = pair_total_length(pat);
+            pair_set_total_length(pat, uint8_t(t > 1 ? t / 2 : 1));
+            midi_send_pattern_update(pat);
+          } else {
+            sequence_halve_length(seq);
+            midi_send_length_update(pat, seq.length, engine.get_edit_var());
+          }
+          engine.stale = true;
+        }
       }
-      engine.stale = true;
-      midi_send_length_update(engine.get_patsel(), engine.edit_seq_view().length, engine.get_edit_var());
+    }
+    // While FN is held in TIME MODE, UP_KEY_LED shows the section's triplet
+    // state (spec 7: "the UP LED being lit while FUNCTION is held in TIME
+    // MODE"). Outside TIME MODE the key means double, so no state to show.
+    if (fn_mod && dial_pattern_write && engine.get_mode() == TIME_MODE) {
+      Leds::Set(UP_KEY_LED, engine.edit_seq_view().is_triplet_mode());
     }
 
     // FN + BACK_KEY: length -1, FN + TAP_NEXT: length +1. Pattern Write only.
@@ -3024,7 +4098,7 @@ void loop() {
     }
     if (fn_mod && !pitch_mod && dial_pattern_write && inputs[TAP_NEXT].rising()) {
       uint8_t cl = engine.edit_seq_view().length;
-      engine.SetLength(cl < 64 ? cl + 1 : 64);
+      engine.SetLength(cl < MAX_STEPS ? cl + 1 : MAX_STEPS);
       engine.stale = true;
       midi_send_length_update(engine.get_patsel(), engine.edit_seq_view().length, engine.get_edit_var());
     }
@@ -3117,6 +4191,72 @@ void loop() {
       if (!clk_run && engine.get_mode() == TIME_MODE &&
           int(engine.edit_seq_view().time_pos) >= int(engine.edit_seq_view().length) - 1)
         engine.SetMode(NORMAL_MODE, true);
+    }
+  }
+
+  // A/B step-edit target (FN+PITCH step-select and the PITCH/TIME write
+  // modes, running, linked pair or chain-wide A/B): PITCH held + CLEAR
+  // (either press order) cycles which SECTION the view and step edits land
+  // on, instead of following playback's A/B alternation. The pin drops the
+  // moment the context does (mode exit, unlink, chain end, transport stop).
+  {
+    const bool ab_edit_ctx =
+        dial_pattern_write && engine.edit_var_ == 0 &&
+        (s_step_sel_mode ||
+         (clk_run && (engine.get_mode() == PITCH_MODE ||
+                      engine.get_mode() == TIME_MODE))) &&
+        s_ab_mode;
+    if (!ab_edit_ctx) {
+      engine.ab_edit_pat_ = 0xFF;
+    } else {
+      const uint8_t psel = engine.get_patsel();
+      // Step editor: PITCH or TIME held + CLEAR (either order) -- TIME+CLEAR
+      // is safe there because the tap-write gesture is suppressed during
+      // step-select. PITCH/TIME write modes: PITCH-based only (TIME+CLEAR is
+      // tap-write in TIME_MODE).
+      const bool gesture = s_step_sel_mode
+          ? (((pitch_mod || time_mod) && inputs[CLEAR_KEY].rising()) ||
+             (clear_mod && (inputs[PITCH_KEY].rising() ||
+                            inputs[TIME_KEY].rising())))
+          : ((pitch_mod && inputs[CLEAR_KEY].rising()) ||
+             (clear_mod && inputs[PITCH_KEY].rising()));
+      if (gesture) {
+        // Cycle from the section currently viewed/edited: the pin when set,
+        // else the step editor's stable default (section A), else the
+        // playing section (the write modes follow playback until pinned).
+        bool cur_b;
+        if (engine.ab_edit_pat_ != 0xFF)
+          cur_b = Engine::is_section_b(engine.ab_edit_pat_);
+        else if (s_step_sel_mode)
+          cur_b = false;
+        else
+          cur_b = Engine::is_section_b(psel);
+        engine.ab_edit_pat_ = cur_b ? Engine::section_a_of(psel)
+                                    : Engine::section_b_of(psel);
+      } else if (engine.ab_edit_pat_ != 0xFF &&
+                 (engine.ab_edit_pat_ & 7) != (psel & 7)) {
+        // Chain advanced to another member: keep the pinned side, follow the
+        // new pair.
+        engine.ab_edit_pat_ = Engine::is_section_b(engine.ab_edit_pat_)
+                                  ? Engine::section_b_of(psel)
+                                  : Engine::section_a_of(psel);
+      }
+      // PITCH/TIME write modes, pinned to the non-playing section: its cursor
+      // never advances, so mirror the playhead each pass and edits land on
+      // the same step of the pinned half. (Step-select edits explicit steps
+      // and needs no mirror.)
+      if (engine.get_mode() != NORMAL_MODE &&
+          engine.ab_edit_pat_ != 0xFF && engine.ab_edit_pat_ != psel) {
+        Sequence &es = engine.get_edit_sequence();
+        const Sequence &ps = engine.get_sequence();
+        uint8_t tp = uint8_t(ps.time_pos);
+        if (tp >= es.length) tp = uint8_t(tp % es.length);
+        es.time_pos = tp;
+        // NOTE steps only, like Sequence::Advance: TIE/REST keeps the held
+        // note's slot so pitch edits hit the sounding note, not the next one.
+        if (es.time(tp) == 1)
+          es.pitch_pos = int(es.pitch_index_for_note(tp));
+      }
     }
   }
 

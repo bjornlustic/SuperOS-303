@@ -3,14 +3,14 @@
 // sequence.h -- TB-303 pattern data model (two-stream: pitch and time are
 // independent; the K-th NOTE event in time order plays pitch[K]).
 //
-// Persisted pattern layout (PATTERN_SIZE = 92 bytes, serialized by
-// persistent_settings.h into the flash block store):
-//   pitch[64]            -- 8 bits: bits[3:0]=semitone (0..12, 12=high-C button)
+// Persisted pattern layout (PATTERN_SIZE = 52 bytes at MAX_STEPS = 32,
+// serialized by persistent_settings.h into the flash block store):
+//   pitch[32]            -- 8 bits: bits[3:0]=semitone (0..12, 12=high-C button)
 //                                   bits[5:4]=octave (0..3)
 //                                   bit[6]=accent, bit[7]=slide
 //                          NOTE-event-indexed: pitch[i] = i-th NOTE in time order.
 //                          PITCH_EMPTY (0xFF) marks unwritten slots.
-//   time_data[16]        -- 2-bit cells per time step (0=REST, 1=NOTE, 2=TIE),
+//   time_data[8]         -- 2-bit cells per time step (0=REST, 1=NOTE, 2=TIE),
 //                          4 steps packed per byte.
 //   reserved[9]          -- reserved[0] = direction (bits[2:0]) + triplet flag (bit 3)
 //                           reserved[1] = scale mask low 8 bits
@@ -18,7 +18,7 @@
 //                           reserved[3..8] = free padding.
 //   transpose            -- per-pattern transpose, signed int8 in the byte (-24..+24).
 //   engine_select        -- unused, kept 0.
-//   length               -- 1..64 (triplet mode caps at 24).
+//   length               -- 1..32 (triplet mode caps at 24).
 //
 // Runtime state (NOT persisted, lives after the persisted block):
 //   pitch_pos, time_pos, reset, first_step, pitch_count_runtime,
@@ -41,8 +41,26 @@ static inline uint8_t fast_rand(uint8_t n) {
   return uint8_t(s_fast_rng % n);
 }
 
-static constexpr int MAX_STEPS = 64;
+// 32 steps per section. A linked A/B pair (spec 1-a) is one 64-step pattern,
+// which is the user-facing "pattern" on this build. 32 (not 64) is what makes
+// worst-case persistence GUARANTEED on the internal-flash combined arena: all
+// 192 patterns + poly + probability + tracks + settings = 107 of 110 record
+// pages (see flash_persist.h). At 64 steps the same set needs 127+ pages and
+// ~33 KB of payload against 26.8 KB physical -- it cannot fit.
+static constexpr int MAX_STEPS = 32;
+// Triplet mode replaces 16-step pages with 12-step pages (spec 7): the same
+// pages, so the length ceiling is 2 * 12 = 24 rather than 2 * 16 = 32.
+static constexpr int STEPS_PER_PAGE         = 16;
+static constexpr int TRIPLET_STEPS_PER_PAGE = 12;
+static constexpr int TRIPLET_MAX_STEPS      = (MAX_STEPS / STEPS_PER_PAGE) * TRIPLET_STEPS_PER_PAGE;
 static constexpr int NUM_PATTERNS = 16; // patterns per bank
+// 4 pattern groups (I-IV), matching the panel legend. The group knob has 7
+// physical detents; they pair into 4 logical groups (1-2 = I, 3-4 = II,
+// 5-6 = III, 7 = IV), which is what the stock firmware has always done. Each
+// group holds 8 patterns, each with an A and a B section -> 16 slots per
+// group, 64 slots total.
+// NOTE: 7 groups / 112 slots is planned for the FRAM build only; it does not
+// fit the internal-flash arena at 64 steps.
 static constexpr int NUM_BANKS = 4;     // banks 0..3 (was NUM_GROUPS)
 static constexpr int NUM_GROUPS = NUM_BANKS; // back-compat alias
 // Each of the 64 slots (bank*16 + pat) holds 3 variations. Variation 1 is the
@@ -130,7 +148,7 @@ static inline int8_t prob_degrade_transpose(uint8_t base, int8_t t) {
 }
 
 // =============================================================================
-// Sequence -- one pattern. Persisted bytes first (PATTERN_SIZE = 92), then
+// Sequence -- one pattern. Persisted bytes first (PATTERN_SIZE), then
 // runtime state.
 // =============================================================================
 struct Sequence {
@@ -164,6 +182,21 @@ struct Sequence {
   void set_triplet_mode(bool on) {
     if (on) reserved[0] |= TRIPLET_FLAG;
     else    reserved[0] &= uint8_t(~TRIPLET_FLAG);
+  }
+
+  // ---------------------------------------------------------------------------
+  // A/B section link (spec 1-a). Slots p and p+8 of a bank are the A and B
+  // SECTIONS of one pattern; linking them makes the pair play and edit in
+  // serial as a single pattern of up to 128 steps. The flag lives in
+  // reserved[3] bit 0 of the A-SECTION pattern, so it persists with the
+  // pattern itself: reselecting the pattern later restores "both sections
+  // selected" without the performer having to remember it.
+  // ---------------------------------------------------------------------------
+  static constexpr uint8_t AB_LINK_FLAG = 0x01;
+  bool ab_linked() const { return (reserved[3] & AB_LINK_FLAG) != 0; }
+  void set_ab_linked(bool on) {
+    if (on) reserved[3] |= AB_LINK_FLAG;
+    else    reserved[3] &= uint8_t(~AB_LINK_FLAG);
   }
 
   // ---------------------------------------------------------------------------
@@ -555,14 +588,80 @@ inline void sequence_rebuild_pitch_count(Sequence &s) {
   s.set_pitch_count(s.note_count());
 }
 
+// Extend the pitch stream so every NOTE event inside `length` has a pitch.
+// Slots that still hold a real pitch are LEFT ALONE: shortening a pattern drops
+// pitch_count but keeps pitch[] intact, so re-lengthening replays the original
+// pitches instead of a run of default Cs (spec 5, non-volatile length changes).
+// Only genuinely unwritten slots get PITCH_DEFAULT.
 inline void sequence_ensure_pitch_for_notes(Sequence &s) {
   const uint8_t nc = s.note_count();
   uint8_t pc = s.get_pitch_count();
   while (pc < nc && pc < MAX_STEPS) {
-    s.pitch[pc] = PITCH_DEFAULT;
+    if (s.pitch[pc] == PITCH_EMPTY) s.pitch[pc] = PITCH_DEFAULT;
     ++pc;
   }
   if (pc != s.get_pitch_count()) s.set_pitch_count(pc);
+}
+
+// Spec 3-a: sequential PITCH MODE entry SIZES the pattern -- "the PATTERN
+// length will automatically be set by the number of NOTES entered". While the
+// cursor sits one past the last NOTE event it is appending, so each written
+// pitch also claims the next time step as a NOTE and pushes the last step out.
+// Once the cursor is inside existing content it overwrites instead (spec 4-d),
+// and this returns false. Returns true when a step was appended.
+inline bool sequence_append_note_step(Sequence &s, uint8_t max_len) {
+  const uint8_t nc = s.note_count();
+  if (s.pitch_pos < 0 || uint8_t(s.pitch_pos) != nc) return false;
+  if (nc >= max_len) return false;
+  // The pattern is still being SIZED only while everything after the cursor is
+  // empty: then the last step tracks the note count exactly (a freshly cleared
+  // pattern starts at length 8, and must end up at 1 after one note). If real
+  // time data sits past the cursor the pattern is being edited, not written,
+  // so the last step only ever grows.
+  bool sizing = true;
+  for (uint8_t i = nc; i < s.length; ++i)
+    if (s.time(i) != 0) { sizing = false; break; }
+  if (sizing || s.length < uint8_t(nc + 1)) s.length = uint8_t(nc + 1);
+  sequence_set_time_at(s, nc, 1);
+  s.time_pos  = int(nc);       // cursor rests on the step just written
+  s.pitch_pos = int(nc) + 1;   // next press appends the one after it
+  s.first_step = false;
+  return true;
+}
+
+// Spec 5-b: FUNCTION + DOWN halves the length. Integer division gives the
+// spec's odd ladder (31 > 15 > 7 > 3 > 1). Purely a last-step move: no time or
+// pitch data is destroyed, so FUNCTION + UP brings it all back.
+inline uint8_t sequence_halve_length(Sequence &s) {
+  s.length = (s.length > 1) ? uint8_t(s.length / 2) : uint8_t(1);
+  sequence_rebuild_pitch_count(s);
+  return s.length;
+}
+
+// Spec 5-b/5-c: FUNCTION + UP doubles the length, clamped to `cap`. If the
+// revealed tail holds no NOTES (nothing to restore from an earlier halve), the
+// first half is COPIED into it -- the spec's "16-step pattern doubled to 32
+// copies steps 1-16 into 17-32". Otherwise the retained tail simply reappears.
+inline uint8_t sequence_double_length(Sequence &s, uint8_t cap) {
+  const uint8_t len = s.length;
+  uint8_t nlen = (len > (cap / 2)) ? cap : uint8_t(len * 2);
+  if (nlen <= len) return len;
+  bool tail_empty = true;
+  for (uint8_t i = len; i < nlen; ++i)
+    if (s.time(i) != 0) { tail_empty = false; break; }
+  if (tail_empty) {
+    // Mirror the pitch stream first: the copied half's NOTE events follow the
+    // original's in stream order, so pitches [0, nc) repeat at [nc, 2nc).
+    const uint8_t nc = s.note_count();
+    for (uint8_t j = 0; j < nc && uint8_t(nc + j) < MAX_STEPS; ++j)
+      s.pitch[uint8_t(nc + j)] = s.pitch[j];
+    for (uint8_t i = len; i < nlen; ++i)
+      sequence_set_time_at(s, i, s.time(uint8_t(i - len)));
+  }
+  s.length = nlen;
+  sequence_rebuild_pitch_count(s);
+  sequence_ensure_pitch_for_notes(s);
+  return nlen;
 }
 
 inline void sequence_write_time_with_pitch_sync(Sequence &s, uint8_t idx, uint8_t new_t) {
@@ -604,10 +703,10 @@ inline void normalize_pattern_times_only(Sequence &s) {
   }
   if (all_tie) sequence_set_time_at(s, 0, 1);
   if (s.time(0) == 2) sequence_set_time_at(s, 0, 1);
-  for (uint8_t i = 0; i < L; ++i) {
-    const uint8_t nxt = uint8_t((unsigned(i) + 1u) % unsigned(L));
-    if (s.time(i) == 0 && s.time(nxt) == 2) sequence_set_time_at(s, i, 1);
-  }
+  // A TIE after a REST is left alone: playback holds the gate only if a NOTE
+  // opened it, so an orphaned tie is just silence. Promoting the rest back to
+  // a NOTE (as this used to do) materialized a phantom note from the queued
+  // pitch stream whenever the user rested a note that had a tie behind it.
 }
 
 inline void normalize_pattern_times(Sequence &s) {
@@ -619,12 +718,7 @@ inline void normalize_pattern_times(Sequence &s) {
   }
   if (all_tie) sequence_write_time_with_pitch_sync(s, 0, 1);
   if (s.time(0) == 2) sequence_write_time_with_pitch_sync(s, 0, 1);
-  for (uint8_t i = 0; i < L; ++i) {
-    const uint8_t nxt = uint8_t((unsigned(i) + 1u) % unsigned(L));
-    if (s.time(i) == 0 && s.time(nxt) == 2) {
-      sequence_write_time_with_pitch_sync(s, i, 1);
-    }
-  }
+  // Rest-then-tie stays as written; see normalize_pattern_times_only.
 }
 
 // Weighted octave: DOWN 25% / CENTRE 50% / UP 25%. Top register excluded.

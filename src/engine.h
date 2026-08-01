@@ -116,6 +116,12 @@ struct Engine {
   bool     shadow_stale_ = false;          // resident shadow edited; persist on save/reload
   uint32_t shadow_dirty_ms_ = 0;           // millis() of the last shadow edit (idle-flush coalescing)
   uint8_t  edit_var_ = 0;                   // hardware edit target: 0=var1, 1=var2, 2=var3
+  // Running A/B step-edit target while a linked pair (or chain-wide A/B) plays.
+  // Stored as the RESOLVED slot index (0xFF = follow playback) so the hot
+  // get_edit_sequence path stays one byte-compare; the panel loop owns arming
+  // and re-resolving it (PITCH held + CLEAR, in FN+PITCH step-select and the
+  // PITCH/TIME write modes only).
+  uint8_t  ab_edit_pat_ = 0xFF;
   // Per-shadow gate state (computed at AdvanceShadows, sampled per tick by the
   // shadow MIDI gate-follow so var2/3 note length tracks the analog gate).
   bool     shadow_resting_[NUM_VARIATIONS - 1]    = {true, true};
@@ -236,7 +242,7 @@ struct Engine {
       uint8_t blank[FB_TRACK_LEN];
       memset(blank, 0xFF, FB_TRACK_LEN);          // LoadTrack treats 0xFF as fresh
       for (uint8_t t = 0; t < NUM_TRACKS; ++t)
-        g_flash.write(uint8_t(FB_TRACK_BASE + t), blank, FB_TRACK_LEN);
+        WriteTrackAt(t, blank);
       GlobalSettings.set_track_format(PersistentSettings::kTrackFormatVersion);
     }
     ReloadShadows(); // prime shadow voices for the first running tick
@@ -525,6 +531,16 @@ struct Engine {
     ReadProbAt(s, dst);
   }
   // Persist edited shadow voices to flash (called on save and before reload).
+  /// True when anything OUTSIDE the variation-1 pattern array is waiting to be
+  /// written: resident shadow / poly / probability edits, or a buffered
+  /// non-resident one. `stale` does not cover these, so every flush point that
+  /// tests `stale` alone would otherwise leave variation 2/3, poly and
+  /// probability edits in RAM until a slot change or transport stop.
+  bool aux_dirty() const {
+    return shadow_stale_ || poly_stale_ || prob_stale_ ||
+           poly_edit_dirty_ || shadow_edit_dirty_ || prob_edit_dirty_;
+  }
+
   void persist_shadows() {
     flush_poly_edit();   // commit buffered non-resident poly edits before reload/save
     flush_shadow_edit(); // commit buffered non-resident var2/3 blobs too
@@ -582,7 +598,7 @@ struct Engine {
     track &= (NUM_TRACKS - 1);
     track_select = track;
     uint8_t b[FB_TRACK_LEN];
-    const bool have = (g_flash.read(uint8_t(FB_TRACK_BASE + track), b, FB_TRACK_LEN) == FB_TRACK_LEN);
+    const bool have = ReadTrackAt(track, b);
     if (have) {
       memcpy(p_chain_packed, b, P_CHAIN_PACKED_BYTES);
       memcpy(t_chain_last, b + P_CHAIN_PACKED_BYTES, T_CHAIN_BITS_BYTES);
@@ -621,7 +637,7 @@ struct Engine {
     memcpy(b, p_chain_packed, P_CHAIN_PACKED_BYTES);
     memcpy(b + P_CHAIN_PACKED_BYTES, t_chain_last, T_CHAIN_BITS_BYTES);
     memcpy(b + P_CHAIN_PACKED_BYTES + T_CHAIN_BITS_BYTES, t_chain_transpose, MAX_CHAIN);
-    g_flash.write(uint8_t(FB_TRACK_BASE + track_select), b, FB_TRACK_LEN);
+    WriteTrackAt(track_select, b);
     track_stale = false;
   }
   uint8_t get_chain_len()    const { return p_chain_len; }
@@ -1297,15 +1313,18 @@ struct Engine {
   // Hardware edit target: variation 1 (the playback/CV buffer) or one of the two
   // resident shadow voices (variations 2/3). Playback never uses this; only the
   // hardware pattern-write UI does, so var2/3 edits go to the shadow buffers.
-  Sequence &get_edit_sequence() {
-    if (edit_var_ == 0) return pattern[p_select];
+  // noinline: called from dozens of sites; inlining the body (pin-resolved
+  // index + shadow dirty-marking) at each one costs several hundred bytes
+  // against the arena ceiling.
+  __attribute__((noinline)) Sequence &get_edit_sequence() {
+    if (edit_var_ == 0) return pattern[get_edit_patsel()];
     shadow_stale_ = true;                 // a shadow is the edit target -> persist on save
     shadow_dirty_ms_ = millis();          // refresh the idle-flush quiet timer
     return shadow_[(edit_var_ - 1) & 0x1];
   }
   // Read-only view of the edit target (no dirty mark) for LED/display code.
-  const Sequence &edit_seq_view() const {
-    return (edit_var_ == 0) ? pattern[p_select] : shadow_[(edit_var_ - 1) & 0x1];
+  __attribute__((noinline)) const Sequence &edit_seq_view() const {
+    return (edit_var_ == 0) ? pattern[get_edit_patsel()] : shadow_[(edit_var_ - 1) & 0x1];
   }
   uint8_t get_edit_var() const { return edit_var_; }
   // Playhead of the variation being edited (its shadow for var2/3), for the chase
@@ -1317,6 +1336,33 @@ struct Engine {
     return uint8_t(edit_seq_view().time_pos & (MAX_STEPS - 1));
   }
   bool SetEditVar(uint8_t v) { if (v >= NUM_VARIATIONS || v == edit_var_) return false; edit_var_ = v; return true; }
+
+  // ---------------------------------------------------------------------------
+  // A/B sections (spec 1-a). Slots p and p+8 of the active bank are the A and
+  // B sections of one pattern; the link flag is stored on the A section, so
+  // both slots answer the same question. A linked pair plays A then B and
+  // takes up to 128 steps between them.
+  // ---------------------------------------------------------------------------
+  static uint8_t section_a_of(uint8_t pat) { return uint8_t(pat & 0x07); }
+  static uint8_t section_b_of(uint8_t pat) { return uint8_t((pat & 0x07) + 8); }
+  static bool    is_section_b(uint8_t pat) { return (pat & 0x08) != 0; }
+  // noinline: ~20 call sites (chain/section logic); inlining the array index +
+  // flag read at each costs flash against the arena ceiling.
+  __attribute__((noinline)) bool pair_linked(uint8_t pat) const { return pattern[section_a_of(pat)].ab_linked(); }
+  bool pair_linked() const { return pair_linked(get_patsel()); }
+  void set_pair_linked(uint8_t pat, bool on) {
+    Sequence &a = pattern[section_a_of(pat)];
+    if (a.ab_linked() == on) return;
+    a.set_ab_linked(on);
+    stale = true;
+  }
+  /// Total steps across the pair: A alone, or A + B when linked.
+  uint8_t pair_length(uint8_t pat) const {
+    const uint8_t la = pattern[section_a_of(pat)].length;
+    if (!pair_linked(pat)) return la;
+    const uint16_t t = uint16_t(la) + uint16_t(pattern[section_b_of(pat)].length);
+    return uint8_t(t > 128 ? 128 : t);
+  }
   // Advance the edit cursor: variation 1 uses the full engine advance;
   // a shadow just steps its own cursor forward.
   void AdvanceEditCursor() {
@@ -1367,6 +1413,11 @@ struct Engine {
   uint8_t get_patsel() const {
     return p_select;
   }
+  // Variation-1 edit pattern index with the A/B edit pin applied: the pin
+  // redirects step edits to one section of the playing pair.
+  uint8_t get_edit_patsel() const {
+    return (ab_edit_pat_ != 0xFF) ? ab_edit_pat_ : p_select;
+  }
   uint8_t get_next() const {
     return next_p;
   }
@@ -1382,17 +1433,19 @@ struct Engine {
     if (override) p_select = next_p;
     edit_var_ = 0; // a new pattern always starts on variation 1 for editing
   }
-  // Canonical length change: clamps to the triplet cap (24) or MAX_STEPS,
-  // rebuilds pitch_count (NOTE events outside the new length no longer count)
-  // and clears the pitch[] tail. Used by the hardware editor (via SetLength)
-  // and the SysEx 0x18 handler (on an arbitrary pattern).
+  // Canonical length change: clamps to the triplet cap (48) or MAX_STEPS and
+  // rebuilds pitch_count (NOTE events outside the new length no longer count).
+  // NON-VOLATILE both ways (spec 5): time_data and pitch[] past the new last
+  // step are kept, so shortening then re-lengthening restores the original
+  // notes. Used by the hardware editor (via SetLength) and SysEx 0x18.
   void ApplyLength(Sequence &s, uint8_t len) {
     const uint8_t old_len = s.length;
-    const uint8_t cap = s.is_triplet_mode() ? uint8_t(24) : uint8_t(MAX_STEPS);
+    const uint8_t cap = s.is_triplet_mode() ? uint8_t(TRIPLET_MAX_STEPS)
+                                            : uint8_t(MAX_STEPS);
     s.SetLength(len, cap);
     if (s.length != old_len) {
       sequence_rebuild_pitch_count(s);
-      for (uint8_t k = s.get_pitch_count(); k < MAX_STEPS; ++k) s.pitch[k] = PITCH_EMPTY;
+      sequence_ensure_pitch_for_notes(s);
     }
     stale = true;
   }

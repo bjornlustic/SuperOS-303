@@ -1,0 +1,78 @@
+name: Release
+
+# Pushing a version tag (e.g. `git tag 1.0.0-beta && git push origin 1.0.0-beta`)
+# builds the firmware and publishes a GitHub release with the one-file update
+# .syx, the full ISP .hex, and RELEASE_NOTES.md as the body.
+#
+# FIRMWARE_ENV selects the shipped build. combined-nousbc is the public
+# build: no USB-C, compatible with the ORIGINAL OS-303 bootloader (no
+# watchdog resets), and copyright-clean (no embedded D650C mask ROM; users
+# upload their own over DIN SysEx). combined-norom is the USB-C variant,
+# same ROM-clean policy. Never ship a ROM-embedded env publicly.
+
+on:
+  push:
+    tags:
+      - '[0-9]*'
+
+permissions:
+  contents: write
+
+env:
+  FIRMWARE_ENV: combined-nousbc
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Cache PlatformIO
+      uses: actions/cache@v5
+      with:
+        path: ~/.platformio
+        key: ${{ runner.os }}-${{ hashFiles('**/lockfiles') }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.x'
+        cache: 'pip'
+        cache-dependency-path: '**/requirements.txt'
+
+    - run: |
+        pip3 install --upgrade pip
+        pip3 install -r .github/workflows/requirements.txt
+
+    - name: Build firmware
+      run: pio run -e flash-service -e ${{ env.FIRMWARE_ENV }} -e bootloader
+
+    - name: Assemble release files
+      run: |
+        python3 - <<'EOF'
+        import os
+        from intelhex import IntelHex
+        env = os.environ['FIRMWARE_ENV']
+        tag = os.environ['GITHUB_REF_NAME']
+        ih = IntelHex('.pio/build/%s/firmware.hex' % env)
+        # Each piece carries its own start-address record; ISP tools ignore
+        # them and intelhex refuses to merge conflicting ones.
+        ih.start_addr = None
+        for part in ('flash-service', 'bootloader'):
+            p = IntelHex('.pio/build/%s/firmware.hex' % part)
+            p.start_addr = None
+            ih.merge(p, overlap='error')
+        ih.write_hex_file('SuperOS-303-Combined-%s.hex' % tag)
+        os.rename('%s-update.syx' % env, 'SuperOS-303-Combined-%s-update.syx' % tag)
+        EOF
+
+    - name: Create release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: superOS-303 ${{ github.ref_name }}
+        body_path: RELEASE_NOTES.md
+        prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+        files: |
+          SuperOS-303-Combined-${{ github.ref_name }}-update.syx
+          SuperOS-303-Combined-${{ github.ref_name }}.hex

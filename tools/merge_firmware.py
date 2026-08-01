@@ -16,9 +16,10 @@ def after_build(source, target, env):
 
     app = env.subst(".pio/build/app/firmware.hex")
     boot = env.subst(".pio/build/bootloader/firmware.hex")
+    service = env.subst(".pio/build/flash-service/firmware.hex")
     out = env.subst("${PROGNAME}.hex")
 
     platform = env.PioPlatform()
-    subprocess.call([join(platform.get_package_dir("tool-sreccat") or "", "srec_cat"), app, "-Intel", boot, "-Intel", "-o", out, "-Intel"])
+    subprocess.call([join(platform.get_package_dir("tool-sreccat") or "", "srec_cat"), app, "-Intel", service, "-Intel", boot, "-Intel", "-o", out, "-Intel"])
 
 env.AddPostAction("buildprog", after_build)

@@ -6,12 +6,12 @@
  *
  * Pattern commands:
  *   10h  Host→303  Request one pattern: <pat:0..15>
- *   11h  303→Host  Pattern data: <pat> <xor_lo7> <xor_hi1> <packed 106 bytes> <var>
- *   12h  Host→303  Set pattern: same as 11h body; XOR over raw 92 bytes must match.
+ *   11h  303→Host  Pattern data: <pat> <xor_lo7> <xor_hi1> <packed pattern> <var>
+ *   12h  Host→303  Set pattern: same as 11h body; XOR over the raw blob must match.
  *   13h  Host→303  Request all 16 patterns (303 sends sixteen 11h messages, queued).
  *   14h  303→Host  ACK/NAK: <status> 0=ok 1=bad_checksum 2=bad_pattern
- *   15h  303→Host  Step position: <pat:0..15> <step:0..63> <group>  (sent at pattern wrap)
- *   19h  Host→303  Step lock: <pat:0..15> <step:0..63> <locked:0|1>  (RAM only)
+ *   15h  303→Host  Step position: <pat:0..15> <step> <group>  (sent at pattern wrap)
+ *   19h  Host→303  Step lock: <pat:0..15> <step> <locked:0|1>  (RAM only)
  *
  * Config commands:
  *   20h  Host→303  Request config
@@ -42,9 +42,11 @@ struct SuperOsMidiSettings {
   static const bool UseRunningStatus = true;
   static const bool HandleNullVelocityNoteOnAsNoteOff = true;
   static const bool Use1ByteParsing = true;
-  // Largest inbound message is the 0x26 poly-blob set: F0 + 5 header + 260
-  // packed + F7 = 267 bytes (the library buffers F0..F7 inclusive).
-  static const unsigned SysExMaxSize = 268;
+  // Largest inbound message is the 0x26 poly-blob set: F0 + 5 header + packed
+  // blob + F7 (the library buffers F0..F7 inclusive). Derived so the buffer
+  // tracks POLY_BLOB_SIZE (139 bytes at 32 steps).
+  static const unsigned SysExMaxSize =
+      5 + (POLY_BLOB_SIZE + (POLY_BLOB_SIZE + 6) / 7) + 2;
   static const bool UseSenderActiveSensing = false;
   static const bool UseReceiverActiveSensing = false;
   static const uint16_t SenderActiveSensingPeriodicity = 0;
@@ -176,7 +178,16 @@ void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_rece
 
 // --- TX queue (non-blocking multi-pattern dump) ---------------------------------
 static const uint16_t kTxCap = 512;
+#ifdef SUPEROS_COMBINED
+// This ring is SuperOS-only (the d650 side has its own midi_tx straight to
+// Serial1), so it lives in the arena tail instead of its own BSS -- see
+// FW_ARENA_SUPEROS_TAIL in combined.h. Zeroed at boot with the rest of the
+// arena, and tx_clear() resets the indices before any use.
+static_assert(kTxCap <= FW_ARENA_SUPEROS_TAIL, "TX ring exceeds the arena tail");
+static uint8_t *const s_tx = g_fw_arena + sizeof(Engine);
+#else
 static uint8_t s_tx[kTxCap];
+#endif
 static uint16_t s_tx_w, s_tx_r;
 
 static void tx_clear() {
@@ -278,7 +289,14 @@ static constexpr uint16_t kPackedPolyLen = POLY_BLOB_SIZE + ((POLY_BLOB_SIZE + 6
 
 // 0x25: variation-3 poly blob reply (device -> host). Sent in place of the mono
 // 0x11 when the requested slot's variation 3 is poly.
-static void enqueue_poly_reply(uint8_t pat, uint8_t slot) {
+// noinline is load-bearing, not a hint: this frames ~492 bytes of buffers (a
+// 227-byte raw blob + a 265-byte packed one). Inlined into
+// enqueue_pattern_reply it pushed that frame to 793 bytes, so EVERY pattern
+// reply paid the poly cost and handle_sysex_body -> enqueue_pattern_reply
+// needed 1041 bytes of stack -- more than the RAM left after the arena. That
+// overflowed into BSS and hung the SuperOS side the moment the editor loaded
+// patterns. Keeping it out of line means only the poly path pays.
+static __attribute__((noinline)) void enqueue_poly_reply(uint8_t pat, uint8_t slot) {
   if (!host_seen_any()) return;
   PolyVoice pv;
   if (g_eng->poly_active_ && slot == g_eng->abs_slot(g_eng->get_patsel()))
@@ -422,8 +440,8 @@ static void send_config_reply() {
 
 // D650C mask-ROM status for the web editor (SysEx 0x36 -> 0x37). The upload
 // itself is handled only by the emulator (emu_avr.cpp); this lets the editor
-// show what is installed from either firmware. Streams the EEPROM sum on demand
-// so no 2 KB RAM buffer is needed here.
+// show what is installed while the SuperOS side is running. Streams the EEPROM
+// sum on demand so no 2 KB RAM buffer is needed here.
 //   0 = no ROM installed (D650_ROM_IN_RAM, EEPROM empty)
 //   1 = valid user upload in EEPROM
 //   2 = ROM embedded in flash (plain combined, or D650_ROM_EMBEDDED fallback)
@@ -465,6 +483,19 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
   case 0x36: // web editor: D650C mask-ROM status query -> 0x37 reply
     midi_send_rom_status();
     break;
+  case 0x34: { // panel diagnostic -> 0x35: debounced held-state of every input
+    // (7 inputs per byte, InputIndex order) + the derived DialMode. Lets a
+    // host see the mode dial, group dial and modifier keys remotely.
+    extern PinState inputs[INPUT_COUNT];
+    uint8_t r[3 + (INPUT_COUNT + 6) / 7];
+    r[0] = 0x7D; r[1] = 0x35;
+    memset(r + 3, 0, sizeof(r) - 3);
+    for (uint8_t i = 0; i < INPUT_COUNT; ++i)
+      if (inputs[i].held()) r[3 + i / 7] |= uint8_t(1 << (i % 7));
+    r[2] = uint8_t(dial_mode_of(read_input_state(inputs)));
+    tx_push_message(r, sizeof(r));
+    break;
+  }
   case 0x10: { // request pattern; optional trailing <var> selects the variation
     if (n < 3) return;
     const uint8_t pat = p[2] & 0x0F;
@@ -711,9 +742,12 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     if (n < 7 || !g_eng) return;
     const uint8_t pat  = p[2] & 0x0F;
     const uint8_t step = p[3] & 0x3F;
-    const uint8_t b0   = p[4] & 0x7F; // accent level | slide level << 4
-    const uint8_t b1   = p[5] & 0x7F; // down level | up level << 4
-    const uint8_t b2   = p[6] & 0x7F; // bit0 up-double
+    // Optional trailing msbs byte carries the three bit-7s (bit0->b0 ...):
+    // high-nibble levels 8-13 set bit 7, which a bare SysEx byte cannot carry.
+    const uint8_t msbs = (n >= 8) ? p[7] : 0;
+    const uint8_t b0   = uint8_t((p[4] & 0x7F) | ((msbs & 1) << 7)); // accent | slide << 4
+    const uint8_t b1   = uint8_t((p[5] & 0x7F) | ((msbs & 2) << 6)); // down | up << 4
+    const uint8_t b2   = uint8_t((p[6] & 0x7F) | ((msbs & 4) << 5)); // bit0 up-double
     if (pat == g_eng->get_patsel())
       g_eng->prob_set_resident(step, b0, b1, b2);    // RAM only, flash deferred
     else
@@ -733,7 +767,8 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
     uint8_t raw[kProbRawLen];
     if (!unpack_7bit(p + 5, kPackedProbLen, raw, kProbRawLen)) { send_ack(1); return; }
     if (xor_blob_n(raw, kProbRawLen) != cx) { send_ack(1); return; }
-    for (uint16_t i = 0; i < kProbRawLen; ++i) raw[i] &= 0x7F;
+    // Full 8-bit bytes are legal here (high-nibble levels 8-13 set bit 7);
+    // the 7-bit packing already carried them intact -- never re-mask.
     if (pat == g_eng->get_patsel()) {
       memcpy(g_eng->prob_var1_, raw, kProbRawLen);
       g_eng->prob_stale_ = true;
@@ -838,12 +873,20 @@ static void sysex_cb(byte *data, unsigned sz) {
 #ifdef SUPEROS_USB_MIDI
 // USB SysEx reassembly. The Teensy usb_midi core's RX buffer is only 60 bytes
 // (USB_MIDI_SYSEX_MAX), but the editor's pattern (0x12) and poly-blob (0x26) writes
-// run to ~266 bytes. So we register the CHUNKED (partial) handler: the core hands us
+// exceed it. So we register the CHUNKED (partial) handler: the core hands us
 // the message in <=60-byte pieces (complete=0) plus a final piece (complete=1), and
 // we reassemble the whole F0..F7 message here, then dispatch like the DIN path.
-// Largest inbound message is the 0x26 poly-blob set: F0 + 5 header + 260 packed
-// + F7 = 267 bytes. Oversized messages are dropped via usb_sysex_drop below.
-static uint8_t  usb_sysex_buf[5 + kPackedPolyLen + 2];
+// Largest inbound message is the 0x26 poly-blob set: F0 + 5 header + kPackedPolyLen
+// + F7. Oversized messages are dropped via usb_sysex_drop below.
+static constexpr uint16_t kUsbSysexCap = 5 + kPackedPolyLen + 2;
+#ifdef SUPEROS_COMBINED
+// Shared with the d650 side's reassembly buffer (see combined.h): one firmware
+// runs per boot, so they never both need it.
+static_assert(kUsbSysexCap <= FW_USB_SYSEX_SCRATCH, "USB SysEx scratch too small");
+static uint8_t *const usb_sysex_buf = g_usb_sysex_scratch;
+#else
+static uint8_t  usb_sysex_buf[kUsbSysexCap];
+#endif
 static uint16_t usb_sysex_len  = 0;
 static bool     usb_sysex_drop = false;   // overflow guard: skip rest of an oversized msg
 static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complete) {
@@ -852,7 +895,7 @@ static void usb_sysex_partial(const uint8_t *data, uint16_t length, bool complet
     usb_sysex_drop = false;
   }
   if (!usb_sysex_drop) {
-    if (usb_sysex_len + length <= sizeof(usb_sysex_buf)) {
+    if (usb_sysex_len + length <= kUsbSysexCap) {
       for (uint16_t i = 0; i < length; ++i) usb_sysex_buf[usb_sysex_len++] = data[i];
     } else {
       usb_sysex_drop = true;              // too big for our buffer -> ignore the remainder
@@ -1126,7 +1169,7 @@ void midi_audition_chord_on(const uint8_t *voices, bool accent, int16_t transpos
 // counts incoming 24 PPQN MIDI clock to interpolate steps between anchors.
 void midi_send_step_position(uint8_t pat, uint8_t step) {
   const uint8_t grp = g_eng ? g_eng->get_group() : 0;
-  const uint8_t inner[5] = {0x7D, 0x15, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), (uint8_t)(grp & 0x03)};
+  const uint8_t inner[5] = {0x7D, 0x15, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F), (uint8_t)(grp & 0x07)};
   tx_push_message(inner, 5);
 }
 
@@ -1160,7 +1203,7 @@ void midi_send_track_state(uint8_t dial_mode, uint8_t track_idx, bool track_acti
   inner[6] = engine.get_chain_len() & 0x7F;
   inner[7] = engine.get_chain_pos() & 0x7F;
   inner[8] = engine.get_patsel() & 0x0F;
-  inner[9] = engine.get_group() & 0x03;
+  inner[9] = engine.get_group() & 0x07;
   for (uint8_t i = 0; i < MAX_CHAIN; ++i) {
     inner[10 + i]                 = engine.p_chain_get(i) & 0x0F;
     inner[10 + MAX_CHAIN + i]     = engine.TrackGetTranspose(i) & 0x7F;
@@ -1171,7 +1214,7 @@ void midi_send_track_state(uint8_t dial_mode, uint8_t track_idx, bool track_acti
 
 // --- Group update broadcast (SysEx 0x1C) -----------------------------------------
 void midi_send_group_update(uint8_t group) {
-  const uint8_t inner[3] = {0x7D, 0x1C, (uint8_t)(group & 0x03)};
+  const uint8_t inner[3] = {0x7D, 0x1C, (uint8_t)(group & 0x07)};
   tx_push_message(inner, 3);
 }
 
@@ -1202,9 +1245,12 @@ void midi_send_scale_update(uint8_t pat, uint16_t mask, bool enabled, uint8_t va
 // edit; the device never echoes a received 0x2B, so there is no feedback loop.
 // b0 = accent|slide levels, b1 = down|up levels, b2 = up-double (variation 1).
 void midi_send_prob_step(uint8_t pat, uint8_t step, uint8_t b0, uint8_t b1, uint8_t b2) {
-  const uint8_t inner[7] = {0x7D, 0x2B, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F),
-                            (uint8_t)(b0 & 0x7F), (uint8_t)(b1 & 0x7F), (uint8_t)(b2 & 0x7F)};
-  tx_push_message(inner, 7);
+  // Trailing msbs byte: bit0/1/2 = bit 7 of b0/b1/b2 (levels 8-13 need it).
+  const uint8_t msbs = (uint8_t)(((b0 >> 7) & 1) | ((b1 >> 6) & 2) | ((b2 >> 5) & 4));
+  const uint8_t inner[8] = {0x7D, 0x2B, (uint8_t)(pat & 0x0F), (uint8_t)(step & 0x3F),
+                            (uint8_t)(b0 & 0x7F), (uint8_t)(b1 & 0x7F), (uint8_t)(b2 & 0x7F),
+                            msbs};
+  tx_push_message(inner, 8);
 }
 
 // Broadcast ONE variation-3 poly step (device -> host) after a hardware chord edit,
@@ -1230,7 +1276,7 @@ void midi_send_poly_step(uint8_t pat, uint8_t step) {
 // current group so the web can resync even if its hwGroup state is stale.
 void midi_send_active_pattern(uint8_t pat) {
   const uint8_t grp = g_eng ? g_eng->get_group() : 0;
-  const uint8_t inner[4] = {0x7D, 0x1E, (uint8_t)(pat & 0x0F), (uint8_t)(grp & 0x03)};
+  const uint8_t inner[4] = {0x7D, 0x1E, (uint8_t)(pat & 0x0F), (uint8_t)(grp & 0x07)};
   tx_push_message(inner, 4);
 }
 
