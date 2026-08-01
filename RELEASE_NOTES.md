@@ -1,12 +1,13 @@
 # superOS-303 v1.0.0-beta (Combined Edition)
 
-## Read this first: this update factory-resets your patterns
+## Read this first: be prepared to lose all your patterns
 
-**Installing v1.0.0-beta moves the pattern storage layout. On first boot the
-unit starts factory-fresh: all superOS patterns, tracks, and settings are
-erased.** Back up your patterns with the web editor (SysEx download) before
-updating and restore them afterwards. D650C-mode patterns and any installed
-mask ROM are stored separately and are not affected.
+**Updating to v1.0.0-beta WILL erase your patterns. The pattern storage
+layout moved, and on first boot the unit starts factory-fresh: all superOS
+patterns, tracks, and settings are gone.** Back up your patterns with the web
+editor (SysEx download) before updating and restore them afterwards, or
+accept the loss before you send the update. D650C-mode patterns and any
+installed mask ROM are stored separately and are not affected.
 
 **Pattern length change:** since the 0.9.8/0.9.9 line, the maximum pattern
 length is now **32 steps per section** (it was 64). Enter A/B mode
@@ -59,6 +60,9 @@ programmer needed.
 - **New length editor**: FUNCTION opens on the page holding the last step;
   double/halve the pattern, spill into the B section, per-section triplet
   timing.
+- **Factory reset**: in the FUNCTION + CLEAR menu, hold C# for 2 seconds
+  (fast-blink warning) to erase all patterns and settings on both firmwares
+  and reboot factory-fresh. An uploaded mask ROM survives.
 - **In-editor OS updates**: the web editor validates and sends firmware
   updates itself; no external SysEx tool.
 - **Single-file updates**: the SPM flash service is bundled into every update
