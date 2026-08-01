@@ -8,20 +8,26 @@ struct Engine;
 void midi_init(Engine *engine);
 /// Apply after EEPROM load / config menu: `ch` 0 = omni, 1–16 = listen; `clock_rx` = use MIDI transport clock; `thru` = forward MIDI IN to MIDI OUT.
 void midi_apply_settings(uint8_t midi_in_channel_0_omni_16, bool midi_clock_receive, bool midi_thru);
-/// Channel 1–16 for sequencer Note On/Off (omni listen → 1).
-uint8_t midi_sequencer_out_channel();
 /// Increments `midi_clock_pulses` for each MIDI Clock byte received (24 ppqn).
 /// Using a counter instead of a boolean ensures no clock ticks are lost when
 /// multiple clocks arrive during a single poll (e.g. while parsing a long SysEx).
 void midi_poll(Engine &engine, bool clk_run, bool &midi_clk, uint8_t &midi_clock_pulses);
-/// Call once per 16th when `engine.Clock()` returned true while transport running.
-void midi_after_clock(Engine &engine, uint8_t transpose);
-/// Mute the sequencer's MIDI Note On for a specific step index. -1 = no muted step.
-/// Used by the step-select detail editor so the edited step doesn't repeat audibly.
-void midi_set_silence_step(int step);
-/// Call when `engine.is_ratchet_retrigger()` returns true (sub-tick within a ratcheted step).
-/// Sends Note Off + Note On for the current note without advancing the step.
-void midi_ratchet_retrigger(Engine &engine, uint8_t transpose);
+/// Main voice (variation 1) MIDI: call EVERY clock tick while running. Drives Note
+/// On/Off from engine.get_gate() so MIDI note length tracks the analog gate exactly.
+void midi_seq_gate_tick(Engine &engine, int16_t transpose);
+/// Shadow voices (variations 2/3) MIDI: call EVERY clock tick while running, after
+/// Engine::AdvanceShadows() ran at the 16th boundary. Gate-follows like the main voice.
+void midi_shadows_gate_tick(Engine &engine, int16_t transpose);
+/// Start collecting this clock tick's note on/offs. Call BEFORE the gate-ticks.
+void midi_tick_begin();
+/// Send the collected tick as one burst: USB first (single packet via send_now, so
+/// all voices land on the same host timestamp), then DIN; note-ONs before note-OFFs.
+/// Call once per clock tick AFTER midi_seq_gate_tick + midi_shadows_gate_tick.
+void midi_tick_flush();
+/// Send Note Off for any open shadow-voice notes (transport stop / pattern switch).
+void midi_shadows_all_notes_off(Engine &engine);
+/// Set MIDI output channels (1-16) for multitimbral variations 2 and 3.
+void midi_set_var_channels(uint8_t v2, uint8_t v3);
 /// DIN MIDI leader: clock pulses on `clocked` when transport runs and we are not synced to
 /// incoming MIDI Clock; optional Start/Stop with RUN edges.
 void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave,
@@ -30,6 +36,8 @@ void midi_leader_transport(bool clocked, bool clk_run, bool midi_transport_slave
 bool midi_live_accent();
 /// True while a live MIDI Note On is held (clock stopped); driven by most-recent note only.
 bool midi_live_gate();
+/// MIDI note number of the live note currently holding the gate (clock stopped).
+uint8_t midi_live_note();
 /// True while the destination note of a live legato slide is active (clock stopped).
 bool midi_live_slide();
 
@@ -38,6 +46,19 @@ bool midi_live_slide();
 void midi_audition_note_on(uint8_t note, uint8_t vel);
 /// Send Note Off for the currently-open audition note (TAP_NEXT / BACK_KEY falling).
 void midi_audition_note_off();
+/// Keyboard-play (live keyboard mode): open a per-key Note On on the edit
+/// variation's channel. Held keys keep their notes open so the MIDI output
+/// overlaps (legato/slide on mono synths, true note lengths in a DAW).
+void midi_kb_note_on(uint8_t note, uint8_t vel);
+/// Close the keyboard-play note opened for `note` (key release).
+void midi_kb_note_off(uint8_t note);
+/// Close every open keyboard-play note (keyboard mode exit).
+void midi_kb_all_notes_off();
+/// Audition a full variation-3 poly chord during edit: Note On per voice on the
+/// var3 channel (MIDI only, no 303 CV). Closes any open audition chord first.
+void midi_audition_chord_on(const uint8_t *voices, bool accent, int16_t transpose);
+/// Close the currently-open audition chord (poly TAP_NEXT / BACK_KEY navigation).
+void midi_audition_chord_off();
 
 /// Broadcast current sequencer position to host (SysEx 0x15).
 /// Called once per 16th-note advance while transport is running.
@@ -47,28 +68,37 @@ void midi_send_step_position(uint8_t pat, uint8_t step);
 /// Call after any operation that rewrites the whole pattern (e.g. Clear).
 void midi_send_pattern_update(uint8_t pat);
 
-/// Lightweight pattern broadcast: sends per-step 0x16 messages instead of
-/// the heavy 0x11 packed blob. No memcpy/xor/pack_7bit -- just ring buffer
-/// writes. Use when the clock is running to avoid delaying gate timing.
-void midi_send_pattern_steps(uint8_t pat, const struct Sequence &seq, uint8_t len);
-
 /// Broadcast a single step edit to host (SysEx 0x16).
 /// Called after every pitch or time write in pattern-write mode so the
 /// web editor can reflect 303 hardware edits in real time.
-/// Format: F0 7D 16 <pat:0-15> <step:0-63> <pitch_lo7> <pitch_hi1> <time_nibble> F7
-void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble);
+/// Format: F0 7D 16 <pat:0-15> <step:0-63> <pitch_lo7> <pitch_hi1> <time_nibble> <var:0-2> F7
+void midi_send_step_update(uint8_t pat, uint8_t step, uint8_t pitch_byte, uint8_t time_nibble,
+                           uint8_t var = 0);
 
 /// Broadcast pattern length change to host (SysEx 0x18).
-/// Format: F0 7D 18 <pat:0-15> <length:1-64> F7
-void midi_send_length_update(uint8_t pat, uint8_t len);
+/// Format: F0 7D 18 <pat:0-15> <length:1-64> <var:0-2> F7
+void midi_send_length_update(uint8_t pat, uint8_t len, uint8_t var = 0);
 
 /// Broadcast sequencer direction change to host (SysEx 0x17).
-/// Format: F0 7D 17 <direction:0-4> F7
-void midi_send_direction_update(uint8_t direction);
+/// Format: F0 7D 17 <direction:0-5> <var:0-2> F7
+void midi_send_direction_update(uint8_t direction, uint8_t var = 0);
 
 /// Broadcast pattern group change to host (SysEx 0x1C).
 /// Format: F0 7D 1C <group:0-3> F7
 void midi_send_group_update(uint8_t group);
+
+/// Broadcast / receive which variation the hardware is editing (SysEx 0x1F).
+/// Bidirectional: host sends the same format to set the edit variation.
+/// Format: F0 7D 1F <pat:0-15> <var:0-2> F7
+void midi_send_edit_variation(uint8_t pat, uint8_t var);
+
+/// Broadcast variation-3 poly/mono flag for a slot (SysEx 0x29).
+/// Bidirectional: host sends the same format to set the flag.
+/// Format: F0 7D 29 <pat:0-15> <flag:0|1> F7
+void midi_send_poly_flag(uint8_t pat, uint8_t flag);
+/// Broadcast one variation-3 poly step (device->host, SysEx 0x27) after a hardware
+/// chord edit so the web editor mirrors panel edits live.
+void midi_send_poly_step(uint8_t pat, uint8_t step);
 
 /// Broadcast active pattern selection while stopped (SysEx 0x1E).
 /// Used so the web editor follows hardware pat-key presses without showing
@@ -77,17 +107,27 @@ void midi_send_group_update(uint8_t group);
 /// Format: F0 7D 1E <pat:0-15> <group:0-3> F7
 void midi_send_active_pattern(uint8_t pat);
 
-/// Broadcast a single step-lock toggle to host (SysEx 0x19).
-/// Format: F0 7D 19 <pat:0-15> <step:0-63> <locked:0|1> F7
-void midi_send_step_lock_update(uint8_t pat, uint8_t step, bool locked);
+/// Per-pattern scale update (SysEx 0x2A). Bidirectional: device broadcasts after
+/// a hardware scale edit; host sends the same format to set a pattern's scale.
+/// mask = 12-bit class mask (bit0=C). Format:
+///   F0 7D 2A <pat:0-15> <mask_lo7> <mask_hi5> <enabled:0|1> <var:0-2> F7
+void midi_send_scale_update(uint8_t pat, uint16_t mask, bool enabled, uint8_t var);
 
-/// Broadcast a single ratchet value change to host (SysEx 0x1B).
-/// Format: F0 7D 1B <pat:0-15> <step:0-63> <val:0-2> F7
-/// Targeted replacement for midi_send_pattern_update() on single-step ratchet edits.
-void midi_send_ratchet_update(uint8_t pat, uint8_t step, uint8_t val);
+/// Per-step probability edit (SysEx 0x2B, variation 1 only). Bidirectional:
+/// device broadcasts after a hardware edit; host sends the same format to set
+/// one step's three prob bytes. b0 = accent level | slide level<<4 (each 0=off,
+/// 1-13); b1 = down level | up level<<4 (each 0=off, 1-13); b2 bit0 = up-double
+/// (up = +24 when set, else +12). Down and up roll independently; if both pass
+/// the firmware coin-flips which shift applies.
+/// Format: F0 7D 2B <pat:0-15> <step:0-63> <b0> <b1> <b2> F7
+void midi_send_prob_step(uint8_t pat, uint8_t step, uint8_t b0, uint8_t b1, uint8_t b2);
+/// Device->host full probability-table push (SysEx 0x2D) for one pattern, sent
+/// after a hardware randomize so the editor resyncs in one message.
+void midi_send_prob_table(uint8_t pat);
 
-/// Play a metronome tick note via MIDI (E3 on first beat of pattern, E4 otherwise).
-void midi_metronome_tick(bool first_beat);
+/// Metronome click via MIDI: low C (48) on the pattern's first step, high C
+/// (60) otherwise, matching the original 303 (OM p.36).
+void midi_metronome_tick(bool bar_start);
 /// Stop the open metronome note (on mode exit / clock stop).
 void midi_metronome_stop();
 

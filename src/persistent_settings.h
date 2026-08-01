@@ -1,54 +1,35 @@
 // Copyright (c) 2026, Nicholas J. Michalek
 //
-// persistent_settings.h -- EEPROM layout + pattern read/write.
-// Depends on sequence.h for Sequence struct.
-//
-// EEPROM layout (4096 bytes total):
-//   0    .. 127    SETTINGS     (128 B)  signature[16] + flags + reserved
-//   128  .. 2175   PITCH_DATA   (2048 B) 64 patterns x 32 bytes (pitch[32])
-//   2176 .. 2687   TIME_DATA    (512 B)  64 patterns x 8 bytes (time_data[8], 2-bit cells)
-//   2688 .. 3199   PATTERN_META (512 B)  64 patterns x 8 bytes (reserved[5] + transpose + engine_select + length)
-//   3200 .. 4031   TRACK_DATA   (832 B)  8 tracks x 104 bytes (packed p_chain[32]
-//                                        + t_chain_last[8] bitmap + t_chain_transpose[64])
-//   4032 .. 4095   AUX_DATA     ( 64 B)  free
-//
-// Patterns are addressed by a flat index 0..63: bank * 16 + pattern_in_bank.
-// Wire format diverges from OS-303 v0.6: time_data is now 2 bits/step
-// (8 bytes for 32 steps) instead of 4 bits/step (16 bytes).
-
+// persistent_settings.h -- settings + pattern persistence over flash-as-EEPROM.
+// Patterns, tracks, and settings are stored as logical blocks in the flash
+// block store (flash_eeprom.h / flash_persist.h), not the hardware EEPROM.
+// Depends on sequence.h for the Sequence struct.
 #pragma once
 #include <Arduino.h>
-#include <EEPROM.h>
 #include "sequence.h"
+#include "flash_persist.h"
+#include "poly.h"
 
-static constexpr int SETTINGS_SIZE       = 128;
-static constexpr int SETTINGS_OFFSET     = 0;
-static constexpr int PITCH_DATA_SIZE     = 64 * MAX_STEPS;        // 2048
-static constexpr int PITCH_DATA_OFFSET   = SETTINGS_OFFSET + SETTINGS_SIZE; // 128
-static constexpr int TIME_DATA_SIZE      = 64 * (MAX_STEPS / 4);  // 512
-static constexpr int TIME_DATA_OFFSET    = PITCH_DATA_OFFSET + PITCH_DATA_SIZE; // 2176
-static constexpr int PATTERN_META_SIZE   = 64 * METADATA_SIZE;    // 512
-static constexpr int PATTERN_META_OFFSET = TIME_DATA_OFFSET + TIME_DATA_SIZE; // 2688
-// Per-track storage = p_chain[64] (1 byte/step) + 8-byte last-step bitmap = 72 B.
-// See engine.h for layout and bitmap semantics.
-static constexpr int TRACK_DATA_SIZE     = 8 * 104;               // 832
-static constexpr int TRACK_DATA_OFFSET   = PATTERN_META_OFFSET + PATTERN_META_SIZE; // 3200
-static constexpr int AUX_DATA_OFFSET     = TRACK_DATA_OFFSET + TRACK_DATA_SIZE;     // 4032
-static constexpr int AUX_DATA_SIZE       = 4096 - AUX_DATA_OFFSET;                  //   64
-
-// SysEx pattern blob = 48 raw bytes (pitch[32] + time_data[8] + 8 metadata).
+// SysEx / flash pattern blob = 92 raw bytes (pitch[64] + time_data[16] + 12 metadata).
 static constexpr int PATTERN_SIZE = MAX_STEPS + (MAX_STEPS / 4) + METADATA_SIZE;
 
+static_assert(POLY_STEPS == MAX_STEPS, "poly step count must match MAX_STEPS");
+static_assert(POLY_BLOB_SIZE <= FE_MAX_PAYLOAD, "poly blob must fit one flash record");
+static_assert(FB_SETTINGS_LEN <= FE_MAX_PAYLOAD, "settings block must fit one record");
+
 // Sig is prefix-matched: anything starting with sig_compat_prefix passes.
-// Bumped from "OS-303-v0.6" because time_data shrank from 4-bit nibbles
-// (16 B) to 2-bit cells (8 B) -- old EEPROMs lay out wrong under the new
-// offsets, so this prefix forces a wipe on first boot of new firmware.
-const char *const sig_pew = "superOS-2bit-v1";
-const char *const sig_compat_prefix = "superOS-2bit";
+// Prefix bumped to "superOS-pol3" because the variation-3 poly blob format changed
+// from flat-per-step chords to a chord-list (two-stream) layout; wipe to relayout.
+// Bumped to "superOS-sa4p" for this layout: single-page-per-block arena, 4
+// groups (64 slots), and sparse step-probability storage. The block-id map and
+// the record header both changed, so older records must not be read back.
+// "s32a" = 32-step section layout (MAX_STEPS 32): pattern/poly/prob regions and
+// the paired-track record changed size, so old records must not be half-read.
+// The new prefix fails the compat check against any "sa4p" arena and formats.
+const char *const sig_pew = "superOS-s32a-v1";
+const char *const sig_compat_prefix = "superOS-s32a";
 static constexpr int kSigCompatPrefixLen = 12;
 static constexpr int kSigEepromLen = 16;
-
-extern EEPROMClass storage;
 
 struct PersistentSettings {
   char signature[16];
@@ -62,79 +43,118 @@ struct PersistentSettings {
   bool midi_thru = false;
   /// LED brightness 1..8 (8 = full).
   uint8_t led_brightness = 8;
+  /// Track-storage layout version; bump invalidates stored track blocks.
+  uint8_t track_format = 0;
+  /// MIDI output channels for multitimbral variations 2 and 3 (1..16).
+  /// Variation 1 uses midi_channel; these drive the shadow voices.
+  uint8_t var2_channel = 2;
+  uint8_t var3_channel = 3;
+  /// Per-slot bitmap: bit set = variation 3 of that slot is polyphonic.
+  uint8_t var3_poly[NUM_SLOTS / 8] = {0};
 
-  static constexpr int kEepromMidiChannel   = 16;
-  static constexpr int kEepromMidiFlags     = 17;
-  static constexpr int kEepromDirection     = 18;
-  static constexpr int kEepromMidiThru      = 19;
-  static constexpr int kEepromLedBrightness = 20;
-  // Bumped whenever the on-EEPROM track storage layout changes. Mismatch on
-  // boot triggers a wipe of just the TRACK_DATA region (patterns untouched).
-  static constexpr int kEepromTrackFormat   = 21;
-  static constexpr uint8_t kTrackFormatVersion = 4;  // default-transpose fix (0xFF wipe sentinel)
+  static constexpr uint8_t kTrackFormatVersion = 4;
 
-  void Load() { storage.get(0, signature); }
+  bool var3_is_poly(uint8_t slot) const {
+    slot &= uint8_t(NUM_SLOTS - 1);
+    return (var3_poly[slot >> 3] >> (slot & 7)) & 1;
+  }
+  void set_var3_poly(uint8_t slot, bool on) {
+    slot &= uint8_t(NUM_SLOTS - 1);
+    const uint8_t m = uint8_t(1u << (slot & 7));
+    if (on) var3_poly[slot >> 3] |= m; else var3_poly[slot >> 3] &= uint8_t(~m);
+  }
 
-  void Save() { storage.put(0, signature); }
+  // Settings block byte layout (FB_SETTINGS_LEN = 38):
+  //   [0..15] signature  [16] midi_channel  [17] flags(bit0=clock_rx)
+  //   [18] direction  [19] thru  [20] led_brightness  [21] track_format
+  //   [22] var2_channel  [23] var3_channel  [24..37] var3 poly bitmap
+  //   (14 bytes = 112 slots, one bit each)
+  void serialize(uint8_t *b) const {
+    memcpy(b, signature, 16);
+    b[16] = midi_channel;
+    b[17] = midi_clock_receive ? 1 : 0;
+    b[18] = sequence_direction;
+    b[19] = midi_thru ? 1 : 0;
+    b[20] = led_brightness;
+    b[21] = track_format;
+    b[22] = var2_channel;
+    b[23] = var3_channel;
+    memcpy(b + 24, var3_poly, sizeof(var3_poly));
+  }
+  void deserialize(const uint8_t *b) {
+    memcpy(signature, b, 16);
+    midi_channel       = (b[16] <= 16) ? b[16] : 1;
+    midi_clock_receive = (b[17] <= 1)  ? (b[17] != 0) : true;
+    sequence_direction = (b[18] < uint8_t(DIR_COUNT)) ? b[18] : 0;
+    midi_thru          = (b[19] == 1);
+    led_brightness     = (b[20] >= 1 && b[20] <= 8) ? b[20] : 8;
+    track_format       = b[21];
+    var2_channel       = (b[22] >= 1 && b[22] <= 16) ? b[22] : 2;
+    var3_channel       = (b[23] >= 1 && b[23] <= 16) ? b[23] : 3;
+    memcpy(var3_poly, b + 24, sizeof(var3_poly));
+  }
+
+  // Load the settings block. If absent (fresh flash), zero the signature so
+  // Validate() fails and the engine runs its clean-init path. Tolerates an old
+  // 22-byte record (pre var2/var3 channels): the buffer is preset with the
+  // channel defaults so a short read keeps them and does NOT trigger a wipe.
+  void Load() {
+    uint8_t b[FB_SETTINGS_LEN];
+    b[22] = 2; b[23] = 3;
+    memset(b + 24, 0, FB_SETTINGS_LEN - 24); // default var3 poly bitmap = all mono
+    const int got = g_flash.read(FB_SETTINGS, b, FB_SETTINGS_LEN);
+    if (got >= 22)
+      deserialize(b);
+    else
+      memset(signature, 0, sizeof(signature));
+  }
+
+  void Save() {
+    uint8_t b[FB_SETTINGS_LEN];
+    serialize(b);
+    g_flash.write(FB_SETTINGS, b, FB_SETTINGS_LEN);
+  }
 
   bool Validate() const {
-    if (strncmp(signature, sig_compat_prefix, kSigCompatPrefixLen) == 0) return true;
-    memcpy((char *)signature, sig_pew, kSigEepromLen);
-    return false;
+    return strncmp(signature, sig_compat_prefix, kSigCompatPrefixLen) == 0;
   }
 
-  void load_midi_from_storage() {
-    const uint8_t ch   = storage.read(kEepromMidiChannel);
-    const uint8_t fl   = storage.read(kEepromMidiFlags);
-    const uint8_t dir  = storage.read(kEepromDirection);
-    const uint8_t thru = storage.read(kEepromMidiThru);
-    midi_channel        = (ch <= 16) ? ch : 1;
-    midi_clock_receive  = (fl <= 1)  ? (fl != 0) : true;
-    sequence_direction  = (dir < uint8_t(DIR_COUNT)) ? dir : 0;
-    midi_thru           = (thru == 1);
-    const uint8_t br    = storage.read(kEepromLedBrightness);
-    led_brightness      = (br >= 1 && br <= 8) ? br : 8;
-  }
+  // MIDI fields are loaded/clamped in Load() and persisted by Save(); these
+  // shims keep the existing call sites working.
+  void load_midi_from_storage() {}
+  void save_midi_to_storage() { Save(); }
 
-  void save_midi_to_storage() {
-    storage.update(kEepromMidiChannel, midi_channel);
-    storage.update(kEepromMidiFlags, midi_clock_receive ? 1 : 0);
-    storage.update(kEepromDirection, sequence_direction);
-    storage.update(kEepromMidiThru, midi_thru ? 1 : 0);
-    storage.update(kEepromLedBrightness, led_brightness);
-  }
+  uint8_t get_track_format() const { return track_format; }
+  void set_track_format(uint8_t v) { track_format = v; Save(); }
 };
 
 extern PersistentSettings GlobalSettings;
 
 // -----------------------------------------------------------------------------
-// Pattern read/write -- 4-region OS-303 layout, flat index 0..63 = bank*16 + pat.
+// Pattern serialization (one pattern = FB_PATTERN_LEN_ONE = 92 bytes) and
+// two-per-page super-blocks. Super-block s holds flat patterns 2s and 2s+1.
 // -----------------------------------------------------------------------------
-inline void WritePatternFlat(Sequence &seq, uint8_t flat_idx) {
-  flat_idx &= 0x3F;
-  storage.put(PITCH_DATA_OFFSET + (int(flat_idx) * MAX_STEPS), seq.pitch);
-  storage.put(TIME_DATA_OFFSET  + (int(flat_idx) * (MAX_STEPS / 4)), seq.time_data);
-  // Metadata block: reserved[0..4], transpose, engine_select, length (8 bytes,
-  // contiguous in struct memory because all uint8_t).
-  uint8_t *src = seq.reserved;
-  for (uint8_t i = 0; i < METADATA_SIZE; ++i) {
-    storage.update(PATTERN_META_OFFSET + (int(flat_idx) * METADATA_SIZE) + i, src[i]);
-  }
+inline void serialize_pattern(const Sequence &seq, uint8_t *dst) {
+  memcpy(dst, seq.pitch, MAX_STEPS);
+  memcpy(dst + MAX_STEPS, seq.time_data, MAX_STEPS / 4);
+  memcpy(dst + MAX_STEPS + (MAX_STEPS / 4), seq.reserved, METADATA_SIZE); // reserved[]+transpose+engine+length
 }
-inline void ReadPatternFlat(Sequence &seq, uint8_t flat_idx) {
-  flat_idx &= 0x3F;
-  storage.get(PITCH_DATA_OFFSET + (int(flat_idx) * MAX_STEPS), seq.pitch);
-  storage.get(TIME_DATA_OFFSET  + (int(flat_idx) * (MAX_STEPS / 4)), seq.time_data);
-  uint8_t *dst = seq.reserved;
-  for (uint8_t i = 0; i < METADATA_SIZE; ++i) {
-    dst[i] = storage.read(PATTERN_META_OFFSET + (int(flat_idx) * METADATA_SIZE) + i);
-  }
+inline void deserialize_pattern(Sequence &seq, const uint8_t *src) {
+  memcpy(seq.pitch, src, MAX_STEPS);
+  memcpy(seq.time_data, src + MAX_STEPS, MAX_STEPS / 4);
+  memcpy(seq.reserved, src + MAX_STEPS + (MAX_STEPS / 4), METADATA_SIZE);
+}
+inline void clear_pattern_bytes(Sequence &seq) {
+  memset(seq.pitch, PITCH_EMPTY, MAX_STEPS);
+  memset(seq.time_data, 0, MAX_STEPS / 4);
+  memset(seq.reserved, 0, METADATA_SIZE);
+  seq.length = 0; // Load() promotes 0 -> SetLength(8)
 }
 
-// Back-compat shim for engine.h's (idx, group) call style.
-inline void WritePattern(Sequence &seq, int idx, int bank) {
-  WritePatternFlat(seq, uint8_t(bank * NUM_PATTERNS + (idx & 0x0F)));
-}
-inline void ReadPattern(Sequence &seq, int idx, int bank) {
-  ReadPatternFlat(seq, uint8_t(bank * NUM_PATTERNS + (idx & 0x0F)));
-}
+#include "pattern_codec.h"
+
+// Variation-3 poly, trimmed to the chords actually used.
+#include "poly_codec.h"
+
+// Per-slot step-probability tables (variation 1), sparse-encoded.
+#include "prob_codec.h"

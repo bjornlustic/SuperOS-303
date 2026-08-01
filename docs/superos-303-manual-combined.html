@@ -1,0 +1,1374 @@
+<div class="man-doc">
+
+  <!-- ── Cover ──────────────────────────────────────────────────── -->
+  <header class="man-cover">
+    <div class="man-brand">
+      <span class="man-brand-note">Firmware Documentation</span>
+    </div>
+    <div class="man-wordmark">
+      <img src="/images/superos303-logo-white.svg" alt="superOS-303">
+    </div>
+    <h1 class="man-cover-title">Owner's Manual</h1>
+    <div class="man-cover-meta">
+      <p class="man-cover-sub">Combined Edition v1.0-beta &middot; Custom firmware for the Roland TB-303<br>VOX DEI CPU &middot; Michigan Synth Works</p>
+      <div class="man-cover-actions man-noprint">
+        <a class="man-btn" href="/docs/superos-303-manual.pdf" download>Download PDF</a>
+        <a class="man-btn man-btn--ghost" href="https://github.com/bjornlustic/SuperOS-303" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Contents ───────────────────────────────────────────────── -->
+  <nav class="man-contents" aria-label="Contents">
+    <h2 class="man-contents-title">Contents</h2>
+
+    <span class="man-toc-part">Introduction</span>
+    <ol class="man-toc-list">
+      <li><a class="docs-toc-link" href="#about"><span class="man-toc-num">1</span>About superOS-303<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#how-to-use"><span class="man-toc-num">2</span>How to Use This Manual<span class="man-toc-leader"></span></a></li>
+    </ol>
+
+    <span class="man-toc-part">Getting Started</span>
+    <ol class="man-toc-list">
+      <li><a class="docs-toc-link" href="#preparing"><span class="man-toc-num">1</span>Preparing a Pattern<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#length"><span class="man-toc-num">2</span>Setting the Length<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#pitch-mode"><span class="man-toc-num">3</span>Writing Pitches<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#time-mode"><span class="man-toc-num">4</span>Writing Rhythm<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#playing"><span class="man-toc-num">5</span>Playing Patterns<span class="man-toc-leader"></span></a></li>
+    </ol>
+
+    <span class="man-toc-part">Pattern Editing</span>
+    <ol class="man-toc-list">
+      <li><a class="docs-toc-link" href="#step-editing"><span class="man-toc-num">1</span>Step Editing<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#pattern-ops"><span class="man-toc-num">2</span>Pattern Operations<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#chaining"><span class="man-toc-num">3</span>Chaining Patterns<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#direction"><span class="man-toc-num">4</span>Playback Direction<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#metronome"><span class="man-toc-num">5</span>Metronome Tap-Write<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#probability"><span class="man-toc-num">6</span>Step Probability<span class="man-toc-leader"></span></a></li>
+    </ol>
+
+    <span class="man-toc-part">Variations &amp; Scales</span>
+    <ol class="man-toc-list">
+      <li><a class="docs-toc-link" href="#variations"><span class="man-toc-num">1</span>Three Variations per Pattern<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#poly"><span class="man-toc-num">2</span>Variation 3 Polyphony<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#scales"><span class="man-toc-num">3</span>Per-Pattern Scales<span class="man-toc-leader"></span></a></li>
+    </ol>
+
+    <span class="man-toc-part">Performance</span>
+    <ol class="man-toc-list">
+      <li><a class="docs-toc-link" href="#live-edit"><span class="man-toc-num">1</span>Live Pattern Edit<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#live-step-edit"><span class="man-toc-num">2</span>Step-Select Editing<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#keyboard-play"><span class="man-toc-num">3</span>Keyboard Play Mode<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#performance"><span class="man-toc-num">4</span>Transpose &amp; Force Accent / Slide<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#tracks"><span class="man-toc-num">5</span>The Track<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#menu"><span class="man-toc-num">6</span>Menu Mode<span class="man-toc-leader"></span></a></li>
+    </ol>
+
+    <span class="man-toc-part">Combined Edition</span>
+    <ol class="man-toc-list">
+      <li><a class="docs-toc-link" href="#dual-firmware"><span class="man-toc-num">1</span>Two Firmwares in One Box<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#d650c"><span class="man-toc-num">2</span>D650C Mode<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#pitch-cal"><span class="man-toc-num">3</span>Pitch Calibration<span class="man-toc-leader"></span></a></li>
+    </ol>
+
+    <span class="man-toc-part">Reference</span>
+    <ol class="man-toc-list">
+      <li><a class="docs-toc-link" href="#midi-daw"><span class="man-toc-num">1</span>MIDI &amp; DAW Control<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#web-editor"><span class="man-toc-num">2</span>Web Pattern Editor<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#storage"><span class="man-toc-num">3</span>Pattern Storage<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#firmware-update"><span class="man-toc-num">4</span>Firmware Update<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#quick-reference"><span class="man-toc-num">5</span>Quick Reference<span class="man-toc-leader"></span></a></li>
+      <li><a class="docs-toc-link" href="#specifications"><span class="man-toc-num">6</span>Specifications<span class="man-toc-leader"></span></a></li>
+    </ol>
+
+    <div class="docs-warning man-precautions">
+      <strong>Precautions</strong>
+      Firmware installation and any modification of your instrument are performed entirely at your
+      own risk. Back up your patterns over SysEx before updating. Do not disconnect power during an
+      update unless the update has failed. We are not responsible for damage to your instrument,
+      loss of data, or any reduction in the value of vintage hardware resulting from installation,
+      modification, or use of this firmware.
+    </div>
+  </nav>
+
+  <!-- ══ INTRODUCTION ═══════════════════════════════════════════ -->
+  <div class="man-part">Introduction</div>
+
+  <section id="about" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">1</span>
+      <h2 class="docs-sec-title">About superOS-303</h2>
+    </div>
+    <p class="docs-body">
+      superOS-303 is custom firmware for the open-source VOX DEI CPU by
+      <a href="https://michigansynthworks.com/products/os-303" target="_blank" rel="noopener noreferrer" class="docs-link">Michigan Synth Works</a>,
+      a drop-in replacement for the Roland TB-303's original processor. It is a fork of DJ Phazer's
+      <a href="https://github.com/djphazer/OS-303/tree/main" target="_blank" rel="noopener noreferrer" class="docs-link">OS-303</a>.
+    </p>
+    <p class="docs-body">
+      The goal is to extend the TB-303 sequencer beyond what was possible in 1981: a modern, flexible
+      environment for writing, transforming, and performing patterns, while keeping the instrument's
+      original workflow intact. Source code and releases are on
+      <a href="https://github.com/bjornlustic/SuperOS-303" target="_blank" rel="noopener noreferrer" class="docs-link">GitHub</a>.
+    </p>
+    <p class="docs-body">
+      The <strong>Combined Edition</strong> holds two complete operating systems in one chip: superOS-303
+      and <strong>D650C mode</strong>, a cycle-accurate emulation of the original TB-303 CPU running the genuine
+      Roland mask ROM. You can switch between them from the panel at any time; both keep their own
+      pattern memory. See the Combined Edition chapter.
+    </p>
+    <p class="docs-body">
+      This site also provides a <a href="/editor" class="docs-link">web pattern editor</a> that talks to
+      the hardware over MIDI, and a <a href="/customize" class="docs-link">case customizer</a> for
+      previewing custom case designs.
+    </p>
+  </section>
+
+  <section id="how-to-use" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">2</span>
+      <h2 class="docs-sec-title">How to Use This Manual</h2>
+    </div>
+    <h3 class="man-sub">Panel Names</h3>
+    <p class="docs-body">
+      Controls are written as they appear on the panel:
+      <kbd class="docs-key">FUNCTION</kbd> <kbd class="docs-key">PITCH MODE</kbd>
+      <kbd class="docs-key">TIME MODE</kbd> <kbd class="docs-key">CLEAR</kbd>
+      <kbd class="docs-key">BACK</kbd> <kbd class="docs-key">WRITE/NEXT</kbd>
+      <kbd class="docs-key">RUN/STOP</kbd> <kbd class="docs-key">ACCENT</kbd>
+      <kbd class="docs-key">SLIDE</kbd> <kbd class="docs-key">DOWN</kbd> <kbd class="docs-key">UP</kbd>,
+      the keyboard keys <kbd class="docs-key">C</kbd> through <kbd class="docs-key">C&prime;</kbd>
+      (high C), and the pattern keys <kbd class="docs-key">1</kbd>&ndash;<kbd class="docs-key">8</kbd>.
+      The <strong>Mode Dial</strong> selects Pattern Write, Pattern Play, Track Write, or Track Play;
+      the <strong>Group Dial</strong> selects pattern group I&ndash;IV (and the track number in Track mode).
+    </p>
+    <p class="docs-body">
+      A combination such as <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">CLEAR</kbd>
+      means: hold the first control, then press the second.
+    </p>
+    <div class="man-note">
+      <strong>Note</strong>
+      In Time Mode the four writing keys carry the original panel legends. This manual uses those names:
+      <kbd class="docs-key">STEP</kbd> is the DOWN key, <kbd class="docs-key">TIE</kbd> is the UP key,
+      <kbd class="docs-key">REST</kbd> is the ACCENT key, and <kbd class="docs-key">LOCK</kbd> is the SLIDE key.
+    </div>
+    <p class="docs-body">
+      Everything in this manual describes <strong>superOS mode</strong> unless stated otherwise. In D650C
+      mode the instrument behaves like a stock TB-303; see Combined Edition, section 2.
+    </p>
+  </section>
+
+  <!-- ══ GETTING STARTED ════════════════════════════════════════ -->
+  <div class="man-part">Getting Started</div>
+
+  <section id="preparing" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">1</span>
+      <h2 class="docs-sec-title">Preparing a Pattern</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd></p>
+
+    <h3 class="man-sub">Select a Pattern</h3>
+    <p class="docs-body">
+      Set the Mode Dial to Pattern Write. Choose a group with the Group Dial and press a pattern key
+      <kbd class="docs-key">1</kbd>&ndash;<kbd class="docs-key">8</kbd> to select a slot.
+    </p>
+
+    <h3 class="man-sub">Clear the Pattern</h3>
+    <p class="docs-body">
+      Hold the pattern key and press <kbd class="docs-key">CLEAR</kbd>. The LEDs flash briefly to
+      confirm the slot has been erased.
+    </p>
+  </section>
+
+  <section id="length" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">2</span>
+      <h2 class="docs-sec-title">Setting the Length</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd></p>
+    <p class="docs-body">
+      A pattern section can be 1 to 32 steps long (1 to 24 in triplet mode), and the length can be
+      changed at any time, even while the sequencer is running. Linking a slot's A and B sections
+      plays them as one pattern of up to 64 steps (Playing Patterns, section 5). Length changes are
+      never destructive: notes past the last step are retained, so shortening and then lengthening
+      restores them.
+    </p>
+
+    <h3 class="man-sub">Count the Steps</h3>
+    <p class="docs-body">
+      Hold <kbd class="docs-key">FUNCTION</kbd> and tap <kbd class="docs-key">STEP</kbd> once per step.
+      The first tap resets the length to 1; every further tap adds one step. Eight taps make an
+      8-step pattern.
+    </p>
+
+    <h3 class="man-sub">Set the Length Directly</h3>
+    <p class="docs-body">
+      Hold <kbd class="docs-key">FUNCTION</kbd>, press a black key to choose the range, then a white key
+      to choose the exact step within it. The editor opens on the page that contains the current last
+      step, and nothing changes until a white key picks one, so paging around to look is free. While
+      <kbd class="docs-key">FUNCTION</kbd> is held, the LEDs display the current length.
+    </p>
+    <table class="docs-table">
+      <thead><tr><th>Black Key</th><th>Range</th><th>B section (Slide on)</th></tr></thead>
+      <tbody>
+        <tr><td><kbd class="docs-key">C#</kbd></td><td>Steps 1&ndash;8</td><td>Steps 33&ndash;40</td></tr>
+        <tr><td><kbd class="docs-key">D#</kbd></td><td>Steps 9&ndash;16</td><td>Steps 41&ndash;48</td></tr>
+        <tr><td><kbd class="docs-key">F#</kbd></td><td>Steps 17&ndash;24</td><td>Steps 49&ndash;56</td></tr>
+        <tr><td><kbd class="docs-key">G#</kbd></td><td>Steps 25&ndash;32</td><td>Steps 57&ndash;64</td></tr>
+      </tbody>
+    </table>
+    <p class="docs-body">
+      With an A section selected, <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">SLIDE</kbd>
+      moves the editor into the B section (steps 33&ndash;64). Picking a step there saves the pair's
+      A/B memory and turns A/B mode on, making one long pattern. A B section selected on its own
+      stays capped at 32 steps.
+    </p>
+
+    <h3 class="man-sub">One Step at a Time</h3>
+    <p class="docs-body">
+      <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">WRITE/NEXT</kbd> adds one step;
+      <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">BACK</kbd> removes one (down to 1).
+      This works stopped or running.
+    </p>
+
+    <h3 class="man-sub">Double and Halve</h3>
+    <p class="docs-body">
+      <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">UP</kbd> doubles the length: it either
+      reveals the retained tail or copies the first half into the new second half. Doubling past step 32
+      spills into the B section, saving the pair's A/B memory and turning A/B mode on.
+      <kbd class="docs-key">FUNCTION</kbd> +
+      <kbd class="docs-key">DOWN</kbd> halves the length (31 &rarr; 15 &rarr; 7 &rarr; 3 &rarr; 1) and
+      destroys nothing.
+    </p>
+
+    <h3 class="man-sub">Triplet Mode</h3>
+    <p class="docs-body">
+      In <kbd class="docs-key">TIME MODE</kbd>, <kbd class="docs-key">FUNCTION</kbd> +
+      <kbd class="docs-key">UP</kbd> switches the section between straight sixteenths and triplet timing
+      (12-step pages, maximum length 24; steps past 24 are retained, not deleted). While
+      <kbd class="docs-key">FUNCTION</kbd> is held there, the UP LED shows the current setting.
+    </p>
+  </section>
+
+  <section id="pitch-mode" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">3</span>
+      <h2 class="docs-sec-title">Writing Pitches</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd> &middot; Sequencer stopped</p>
+    <p class="docs-body">
+      Press <kbd class="docs-key">PITCH MODE</kbd>. Play the keyboard keys in order; each press writes
+      the next note of the pattern.
+    </p>
+    <ul class="docs-list">
+      <li>Octave: hold <kbd class="docs-key">DOWN</kbd> for one octave down, <kbd class="docs-key">UP</kbd> for one up, or both together for two octaves up.</li>
+      <li>Hold <kbd class="docs-key">ACCENT</kbd> and/or <kbd class="docs-key">SLIDE</kbd> while pressing a key to write those flags with the note.</li>
+      <li><kbd class="docs-key">WRITE/NEXT</kbd> auditions the current step; <kbd class="docs-key">BACK</kbd> steps backward.</li>
+    </ul>
+    <p class="docs-body">
+      When every note step has a pitch, the mode exits automatically and the panel returns to normal.
+      To edit pitches later, press <kbd class="docs-key">PITCH MODE</kbd> again, or use Step Editing
+      (Pattern Editing, section 1).
+    </p>
+    <div class="man-note">
+      <strong>A/B mode, while running</strong>
+      Live pitch edits land on whichever section is playing. To pin them to one section instead,
+      hold <kbd class="docs-key">PITCH MODE</kbd> and press <kbd class="docs-key">CLEAR</kbd>; each
+      press flips the target between A and B. The PITCH MODE LED shows the target: solid = section
+      A, blinking = section B. The pin drops when you leave the mode or stop.
+    </div>
+  </section>
+
+  <section id="time-mode" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">4</span>
+      <h2 class="docs-sec-title">Writing Rhythm</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd> &middot; Sequencer stopped</p>
+    <p class="docs-body">
+      Press <kbd class="docs-key">TIME MODE</kbd>. For each step of the pattern, press one key; the
+      cursor advances after each entry. After the last step, the mode exits automatically.
+    </p>
+    <table class="docs-table">
+      <thead><tr><th>Key</th><th>Writes</th></tr></thead>
+      <tbody>
+        <tr><td><kbd class="docs-key">STEP</kbd></td><td>Note. Plays the next pitch in the pattern.</td></tr>
+        <tr><td><kbd class="docs-key">TIE</kbd></td><td>Tie. Extends the previous step.</td></tr>
+        <tr><td><kbd class="docs-key">REST</kbd></td><td>Rest. Silence for one step.</td></tr>
+        <tr><td><kbd class="docs-key">LOCK</kbd></td><td>Toggles step lock on the current step without advancing. A locked step ignores live edits (Performance, section 1).</td></tr>
+      </tbody>
+    </table>
+    <div class="man-note">
+      <strong>Note</strong>
+      Pitch and time are independent streams. Changing a step from note to rest does not discard its
+      pitch; the pitch stays in the queue, and writing a note there again plays the same pitch.
+    </div>
+    <div class="man-note">
+      <strong>A/B mode, while running</strong>
+      As in PITCH MODE, live time edits follow the playing section; hold
+      <kbd class="docs-key">PITCH MODE</kbd> and press <kbd class="docs-key">CLEAR</kbd> to pin them
+      to one section (TIME MODE LED solid = A, blinking = B).
+    </div>
+  </section>
+
+  <section id="playing" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">5</span>
+      <h2 class="docs-sec-title">Playing Patterns</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN PLAY</kbd></p>
+    <p class="docs-body">
+      Set the Mode Dial to Pattern Play and press <kbd class="docs-key">RUN/STOP</kbd>. Press a pattern
+      key <kbd class="docs-key">1</kbd>&ndash;<kbd class="docs-key">8</kbd> to jump to that slot while
+      stopped, or to queue it for the next pattern wrap while running.
+    </p>
+
+    <h3 class="man-sub">Sections A and B</h3>
+    <p class="docs-body">
+      Each pattern slot has two sections of up to 32 steps each. Press <kbd class="docs-key">ACCENT</kbd>
+      for section A or <kbd class="docs-key">SLIDE</kbd> for section B. Stopped, the switch is immediate;
+      running, it takes effect at the next wrap. Selecting a section clears any chain that is not
+      playing, and leaves A/B mode if it was on. While a chain is playing the
+      section buttons never interrupt it; they control chain A/B mode instead (Chaining Patterns,
+      section 3).
+    </p>
+
+    <h3 class="man-sub">A/B Mode: 64-Step Patterns</h3>
+    <p class="docs-body">
+      Hold one section button and press the other (<kbd class="docs-key">ACCENT</kbd> +
+      <kbd class="docs-key">SLIDE</kbd>) to enter <strong>A/B mode</strong>. While the mode is on,
+      every pattern you select plays its A section, then its B section: one pattern of up to 64
+      steps. The mode is sticky. It stays on as you press other pattern keys, so you can move
+      through the whole bank in A/B, and it always enters a pattern at its A section. Both section
+      LEDs light, with the playing or edited section blinking. Press <kbd class="docs-key">ACCENT</kbd>
+      or <kbd class="docs-key">SLIDE</kbd> alone to leave the mode and go back to single sections.
+      <kbd class="docs-key">CLEAR</kbd> on a pattern in A/B mode erases both halves. Writing pitches
+      in A/B mode fills section A first, then hands the cursor to section B.
+    </p>
+
+    <h3 class="man-sub">Saving A/B with a Pattern</h3>
+    <p class="docs-body">
+      Selecting a pattern never changes its saved A/B memory by itself. To make a pattern remember
+      the mode, hold its pattern key and press <kbd class="docs-key">FUNCTION</kbd> while in the mode
+      you want kept, or use the chain-save gestures (Chaining Patterns, section 3); the current A/B
+      state is stored with it. Selecting a pattern whose memory is saved (or powering on with it
+      selected) turns A/B mode back on automatically. To erase a pattern's saved memory, hold its
+      pattern key and press <kbd class="docs-key">FUNCTION</kbd> with A/B mode off: that clears both
+      its saved A/B memory and its stored chain in one gesture. The mode LEDs flash to confirm
+      either way. Growing a pattern past step 32 in the length editor also saves its A/B memory, so
+      long patterns come back whole.
+    </p>
+
+    <h3 class="man-sub">Groups</h3>
+    <p class="docs-body">
+      Turn the Group Dial to browse another group while running, then press a pattern key: the group and
+      pattern switch together at the next wrap.
+    </p>
+
+    <h3 class="man-sub">Tempo LED</h3>
+    <p class="docs-body">
+      While the sequencer is stopped, the selected pattern LED keeps flashing at the tempo (120 BPM
+      idle, or the incoming clock tempo), like a real 303.
+    </p>
+  </section>
+
+  <!-- ══ PATTERN EDITING ════════════════════════════════════════ -->
+  <div class="man-part">Pattern Editing</div>
+
+  <section id="step-editing" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">1</span>
+      <h2 class="docs-sec-title">Step Editing</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd> &middot; Sequencer stopped</p>
+    <p class="docs-body">
+      Step editing walks the pattern one step at a time so you can fix a single note without rewriting
+      the rest. Enter <kbd class="docs-key">PITCH MODE</kbd> or <kbd class="docs-key">TIME MODE</kbd>,
+      then hold <kbd class="docs-key">WRITE/NEXT</kbd>: the current step is auditioned and can be edited
+      for as long as the key is held.
+    </p>
+
+    <h3 class="man-sub">Editing Pitch</h3>
+    <ul class="docs-list">
+      <li>Press a keyboard key to replace the step's pitch; the step re-auditions.</li>
+      <li><kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd> nudge the octave.</li>
+      <li><kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd> toggle the step's flags.</li>
+      <li>Release <kbd class="docs-key">WRITE/NEXT</kbd> to advance to the next note step (rests and ties are skipped). <kbd class="docs-key">BACK</kbd> steps backward.</li>
+    </ul>
+
+    <h3 class="man-sub">Editing Time</h3>
+    <p class="docs-body">
+      In <kbd class="docs-key">TIME MODE</kbd> with <kbd class="docs-key">WRITE/NEXT</kbd> held, press
+      <kbd class="docs-key">STEP</kbd>, <kbd class="docs-key">TIE</kbd>, or <kbd class="docs-key">REST</kbd>
+      to change the current step's type, or <kbd class="docs-key">LOCK</kbd> to toggle its lock.
+    </p>
+    <div class="man-note">
+      <strong>Note</strong>
+      To jump straight to a specific step instead of walking to it, use Step-Select Editing
+      (Performance, section 2).
+    </div>
+  </section>
+
+  <section id="pattern-ops" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">2</span>
+      <h2 class="docs-sec-title">Pattern Operations</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd> &middot; Hold <kbd class="docs-key">CLEAR</kbd></p>
+    <p class="docs-body">
+      Holding <kbd class="docs-key">CLEAR</kbd> turns the panel into a pattern-transform toolkit. None of
+      these operations move the playhead or interrupt the clock, so they are safe to use mid-performance.
+      They apply to whichever variation is the current edit target (Variations &amp; Scales, section 1).
+    </p>
+
+    <h3 class="man-sub">Transform</h3>
+    <table class="docs-table man-t-combo">
+      <thead><tr><th>While Holding Clear</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><kbd class="docs-key">ACCENT</kbd></td><td>Randomize the pattern</td></tr>
+        <tr><td><kbd class="docs-key">SLIDE</kbd></td><td>Mutate: a small random perturbation</td></tr>
+        <tr><td><kbd class="docs-key">DOWN</kbd> / <kbd class="docs-key">UP</kbd></td><td>Rotate time data one step left / right</td></tr>
+        <tr><td><kbd class="docs-key">PITCH MODE</kbd> + <kbd class="docs-key">DOWN</kbd> / <kbd class="docs-key">UP</kbd></td><td>Rotate pitch data one step left / right</td></tr>
+        <tr><td><kbd class="docs-key">BACK</kbd> / <kbd class="docs-key">WRITE/NEXT</kbd></td><td>Shift pitch and time one step left / right</td></tr>
+        <tr><td><kbd class="docs-key">F#</kbd></td><td>Reverse the pattern within its length</td></tr>
+        <tr><td><kbd class="docs-key">G#</kbd></td><td>Clear pitches only (keep time data)</td></tr>
+        <tr><td><kbd class="docs-key">A#</kbd></td><td>Clear time data only (keep pitches)</td></tr>
+      </tbody>
+    </table>
+    <p class="docs-body">
+      Random and mutate operations respect the pattern's scale, if one is enabled
+      (Variations &amp; Scales, section 3).
+    </p>
+
+    <h3 class="man-sub">Randomize One Attribute</h3>
+    <p class="docs-body">
+      Hold <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">PITCH MODE</kbd> together and tap a
+      white key:
+    </p>
+    <table class="docs-table">
+      <thead><tr><th>C</th><th>D</th><th>E</th><th>F</th><th>G</th><th>A</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Semitones</td><td>Octaves</td><td>Accents</td><td>Slides</td>
+          <td>All pitch data</td><td>Time data</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3 class="man-sub">Copy and Paste</h3>
+    <p class="docs-body">
+      Hold <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">C#</kbd> and press a pattern key to
+      copy that slot to the clipboard. Hold <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">D#</kbd>
+      and press a pattern key to paste into that slot. Both operate within the current bank.
+    </p>
+  </section>
+
+  <section id="chaining" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">3</span>
+      <h2 class="docs-sec-title">Chaining Patterns</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN PLAY</kbd></p>
+    <p class="docs-body">
+      A chain plays up to four patterns in sequence, wrapping back to the first. With A/B mode on,
+      every entry plays its A and B sections before the chain advances, and entries are always
+      entered at their A section. Stopping and restarting the sequencer replays the chain from its
+      first entry.
+    </p>
+
+    <h3 class="man-sub">Building a Chain (Stopped)</h3>
+    <p class="docs-body">
+      Hold the first pattern key as an anchor and press up to three more keys in the same bank.
+      Release the anchor to activate the chain. Releasing the anchor with only one key held
+      deactivates any existing chain.
+    </p>
+
+    <h3 class="man-sub">Building a Chain in Any Order (A + B held)</h3>
+    <p class="docs-body">
+      Hold <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> together and tap up to
+      four pattern keys in any order; repeats are allowed (1&nbsp;1&nbsp;2&nbsp;4 is a valid chain).
+      Releasing the buttons commits it: stopped, it starts immediately; running, it takes over at the
+      next pattern wrap.
+    </p>
+
+    <h3 class="man-sub">While Running</h3>
+    <ul class="docs-list">
+      <li>A short tap (under 300&nbsp;ms) on a pattern key queues that pattern next. With a chain playing, the chain finishes its current pass first, then hands over.</li>
+      <li>Holding a pattern key (300&nbsp;ms or more) loops that pattern for as long as it is held.</li>
+      <li>Pressing two pattern keys together, or holding one and tapping another, builds a new chain from the range between them. With a chain already playing, the new chain is queued and takes over at the chain boundary.</li>
+    </ul>
+
+    <h3 class="man-sub">Chain A/B Mode</h3>
+    <p class="docs-body">
+      While a chain is playing, the section buttons never stop or redirect it. Hold
+      <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> together to turn
+      A/B mode on: every member of the chain plays its A section, then its B section, before the
+      chain advances. Both section LEDs light with the playing section blinking, exactly as on a
+      single pattern. It is the same sticky A/B mode as everywhere else: it follows you to whatever
+      you select next, and saving the chain stores the mode with it, so a saved chain comes back
+      playing A/B. With the mode on, a single press of <kbd class="docs-key">ACCENT</kbd> or
+      <kbd class="docs-key">SLIDE</kbd> turns it off. Tapping pattern keys while
+      <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> are still held builds a
+      new chain as usual and reverts the mode flip.
+    </p>
+
+    <h3 class="man-sub">Browsing While a Chain Plays</h3>
+    <p class="docs-body">
+      With chain A/B mode off, pressing <kbd class="docs-key">ACCENT</kbd> or
+      <kbd class="docs-key">SLIDE</kbd> alone while a chain is playing browses that bank: the pattern
+      keys and section LEDs show bank A or B so a pattern there can be picked or chained, while the
+      chain keeps playing untouched. The view returns to the playing pattern when the chain ends or
+      the sequencer stops.
+    </p>
+
+    <h3 class="man-sub">Saving a Chain with a Pattern</h3>
+    <p class="docs-body">
+      A chain can be stored on its first pattern so it comes back later:
+    </p>
+    <ul class="docs-list">
+      <li>While the chain-build keys are still held, press <kbd class="docs-key">FUNCTION</kbd> (Pattern Write), or</li>
+      <li>while holding <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd>, press <kbd class="docs-key">WRITE/NEXT</kbd> to save the build in progress or the currently playing chain.</li>
+    </ul>
+    <p class="docs-body">
+      Both gestures also store the current A/B mode with the chain, so a chain saved in A/B mode
+      re-enters the mode when it is recalled. The mode LEDs flash to confirm. Selecting that pattern
+      later while stopped (or powering on with it selected) re-arms the whole chain automatically; a
+      pattern without a stored chain plays alone.
+      <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> +
+      <kbd class="docs-key">WRITE/NEXT</kbd> with no chain active clears the stored chain from the
+      current pattern, and clearing the pattern clears its stored chain with it. To clear a
+      pattern's stored chain and saved A/B memory together, hold its pattern key and press
+      <kbd class="docs-key">FUNCTION</kbd> with A/B mode off and no chain playing (Playing Patterns,
+      section 5).
+    </p>
+  </section>
+
+  <section id="direction" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">4</span>
+      <h2 class="docs-sec-title">Playback Direction</h2>
+    </div>
+    <p class="docs-body">
+      Press <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">TIME MODE</kbd> to open the
+      direction selector; six LEDs show the available directions. Press a key to choose, then
+      <kbd class="docs-key">FUNCTION</kbd> to exit.
+    </p>
+    <table class="docs-table man-t-combo">
+      <thead><tr><th>Key</th><th>Direction</th></tr></thead>
+      <tbody>
+        <tr><td><kbd class="docs-key">C</kbd></td><td>Forward</td></tr>
+        <tr><td><kbd class="docs-key">D</kbd></td><td>Reverse</td></tr>
+        <tr><td><kbd class="docs-key">E</kbd></td><td>Ping-pong: forward, then backward</td></tr>
+        <tr><td><kbd class="docs-key">F</kbd></td><td>Random: every step chosen at random</td></tr>
+        <tr><td><kbd class="docs-key">G</kbd></td><td>Half random: a chance that the current step is replaced by a random one</td></tr>
+        <tr><td><kbd class="docs-key">A</kbd></td><td>Brownian: a chance of stepping backward or jumping ahead, drifting through the pattern</td></tr>
+      </tbody>
+    </table>
+    <p class="docs-body">
+      While running, a direction change is queued and takes effect at the next pattern wrap, so the
+      pattern always hands off in phase with the clock. Each variation stores its own direction
+      (Variations &amp; Scales, section 1). Slides are direction-aware; random modes never slide.
+    </p>
+  </section>
+
+  <section id="metronome" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">5</span>
+      <h2 class="docs-sec-title">Metronome Tap-Write</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd> &middot; Sequencer running</p>
+    <p class="docs-body">
+      Metronome tap-write records rhythm the way you would tap it on a table, exactly like the original
+      303's TAP timing method, with the original's sound: a short click on every 8th note and a lower
+      click marking the start of each bar. The recorder's timing windows are measured cycle-exact
+      against the original mask ROM, so taps land on the same steps they would on a stock 303.
+      Press <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">TIME MODE</kbd> (either order)
+      to start a take: the rhythm of the whole take is cleared (the current section, both halves in
+      A/B mode, and every member of an active chain) while all pitches are kept and
+      consumed in order as you tap. The bar restarts from step 1 (in A/B mode always on the
+      A section, a chain at its first member) and the <kbd class="docs-key">TIME MODE</kbd> LED
+      blinks while the take is running.
+    </p>
+    <ul class="docs-list">
+      <li>Tap <kbd class="docs-key">WRITE/NEXT</kbd> on a beat to write a note there; a tap in the later part of a step aims at the next step's downbeat, so slightly early taps land where you meant them.</li>
+      <li>Holding the key across further beats writes ties; releasing it ends the note.</li>
+      <li>Rests are never written over earlier passes, so each pass adds on top of what is already there.</li>
+      <li>Taps aimed past the end of the bar are dropped, like the original's "do not tap between two measures".</li>
+      <li>You hear each tapped note from the instant you press, at the pitch it will consume, until you let go.</li>
+      <li><strong>Sustain</strong>: hold any pattern key <kbd class="docs-key">1</kbd>&ndash;<kbd class="docs-key">8</kbd> and the gaps between notes fill with ties instead of rests.</li>
+    </ul>
+
+    <h3 class="man-sub">One Guided Pass</h3>
+    <p class="docs-body">
+      A take is one guided pass through everything it covers: each empty bar clicks along in
+      <strong>record</strong> (metronome on, voice silent) and loops until you tap something real
+      into it, and once a bar has notes it plays back cleanly while your taps keep recording on top
+      (<strong>overdub</strong>). When a full pass has gone by (every chain member's bar, both
+      halves in A/B mode) and something was recorded, the take ends by itself: the patterns
+      simply play what you tapped, and members you never tapped are left empty. A pass where nothing
+      was tapped keeps looping with the metronome until the first real take.
+    </p>
+    <p class="docs-body">
+      <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">TIME MODE</kbd> during a take is not
+      a toggle: it restarts the take from the top. Stopping the sequencer or leaving Pattern Write
+      ends the take immediately. Patterns pulled in after the take started (a new chain build, a
+      queued pattern) keep their saved notes and join in overdub.
+    </p>
+    <div class="man-note">
+      <strong>Note</strong>
+      During a take the pattern keys belong to the recorder (sustain), and the
+      <kbd class="docs-key">CLEAR</kbd> transform combos are disabled until it ends.
+    </div>
+  </section>
+
+  <section id="probability" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">6</span>
+      <h2 class="docs-sec-title">Step Probability</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd> &middot; Variation 1 only</p>
+    <p class="docs-body">
+      Step probability turns fixed steps into ones that only sometimes happen, so a line breathes and
+      never repeats the same way twice. Any step can arm four independent characteristics: an
+      <strong>accent</strong>, a <strong>slide</strong>, an octave <strong>down</strong> (&minus;12), and
+      an octave <strong>up</strong> (+12, or +24 for double-up). Each carries its own probability, and
+      each is rolled fresh every time that step plays. A tie holds the previous step's roll; a rest
+      clears it. Probability rides <strong>variation&nbsp;1</strong> (the analog voice) only.
+    </p>
+    <p class="docs-body">
+      Press <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">SLIDE</kbd> to open the editor,
+      and <kbd class="docs-key">FUNCTION</kbd> to exit. Steps that carry probability light bright; empty
+      note steps show dim for orientation, and the playhead chases across the visible bank while running.
+    </p>
+
+    <h3 class="man-sub">Selecting a Step</h3>
+    <p class="docs-body">
+      Black keys pick which bank of eight steps you are looking at
+      (<kbd class="docs-key">C#</kbd> 1&ndash;8 through <kbd class="docs-key">G#</kbd> 25&ndash;32);
+      white keys 1&ndash;8 select a step within that bank.
+      <kbd class="docs-key">BACK</kbd> deselects. The selected step's LED flashes. Each section
+      carries its own probability: with A/B mode off, select the section first, then edit its steps.
+    </p>
+
+    <h3 class="man-sub">Arming Characteristics</h3>
+    <p class="docs-body">
+      With a step selected (and <kbd class="docs-key">WRITE/NEXT</kbd> not held):
+    </p>
+    <table class="docs-table man-t-combo">
+      <thead><tr><th>Key</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><kbd class="docs-key">ACCENT</kbd></td><td>Toggle a probabilistic accent</td></tr>
+        <tr><td><kbd class="docs-key">SLIDE</kbd></td><td>Toggle a probabilistic slide</td></tr>
+        <tr><td><kbd class="docs-key">DOWN</kbd></td><td>Toggle an octave-down shift (&minus;12)</td></tr>
+        <tr><td><kbd class="docs-key">UP</kbd></td><td>Cycle none &rarr; up (+12) &rarr; double-up (+24)</td></tr>
+      </tbody>
+    </table>
+    <p class="docs-body">
+      Arming a characteristic sets it to 100% (always happens) as a starting point. A characteristic can
+      be armed on a rest or tie step too; it stays latent and applies if that step later becomes a note.
+    </p>
+
+    <h3 class="man-sub">Setting the Odds</h3>
+    <p class="docs-body">
+      Hold <kbd class="docs-key">WRITE/NEXT</kbd> to enter the level layer. Tap
+      <kbd class="docs-key">ACCENT</kbd>, <kbd class="docs-key">SLIDE</kbd>, <kbd class="docs-key">DOWN</kbd>,
+      or <kbd class="docs-key">UP</kbd> to pick which characteristic you are editing (its LED blinks), then
+      press a keyboard key <kbd class="docs-key">C</kbd> through high <kbd class="docs-key">C</kbd> to set the
+      level 1&ndash;13. The pitch LEDs show the level as a bar. Level&nbsp;13 is certain (100%); level&nbsp;1
+      is the rarest, roughly one step in thirteen.
+    </p>
+    <div class="man-note">
+      <strong>Note</strong>
+      Down and up roll independently. If both pass on the same step, the sequencer flips a coin to decide
+      which shift applies, so a step can never move two directions at once.
+    </div>
+
+    <h3 class="man-sub">Randomizing</h3>
+    <p class="docs-body">
+      Hold <kbd class="docs-key">CLEAR</kbd> and tap <kbd class="docs-key">ACCENT</kbd>,
+      <kbd class="docs-key">SLIDE</kbd>, <kbd class="docs-key">DOWN</kbd>, or <kbd class="docs-key">UP</kbd> to
+      scatter random odds for that one characteristic across the whole pattern.
+      <kbd class="docs-key">CLEAR</kbd> + <kbd class="docs-key">WRITE/NEXT</kbd> randomizes all four at once.
+      About a third of the steps land unarmed and the rest get a random level.
+    </p>
+    <p class="docs-body">
+      Variations 2 and 3 carry no probability. Probability edits are mirrored to the web pattern editor's
+      PROB lane, and vice versa.
+    </p>
+  </section>
+
+  <!-- ══ VARIATIONS & SCALES ═══════════════════════════════════ -->
+  <div class="man-part">Variations &amp; Scales</div>
+
+  <section id="variations" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">1</span>
+      <h2 class="docs-sec-title">Three Variations per Pattern</h2>
+    </div>
+    <p class="docs-body">
+      Every pattern slot holds <strong>three independent sequences</strong> that play simultaneously,
+      so one slot can drive the 303 line plus two external synth lines in lockstep:
+    </p>
+    <table class="docs-table">
+      <thead><tr><th>Variation</th><th>Output</th><th>MIDI Channel</th></tr></thead>
+      <tbody>
+        <tr><td><strong>1</strong></td><td>The 303 analog voice + MIDI</td><td>Main channel</td></tr>
+        <tr><td><strong>2</strong></td><td>MIDI only</td><td>Own channel (default 2)</td></tr>
+        <tr><td><strong>3</strong></td><td>MIDI only, mono or polyphonic</td><td>Own channel (default 3)</td></tr>
+      </tbody>
+    </table>
+    <p class="docs-body">
+      Each variation has its own notes, length, direction, transpose, and scale.
+    </p>
+
+    <h3 class="man-sub">Picking Which Variation You Edit</h3>
+    <ol class="docs-ordered-list">
+      <li>Mode Dial to Pattern Write, normal mode (no FUNCTION / PITCH MODE / TIME MODE held).</li>
+      <li>Hold <kbd class="docs-key">WRITE/NEXT</kbd>. The picker appears on <kbd class="docs-key">C</kbd> / <kbd class="docs-key">D</kbd> / <kbd class="docs-key">E</kbd>: the selected variation flashes, the other two show dim.</li>
+      <li>Still holding <kbd class="docs-key">WRITE/NEXT</kbd>, press <kbd class="docs-key">C</kbd>, <kbd class="docs-key">D</kbd>, or <kbd class="docs-key">E</kbd> to select variation 1, 2, or 3.</li>
+    </ol>
+    <p class="docs-body">
+      All editing (pitch and time modes, step-select, CLEAR combos, direction, scale) then applies to
+      the selected variation, and the chase LEDs follow its playhead. The selection returns to
+      variation 1 when you change patterns.
+    </p>
+
+    <h3 class="man-sub">Setting the Variation MIDI Channels</h3>
+    <p class="docs-body">
+      In Menu Mode (<kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">CLEAR</kbd>): hold
+      <kbd class="docs-key">PITCH MODE</kbd> while pressing a channel key to set the variation-2
+      channel, or hold <kbd class="docs-key">SLIDE</kbd> for variation 3. Without a modifier the keys
+      set the main channel as before (Performance, section 6).
+    </p>
+  </section>
+
+  <section id="poly" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">2</span>
+      <h2 class="docs-sec-title">Variation 3 Polyphony</h2>
+    </div>
+    <p class="docs-body">
+      Variation 3 can play <strong>chords of up to four notes per step</strong> over MIDI. The poly flag
+      is stored per pattern slot.
+    </p>
+
+    <h3 class="man-sub">Turning Poly On / Off</h3>
+    <ol class="docs-ordered-list">
+      <li>Stop the sequencer.</li>
+      <li>Hold <kbd class="docs-key">WRITE/NEXT</kbd> (variation picker) and select variation 3 with <kbd class="docs-key">E</kbd>.</li>
+      <li>Still holding <kbd class="docs-key">WRITE/NEXT</kbd>, press <kbd class="docs-key">SLIDE</kbd>. The SLIDE LED shows the state: lit = polyphonic, off = monophonic.</li>
+    </ol>
+
+    <h3 class="man-sub">Writing Chords</h3>
+    <ol class="docs-ordered-list">
+      <li>With variation 3 (poly) selected as the edit target, stop the sequencer and press <kbd class="docs-key">PITCH MODE</kbd> (Pattern Write) to open the chord editor.</li>
+      <li>Note keys toggle chord notes on the current step; each press auditions the chord over MIDI.</li>
+      <li>Tap <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd> to set the octave new notes land in (it latches).</li>
+      <li><kbd class="docs-key">TIME MODE</kbd> cycles the step between note / tie / rest. <kbd class="docs-key">ACCENT</kbd> and <kbd class="docs-key">SLIDE</kbd> set per-step flags.</li>
+      <li><kbd class="docs-key">WRITE/NEXT</kbd> / <kbd class="docs-key">BACK</kbd> move to the next / previous step, with audition.</li>
+    </ol>
+  </section>
+
+  <section id="scales" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">3</span>
+      <h2 class="docs-sec-title">Per-Pattern Scales</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd></p>
+    <p class="docs-body">
+      Each pattern can carry a <strong>scale filter</strong>: notes are pulled to the nearest allowed
+      pitch at playback. The filter is non-destructive; your stored notes are untouched, and switching
+      the scale off restores them exactly. Random and mutate operations also respect it.
+    </p>
+    <ol class="docs-ordered-list">
+      <li>Hold <kbd class="docs-key">FUNCTION</kbd> and press <kbd class="docs-key">ACCENT</kbd> to enter scale mode.</li>
+      <li>Note keys toggle the twelve pitch classes (lit = allowed). The high <kbd class="docs-key">C&prime;</kbd> key toggles the scale on / off for this pattern.</li>
+      <li>Presets: hold <kbd class="docs-key">FUNCTION</kbd> and press a note key to load a preset rooted on that note; pressing the same note again cycles through the 35 preset scales (major, minors, modes, pentatonics, blues, and more).</li>
+      <li>Tap <kbd class="docs-key">FUNCTION</kbd> (press and release with no note) to exit.</li>
+    </ol>
+  </section>
+
+  <!-- ══ PERFORMANCE ════════════════════════════════════════════ -->
+  <div class="man-part">Performance</div>
+
+  <section id="live-edit" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">1</span>
+      <h2 class="docs-sec-title">Live Pattern Edit</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd> &middot; Sequencer running</p>
+    <p class="docs-body">
+      With the sequencer running, press <kbd class="docs-key">PITCH MODE</kbd>: anything you play is
+      recorded into the pattern as it passes. Tap keyboard keys to write pitches, and
+      <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd>,
+      <kbd class="docs-key">ACCENT</kbd>, or <kbd class="docs-key">SLIDE</kbd> to write octaves and flags.
+    </p>
+    <p class="docs-body">
+      The same works for rhythm: press <kbd class="docs-key">TIME MODE</kbd> while running and tap
+      <kbd class="docs-key">STEP</kbd>, <kbd class="docs-key">TIE</kbd>, <kbd class="docs-key">REST</kbd>,
+      or <kbd class="docs-key">LOCK</kbd> to record them live. Locked steps ignore live input, so use
+      <kbd class="docs-key">LOCK</kbd> to protect the parts you want to keep. Press
+      <kbd class="docs-key">FUNCTION</kbd> to exit.
+    </p>
+  </section>
+
+  <section id="live-step-edit" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">2</span>
+      <h2 class="docs-sec-title">Step-Select Editing</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN WRITE</kbd> &middot; Running or stopped</p>
+    <p class="docs-body">
+      Step-select jumps straight to any step of a pattern and edits it in place while the pattern keeps
+      playing, uninterrupted and unmuted. Press <kbd class="docs-key">FUNCTION</kbd> +
+      <kbd class="docs-key">PITCH MODE</kbd> to enter. The pattern keys become a step overview:
+      lit = note, dim = tie, unlit = rest. The black keys jump between 8-step banks
+      (<kbd class="docs-key">C#</kbd> 1&ndash;8, <kbd class="docs-key">D#</kbd> 9&ndash;16,
+      <kbd class="docs-key">F#</kbd> 17&ndash;24, <kbd class="docs-key">G#</kbd> 25&ndash;32).
+    </p>
+
+    <h3 class="man-sub">A/B Mode: Choosing the Section You Edit</h3>
+    <p class="docs-body">
+      With A/B mode on, the step overview never follows the playing section around: it always opens
+      on section A and stays there while the pattern alternates A and B underneath. To edit the
+      other section, hold <kbd class="docs-key">PITCH MODE</kbd> (or, in the time view,
+      <kbd class="docs-key">TIME MODE</kbd>) and press <kbd class="docs-key">CLEAR</kbd>: the view
+      flips between the two sections. Either press order works. The lit sub-mode LED shows which one
+      you are on: solid = section A, blinking = section B. All step edits, the detail editor, and
+      the web editor mirror follow the viewed section. Leaving step-select or leaving A/B mode
+      drops the flip back to section A.
+    </p>
+
+    <h3 class="man-sub">Editing a Step's Pitch</h3>
+    <p class="docs-body">
+      Press a lit step to select it (it blinks), then <kbd class="docs-key">WRITE/NEXT</kbd> to open it.
+      Keyboard keys set the pitch, <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd> nudge
+      the octave, <kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd> toggle flags, and
+      <kbd class="docs-key">WRITE/NEXT</kbd> auditions it. The playhead is not disturbed. Press
+      <kbd class="docs-key">BACK</kbd> to return to the overview.
+    </p>
+
+    <h3 class="man-sub">Editing a Step's Time</h3>
+    <p class="docs-body">
+      Press <kbd class="docs-key">TIME MODE</kbd> to switch to the time view. Select any step, then press
+      <kbd class="docs-key">STEP</kbd>, <kbd class="docs-key">TIE</kbd>, or <kbd class="docs-key">REST</kbd>
+      directly; no need to open the step. Press <kbd class="docs-key">FUNCTION</kbd> to exit step-select.
+    </p>
+
+    <h3 class="man-sub">With a Chain Active</h3>
+    <p class="docs-body">
+      When a chain of two or more patterns is active, <kbd class="docs-key">DOWN</kbd> /
+      <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd>
+      switch which chained pattern you are viewing (in the time view, only while no step is selected).
+      The LEDs show the viewed slot solid, the playing slot as a bright chase blink, and the others dim.
+    </p>
+    <div class="man-note">
+      <strong>Note</strong>
+      If variation 3 (poly) is the edit target, step-select edits the chord stream instead:
+      the detail editor works on the selected step's chord.
+    </div>
+  </section>
+
+  <section id="keyboard-play" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">3</span>
+      <h2 class="docs-sec-title">Keyboard Play Mode</h2>
+    </div>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN PLAY</kbd> &middot; Running or stopped</p>
+    <p class="docs-body">
+      Play the 303's analog voice live from the panel keys. Hold <kbd class="docs-key">FUNCTION</kbd>
+      and press <kbd class="docs-key">PITCH MODE</kbd> to toggle the mode.
+    </p>
+    <ul class="docs-list">
+      <li>Note keys play the voice; overlapping presses slide (legato), and releasing slides back to a still-held key, like a mono synth.</li>
+      <li>Octaves: the <kbd class="docs-key">TIME MODE</kbd> key toggles octave latch (TIME MODE LED lit = latched, the default). Latched: tap <kbd class="docs-key">DOWN</kbd> / <kbd class="docs-key">UP</kbd> to step through octaves 0&ndash;3 and it stays. Unlatched: hold <kbd class="docs-key">DOWN</kbd> / <kbd class="docs-key">UP</kbd> like the stock transpose.</li>
+      <li>Everything you play also goes out over MIDI per key, so a mono synth slides and a DAW records true note lengths.</li>
+      <li>Press <kbd class="docs-key">FUNCTION</kbd> to leave the mode.</li>
+    </ul>
+  </section>
+
+  <section id="performance" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">4</span>
+      <h2 class="docs-sec-title">Transpose &amp; Force Accent / Slide</h2>
+    </div>
+
+    <h3 class="man-sub">Live Transpose</h3>
+    <p class="docs-body">
+      Hold <kbd class="docs-key">PITCH MODE</kbd> (running or stopped, outside Pattern Write) and tap any
+      keyboard key to transpose the pattern to that root; each step's octave is preserved. With
+      <kbd class="docs-key">PITCH MODE</kbd> still held, <kbd class="docs-key">UP</kbd> /
+      <kbd class="docs-key">DOWN</kbd> shift the transpose octave. Release to exit. Transpose is
+      non-destructive and resets when you switch patterns; the stored pattern is unchanged.
+    </p>
+
+    <h3 class="man-sub">Force Accent / Slide</h3>
+    <p class="man-context">Mode Dial <kbd class="docs-key">PATTERN PLAY</kbd> / <kbd class="docs-key">TRACK PLAY</kbd> &middot; Sequencer running</p>
+    <p class="docs-body">
+      While holding <kbd class="docs-key">PITCH MODE</kbd>, also hold <kbd class="docs-key">ACCENT</kbd>
+      to force an accent on every step, or <kbd class="docs-key">SLIDE</kbd> to force slides. Force-slide
+      also holds the gate across every non-rest step for continuous portamento. The effect lasts while
+      held and reverts on release. It is applied at the analog output stage only; the pattern is
+      not modified.
+    </p>
+  </section>
+
+  <section id="tracks" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">5</span>
+      <h2 class="docs-sec-title">The Track</h2>
+    </div>
+    <p class="docs-body">
+      A track is a song: a sequence of up to 64 bars, each bar naming one pattern and an optional
+      transpose. There are eight track slots, selected with the Group Dial in either track mode.
+      Tracks 1&ndash;2 use patterns from group I, 3&ndash;4 from group II, 5&ndash;6 from group III,
+      and 7&ndash;8 from group IV.
+    </p>
+
+    <h3 class="man-sub">Writing a Track</h3>
+    <p class="man-context">Mode Dial <kbd class="docs-key">TRACK WRITE</kbd> &middot; Sequencer running</p>
+    <ol class="docs-ordered-list">
+      <li>Choose a track with the Group Dial and press <kbd class="docs-key">RUN/STOP</kbd>.</li>
+      <li>Select the pattern to record: pattern keys <kbd class="docs-key">1</kbd>&ndash;<kbd class="docs-key">8</kbd>, with <kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd> choosing section A / B.</li>
+      <li>Press <kbd class="docs-key">WRITE/NEXT</kbd> to write the playing pattern into the current bar and move to the next.</li>
+      <li>For the final bar, press <kbd class="docs-key">CLEAR</kbd> and then <kbd class="docs-key">WRITE/NEXT</kbd>: the bar is written, marked as the end, and the cursor returns to bar 1.</li>
+      <li>Stop the sequencer to save the track.</li>
+    </ol>
+
+    <h3 class="man-sub">Reviewing (Stopped)</h3>
+    <p class="docs-body">
+      While stopped, <kbd class="docs-key">WRITE/NEXT</kbd> and <kbd class="docs-key">BACK</kbd> step
+      through the written bars, auditioning each bar's pattern. <kbd class="docs-key">CLEAR</kbd> returns
+      to bar 1. Writing only happens while the clock is running, so browsing is non-destructive.
+    </p>
+
+    <h3 class="man-sub">Per-Bar Transpose</h3>
+    <p class="docs-body">
+      In Track Write, hold <kbd class="docs-key">PITCH MODE</kbd>: the keyboard sets the current bar's
+      transpose, and <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd> choose its octave.
+      The pitch and octave LEDs display the stored value while held.
+    </p>
+
+    <h3 class="man-sub">Playing a Track</h3>
+    <p class="man-context">Mode Dial <kbd class="docs-key">TRACK PLAY</kbd></p>
+    <p class="docs-body">
+      Choose the track with the Group Dial and press <kbd class="docs-key">RUN/STOP</kbd>. The track
+      advances one bar at every pattern wrap and loops at the end. While stopped,
+      <kbd class="docs-key">CLEAR</kbd> resets the playhead to bar 1.
+    </p>
+  </section>
+
+  <section id="menu" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">6</span>
+      <h2 class="docs-sec-title">Menu Mode</h2>
+    </div>
+    <p class="docs-body">
+      Press <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">CLEAR</kbd> to open the settings
+      menu. Everything is visible and editable at once on a single combined screen. Press
+      <kbd class="docs-key">CLEAR</kbd> or <kbd class="docs-key">FUNCTION</kbd> to exit.
+    </p>
+    <table class="docs-table man-t-combo">
+      <thead><tr><th>Control</th><th>Setting</th></tr></thead>
+      <tbody>
+        <tr><td>Pattern keys <kbd class="docs-key">1</kbd>&ndash;<kbd class="docs-key">8</kbd></td><td>MIDI channel. Low bank = channels 1&ndash;8, high bank = 9&ndash;16.</td></tr>
+        <tr><td><kbd class="docs-key">D#</kbd></td><td>High-bank latch for the channel keys. LED on while latched.</td></tr>
+        <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> + channel key</td><td>Variation-2 MIDI channel.</td></tr>
+        <tr><td>Hold <kbd class="docs-key">SLIDE</kbd> + channel key</td><td>Variation-3 MIDI channel.</td></tr>
+        <tr><td><kbd class="docs-key">TIME MODE</kbd></td><td>Clock source. LED on = DIN sync, off = MIDI clock.</td></tr>
+        <tr><td><kbd class="docs-key">ACCENT</kbd></td><td>MIDI output mode. LED on = MIDI OUT, off = MIDI THRU.</td></tr>
+        <tr><td><kbd class="docs-key">A#</kbd> + <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd></td><td>LED brightness (1&ndash;8), saved to memory.</td></tr>
+        <tr><td><kbd class="docs-key">G#</kbd></td><td>Switch firmware, superOS &harr; D650C (Combined Edition, section 1).</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ══ COMBINED EDITION ═══════════════════════════════════════ -->
+  <div class="man-part">Combined Edition</div>
+
+  <section id="dual-firmware" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">1</span>
+      <h2 class="docs-sec-title">Two Firmwares in One Box</h2>
+    </div>
+    <p class="docs-body">
+      The Combined Edition holds two complete operating systems and boots one of them at a time:
+    </p>
+    <ul class="docs-list">
+      <li><strong>superOS-303</strong>: the modern OS described in this manual. 64-step patterns, variations, polyphony, scales, MIDI, web editor.</li>
+      <li><strong>D650C</strong>: a bit-perfect emulation of the original TB-303 CPU running the genuine Roland mask ROM. It behaves exactly like a stock 1982 TB-303, including the original write workflow and quirks.</li>
+    </ul>
+
+    <h3 class="man-sub">Switching Firmware</h3>
+    <ol class="docs-ordered-list">
+      <li>Open Menu Mode: hold <kbd class="docs-key">FUNCTION</kbd> and press <kbd class="docs-key">CLEAR</kbd> (works in both firmwares).</li>
+      <li>Look at the <kbd class="docs-key">G#</kbd> LED: solid = superOS is running, blinking = D650C is running.</li>
+      <li>Press <kbd class="docs-key">G#</kbd>. The unit saves everything, waits until all buttons are released, and reboots into the other firmware in about a second.</li>
+    </ol>
+    <p class="docs-body">
+      Both memories are kept: superOS patterns live in flash, D650C patterns in a separate memory.
+      Switching back and forth never erases either side. A watchdog guards the boot and the swap, so a
+      failed start recovers on its own; if the unit ever appears stuck, power-cycle it, the selection is
+      already saved and it will boot into the chosen firmware.
+    </p>
+    <div class="man-note">
+      <strong>Note</strong>
+      Keep your hands off the buttons while it swaps. The firmware waits for a quiet panel before
+      rebooting, so a held key simply delays the swap by a moment.
+    </div>
+  </section>
+
+  <section id="d650c" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">2</span>
+      <h2 class="docs-sec-title">D650C Mode</h2>
+    </div>
+    <p class="docs-body">
+      In D650C mode the unit <em>is</em> a stock TB-303: use the original owner's-manual workflow
+      (pattern clear, pitch mode, time mode with the tap metronome, tracks, chaining, transpose).
+      Nothing from superOS applies here except the additions below.
+    </p>
+
+    <h3 class="man-sub">Loading the D650C Mask ROM</h3>
+    <p class="docs-body">
+      The emulator runs the genuine Roland TB-303 CPU mask ROM. That ROM is copyrighted, so the public
+      firmware ships <strong>without</strong> it: you supply your own 2&nbsp;KB dump (read from your own
+      chip, or a dump you are legally entitled to use) and load it into the unit once. It is kept in
+      permanent on-chip memory and survives firmware updates done over MIDI, so this is a one-time step.
+      Some units come with the ROM already built in, in which case D650C plays immediately and you can
+      skip this.
+    </p>
+    <p class="docs-body">
+      <strong>No ROM yet?</strong> When you switch into D650C mode with no ROM installed, the unit waits
+      for one: the low <kbd class="docs-key">C</kbd> and high <kbd class="docs-key">C</kbd> key LEDs blink
+      back and forth, slowly while it waits and quickly while a ROM is transferring. The web editor's
+      header also shows <em>no mask ROM</em> in red.
+    </p>
+    <ol class="docs-ordered-list">
+      <li>Open the <a href="/editor" class="docs-link">web editor</a> and connect it to the unit over MIDI using a USB-to-DIN MIDI interface.</li>
+      <li>In the <strong>D650C mask ROM</strong> strip, click <strong>Load ROM dump</strong> and pick your file: a raw 2048-byte <code class="docs-code">.bin</code>, or a converted <code class="docs-code">.syx</code> file. The status line confirms the size when it loads.</li>
+      <li>Make sure the unit is in D650C mode (with no ROM it is already waiting there), then click <strong>Send to device</strong>.</li>
+      <li>The key LEDs switch to a fast blink and stay there for the whole operation. The transfer itself is quick (a second or so); most of the wait is the unit writing the ROM into permanent memory, which takes several seconds. When it finishes it reboots straight into the emulator. Done.</li>
+    </ol>
+    <div class="man-note">
+      <strong>Note</strong>
+      You can also click <strong>Save .syx</strong> to convert a <code class="docs-code">.bin</code> dump
+      into a <code class="docs-code">d650c-maskrom.syx</code> file and send it with any SysEx tool (SysEx
+      Librarian, MIDI-OX) while the unit is in D650C mode. The ROM is checksummed on arrival; a bad or
+      interrupted transfer is rejected and the previously installed ROM, if any, is kept.
+    </div>
+
+    <h3 class="man-sub">Pattern Memory</h3>
+    <p class="docs-body">
+      The original battery-backed pattern RAM is replaced by permanent on-chip storage. Patterns save
+      automatically in the background (a second or two after you stop editing or playing) with zero
+      playback stutter. No battery, nothing to do.
+    </p>
+
+    <h3 class="man-sub">Config Menu (<kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">CLEAR</kbd>)</h3>
+    <table class="docs-table man-t-combo">
+      <thead><tr><th>Control</th><th>Setting</th></tr></thead>
+      <tbody>
+        <tr><td><kbd class="docs-key">1</kbd>&ndash;<kbd class="docs-key">8</kbd> (+ <kbd class="docs-key">D#</kbd>)</td><td>MIDI channel 1&ndash;8; tap <kbd class="docs-key">D#</kbd> first (LED lit) for channels 9&ndash;16.</td></tr>
+        <tr><td><kbd class="docs-key">TIME MODE</kbd></td><td>Cycle clock source: internal &rarr; MIDI clock &rarr; DIN sync. TIME LED lit = external source; PITCH LED also lit = DIN sync.</td></tr>
+        <tr><td><kbd class="docs-key">ACCENT</kbd></td><td>Toggle MIDI soft-thru.</td></tr>
+        <tr><td><kbd class="docs-key">A#</kbd> + <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd></td><td>LED brightness 1&ndash;8.</td></tr>
+        <tr><td><kbd class="docs-key">G#</kbd></td><td>Switch to superOS (blinking = D650C is the one running now).</td></tr>
+        <tr><td><kbd class="docs-key">CLEAR</kbd> or <kbd class="docs-key">FUNCTION</kbd></td><td>Exit the menu.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 class="man-sub">MIDI in D650C Mode</h3>
+    <ul class="docs-list">
+      <li>Note out: the sequencer is mirrored to MIDI out with slide legato and accent as velocity 127.</li>
+      <li>Note in: while stopped, incoming notes play the 303 voice live.</li>
+      <li>Clock: slaves to MIDI clock or DIN sync (select in the menu); with the internal clock it sends MIDI clock out.</li>
+      <li>External transport (Start / Stop or the DIN run line) starts and stops the sequencer exactly like the original's sync jack.</li>
+    </ul>
+  </section>
+
+  <section id="pitch-cal" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">3</span>
+      <h2 class="docs-sec-title">Pitch Calibration</h2>
+    </div>
+    <p class="docs-body">
+      Both firmwares use the factory pitch standard from the Roland service notes: the untransposed
+      low <kbd class="docs-key">C</kbd> key puts exactly 1.000&nbsp;V on the CV jack. superOS and D650C
+      play identical pitches for the same key, and MIDI is aligned the same way in both (low
+      <kbd class="docs-key">C</kbd> key = MIDI note 48 / C3).
+    </p>
+    <div class="docs-warning">
+      <strong>Coming from an older superOS build?</strong>
+      Older superOS output sat one semitone above the factory spec. If your instrument was tuned
+      against it, everything will now sound one semitone flat until you turn the front-panel TUNING
+      knob up one semitone, once. After that, both firmwares match each other and a factory-calibrated
+      TB-303.
+    </div>
+  </section>
+
+  <!-- ══ REFERENCE ══════════════════════════════════════════════ -->
+  <div class="man-part">Reference</div>
+
+  <section id="midi-daw" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">1</span>
+      <h2 class="docs-sec-title">MIDI &amp; DAW Control</h2>
+    </div>
+    <p class="docs-body">
+      MIDI runs over the DIN jacks, in both directions:
+    </p>
+    <ul class="docs-list">
+      <li>Sequencer notes out (all three variations on their channels), clock and transport in / out.</li>
+      <li>Live note input while stopped plays the 303 voice; velocity 100 or higher adds accent, and legato playing slides.</li>
+      <li>Pattern remote control: CC&nbsp;0 selects the group (0&ndash;3), CC&nbsp;32 the section (0 = patterns 1&ndash;8, 1 = 9&ndash;16), and a Program Change selects the pattern, matching a DAW's bank / program menus.</li>
+    </ul>
+  </section>
+
+  <section id="web-editor" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">2</span>
+      <h2 class="docs-sec-title">Web Pattern Editor</h2>
+    </div>
+    <p class="docs-body">
+      A browser-based pattern editor is available at <a href="/editor" class="docs-link">superos303.com/editor</a>
+      and as a standalone file in <code class="docs-code">tools/web-pattern-edit/index.html</code> in the
+      repository. Connect over WebMIDI (requires HTTPS or localhost). The editor receives all pattern data
+      from the hardware over SysEx; changes sync both ways instantly, including edits made on the panel.
+    </p>
+    <ul class="docs-list">
+      <li>Edit all 16 patterns of a group: pitch, accent, slide, time (note / tie / rest), step lock, length up to 64 steps (24 in triplet mode), direction, and per-pattern scale.</li>
+      <li>All three variations per slot, including the variation-3 chord editor when poly is on, plus the variation MIDI channel and device configuration.</li>
+      <li>Pattern chains and track editing with live track telemetry.</li>
+      <li>Live playhead chase while the sequencer runs, derived from the incoming MIDI clock and re-anchored at every pattern wrap, so position tracking costs no extra SysEx traffic.</li>
+      <li>Shows which firmware is running and its version, and can switch the unit between superOS and D650C.</li>
+      <li>Back up all patterns to a file and restore them, recommended before any firmware update.</li>
+    </ul>
+  </section>
+
+  <section id="storage" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">3</span>
+      <h2 class="docs-sec-title">Pattern Storage</h2>
+    </div>
+    <p class="docs-body">
+      superOS patterns, tracks, and settings live in a large wear-levelled area of chip flash rather
+      than the tiny hardware EEPROM. There is no manual save step:
+    </p>
+    <ul class="docs-list">
+      <li>Saves happen on transport stop and about two seconds after you stop editing, on the panel or in the web editor.</li>
+      <li>Every pattern slot stores all three variations and, where enabled, the variation-3 chord data.</li>
+      <li>Patterns, tracks, and settings survive firmware updates done over MIDI, except for the occasional update that moves the storage layout. v1.0-beta is one of those, so back up before installing it (see Firmware Update).</li>
+      <li>D650C mode keeps its own separate pattern memory; the two never overwrite each other.</li>
+    </ul>
+  </section>
+
+  <section id="firmware-update" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">4</span>
+      <h2 class="docs-sec-title">Firmware Update</h2>
+    </div>
+    <p class="docs-body">
+      Updates are one SysEx file over MIDI; no programmer needed. Release files are self-contained,
+      so any SuperOS-303 CPU with the bootloader can take them.
+    </p>
+    <h3 class="man-sub">From the Web Editor (Recommended)</h3>
+    <p class="docs-body">
+      With the unit connected, press <strong>Update OS&hellip;</strong> in the web editor and pick the
+      release <code class="docs-code">.syx</code> file. The editor checks the file, saves pending
+      edits, reboots the unit into the bootloader, and sends the update by itself; the unit restarts
+      into the new firmware when it finishes. No button combo and no other software needed.
+    </p>
+    <h3 class="man-sub">With a SysEx Tool</h3>
+    <ol class="docs-ordered-list">
+      <li>Enter the bootloader: hold <kbd class="docs-key">TAP</kbd> (WRITE/NEXT) while powering on, or send SysEx <code class="docs-code">F0 7D 4A F7</code> to the running unit (works in both firmwares). Four LEDs light solid: the device is in the bootloader.</li>
+      <li>Send the release <code class="docs-code">.syx</code> file over MIDI with a SysEx tool that supports a delay between messages (e.g. SysEx Librarian, ~50&nbsp;ms).</li>
+      <li>The unit reboots into normal operation by itself when the file ends.</li>
+    </ol>
+    <p class="docs-body">
+      On units still running the <strong>original OS-303 bootloader</strong>, the SysEx entry command
+      is not available: hold <kbd class="docs-key">TAP</kbd> (WRITE/NEXT) while powering on. Once the
+      four LEDs are lit, the web editor's <strong>Update OS&hellip;</strong> button (or any SysEx
+      tool) sends the update through that bootloader unchanged; the release file never touches the
+      bootloader itself.
+    </p>
+    <p class="docs-body">
+      If the upload fails and the LEDs stay stuck, it is safe to power-cycle and try again. Stored
+      patterns are never touched by the bootloader.
+    </p>
+    <div class="docs-warning">
+      <strong>Caution</strong>
+      Back up your patterns over SysEx before updating, and do not disconnect power mid-update unless
+      the update has already failed. <strong>Updating to v1.0-beta moves the pattern storage layout
+      (from v0.9.9c or any earlier version), so its first boot starts with empty superOS patterns.</strong>
+      Back up with the web editor first and restore afterwards. Updates that do not move the
+      layout keep everything. D650C patterns and any installed mask ROM are stored separately and are
+      not affected. See Precautions at the front of this manual.
+    </div>
+  </section>
+
+  <section id="quick-reference" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">5</span>
+      <h2 class="docs-sec-title">Quick Reference</h2>
+    </div>
+
+    <p class="docs-label">Writing &middot; Pattern Write</p>
+    <table class="docs-table man-t-combo">
+      <tbody>
+        <tr><td>Hold pattern key + <kbd class="docs-key">CLEAR</kbd></td><td>Erase that pattern slot</td></tr>
+        <tr><td><kbd class="docs-key">PITCH MODE</kbd> / <kbd class="docs-key">TIME MODE</kbd></td><td>Write pitches / rhythm</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">STEP</kbd> (taps)</td><td>Count out the pattern length</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + black key, white key</td><td>Set length directly (section, to 32)</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">SLIDE</kbd>, then step</td><td>Length into the B section (33&ndash;64, links the pair)</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">WRITE/NEXT</kbd> / <kbd class="docs-key">BACK</kbd></td><td>Length +1 / &minus;1</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd></td><td>Double / halve the length</td></tr>
+        <tr><td><kbd class="docs-key">TIME MODE</kbd>: <kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">UP</kbd></td><td>Triplet mode on / off</td></tr>
+        <tr><td>Hold <kbd class="docs-key">WRITE/NEXT</kbd> (in pitch / time mode)</td><td>Step edit (release = next step)</td></tr>
+        <tr><td>Hold <kbd class="docs-key">WRITE/NEXT</kbd> (normal mode) + <kbd class="docs-key">C</kbd> / <kbd class="docs-key">D</kbd> / <kbd class="docs-key">E</kbd></td><td>Pick edit variation 1 / 2 / 3</td></tr>
+        <tr><td>&hellip; + <kbd class="docs-key">E</kbd>, then <kbd class="docs-key">SLIDE</kbd> (stopped)</td><td>Variation 3 poly on / off (LED lit = poly)</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">ACCENT</kbd></td><td>Scale mode (<kbd class="docs-key">FUNCTION</kbd> + note = presets)</td></tr>
+      </tbody>
+    </table>
+
+    <p class="docs-label">Transform &middot; Hold Clear</p>
+    <table class="docs-table man-t-combo">
+      <tbody>
+        <tr><td>+ <kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd></td><td>Randomize / mutate pattern</td></tr>
+        <tr><td>+ <kbd class="docs-key">DOWN</kbd> / <kbd class="docs-key">UP</kbd></td><td>Rotate time data left / right</td></tr>
+        <tr><td>+ <kbd class="docs-key">PITCH MODE</kbd> + <kbd class="docs-key">DOWN</kbd> / <kbd class="docs-key">UP</kbd></td><td>Rotate pitch data left / right</td></tr>
+        <tr><td>+ <kbd class="docs-key">BACK</kbd> / <kbd class="docs-key">WRITE/NEXT</kbd></td><td>Shift everything left / right</td></tr>
+        <tr><td>+ <kbd class="docs-key">F#</kbd> / <kbd class="docs-key">G#</kbd> / <kbd class="docs-key">A#</kbd></td><td>Reverse / clear pitches / clear time</td></tr>
+        <tr><td>+ <kbd class="docs-key">PITCH MODE</kbd> + <kbd class="docs-key">C</kbd>&hellip;<kbd class="docs-key">A</kbd></td><td>Randomize one attribute (see Pattern Editing 2)</td></tr>
+        <tr><td>+ <kbd class="docs-key">C#</kbd> / <kbd class="docs-key">D#</kbd> + pattern key</td><td>Copy / paste pattern</td></tr>
+        <tr><td>+ <kbd class="docs-key">TIME MODE</kbd> (running, Pattern Write)</td><td>Metronome tap-write on / off</td></tr>
+      </tbody>
+    </table>
+
+    <p class="docs-label">Performance</p>
+    <table class="docs-table man-t-combo">
+      <tbody>
+        <tr><td>Pattern key (tap / hold, running)</td><td>Queue pattern / loop that pattern</td></tr>
+        <tr><td>Hold pattern key + more keys</td><td>Build a chain (up to 4)</td></tr>
+        <tr><td>Hold <kbd class="docs-key">ACCENT</kbd> + <kbd class="docs-key">SLIDE</kbd> + pattern keys</td><td>Build a chain in any order (repeats allowed)</td></tr>
+        <tr><td>&hellip; + <kbd class="docs-key">WRITE/NEXT</kbd>, or build + <kbd class="docs-key">FUNCTION</kbd></td><td>Save the chain on its first pattern (recalled on select)</td></tr>
+        <tr><td><kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd></td><td>Section A / Section B (leaves A/B mode)</td></tr>
+        <tr><td>Hold one section button + press the other</td><td>A/B mode on: every selected pattern plays A then B (64 steps)</td></tr>
+        <tr><td>Hold pattern key + <kbd class="docs-key">FUNCTION</kbd> (A/B mode on)</td><td>Save the A/B mode on that pattern (recalled on select)</td></tr>
+        <tr><td>Hold pattern key + <kbd class="docs-key">FUNCTION</kbd> (A/B mode off)</td><td>Clear that pattern's saved A/B memory and stored chain</td></tr>
+        <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> + <kbd class="docs-key">CLEAR</kbd> (PITCH/TIME MODE, running)</td><td>Pin live edits to section A / B (mode LED solid / blinking)</td></tr>
+        <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> or <kbd class="docs-key">TIME MODE</kbd> + <kbd class="docs-key">CLEAR</kbd> (step-select)</td><td>Flip the edited section A / B (sub-mode LED solid / blinking)</td></tr>
+        <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> + key</td><td>Transpose (+ <kbd class="docs-key">UP</kbd> / <kbd class="docs-key">DOWN</kbd> = octave)</td></tr>
+        <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> + <kbd class="docs-key">ACCENT</kbd> / <kbd class="docs-key">SLIDE</kbd></td><td>Force accent / slide (running)</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">PITCH MODE</kbd> (Pattern Write)</td><td>Step-select editing</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">PITCH MODE</kbd> (Pattern Play)</td><td>Keyboard play mode (<kbd class="docs-key">TIME MODE</kbd> = octave latch)</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">TIME MODE</kbd></td><td>Playback direction selector</td></tr>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">SLIDE</kbd> (Pattern Write)</td><td>Step probability editor (variation 1)</td></tr>
+      </tbody>
+    </table>
+
+    <p class="docs-label">Track &middot; Track Write / Track Play</p>
+    <table class="docs-table man-t-combo">
+      <tbody>
+        <tr><td><kbd class="docs-key">WRITE/NEXT</kbd> (running)</td><td>Write current pattern to the bar, advance</td></tr>
+        <tr><td><kbd class="docs-key">CLEAR</kbd>, then <kbd class="docs-key">WRITE/NEXT</kbd></td><td>Write the final bar, return to bar 1</td></tr>
+        <tr><td>Hold <kbd class="docs-key">PITCH MODE</kbd> + key</td><td>Set the bar's transpose</td></tr>
+        <tr><td><kbd class="docs-key">WRITE/NEXT</kbd> / <kbd class="docs-key">BACK</kbd> (stopped)</td><td>Review bars forward / backward</td></tr>
+        <tr><td><kbd class="docs-key">CLEAR</kbd> (stopped)</td><td>Back to bar 1</td></tr>
+      </tbody>
+    </table>
+
+    <p class="docs-label">System</p>
+    <table class="docs-table man-t-combo">
+      <tbody>
+        <tr><td><kbd class="docs-key">FUNCTION</kbd> + <kbd class="docs-key">CLEAR</kbd></td><td>Menu mode (MIDI channels, sync, brightness)</td></tr>
+        <tr><td>&hellip; then <kbd class="docs-key">G#</kbd></td><td>Switch firmware, superOS &harr; D650C (solid = superOS, blinking = D650C)</td></tr>
+        <tr><td>&hellip; hold <kbd class="docs-key">PITCH MODE</kbd> / <kbd class="docs-key">SLIDE</kbd> + channel key</td><td>Variation 2 / 3 MIDI channel</td></tr>
+        <tr><td>Hold <kbd class="docs-key">TAP</kbd> at power-on, or SysEx <code class="docs-code">F0 7D 4A F7</code></td><td>Bootloader for firmware update</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="specifications" class="docs-section">
+    <div class="docs-sec-head">
+      <span class="docs-sec-num">6</span>
+      <h2 class="docs-sec-title">Specifications</h2>
+    </div>
+    <ul class="man-spec">
+      <li>
+        <span class="man-spec-name">Patterns</span>
+        64 slots: 4 groups &times; 8 patterns, each with A and B sections of 1&ndash;32 steps
+        (1&ndash;24 in triplet mode). In A/B mode a slot plays as one pattern of up to 64 steps,
+        and the mode can be saved per pattern so it comes back on select. Per step: pitch over a
+        four-octave range, accent, slide, live step lock.
+      </li>
+      <li>
+        <span class="man-spec-name">Variations</span>
+        3 independent sequences per pattern slot, playing simultaneously: variation 1 on the analog
+        voice + MIDI, variations 2 and 3 on their own MIDI channels. Variation 3 optionally
+        polyphonic with chords of up to 4 notes per step. Per-variation length, direction,
+        transpose, and scale.
+      </li>
+      <li>
+        <span class="man-spec-name">Scales</span>
+        Per-pattern non-destructive scale filter over the 12 pitch classes, with 35 presets
+        (major, minors, modes, pentatonics, blues, and more).
+      </li>
+      <li>
+        <span class="man-spec-name">Playback</span>
+        Six directions: forward, reverse, ping-pong, random, half random, Brownian.
+        Chains of up to 4 patterns, saveable per pattern and recalled on select or power-on.
+        Non-destructive transpose and force accent / slide. Keyboard play mode with legato slide.
+        Metronome tap-write with looping record/overdub session, timing-matched cycle-exact to the
+        original mask ROM.
+      </li>
+      <li>
+        <span class="man-spec-name">Probability</span>
+        Per-step probability on variation 1: independent accent, slide, octave-down, and octave-up
+        (or double-up) characteristics, each with its own 1&ndash;13 level, rolled fresh every step.
+      </li>
+      <li>
+        <span class="man-spec-name">Tracks</span>
+        8 track slots (2 per group), up to 64 bars each, with per-bar pattern and transpose.
+      </li>
+      <li>
+        <span class="man-spec-name">MIDI</span>
+        DIN MIDI, in and out. Three note channels
+        (main + variation 2 + variation 3). Clock sync from MIDI or DIN sync. Switchable MIDI
+        OUT / THRU. Pattern remote control via CC&nbsp;0 / CC&nbsp;32 / Program Change. SysEx pattern
+        transfer for the web editor and backups; firmware updates and firmware version reporting
+        over SysEx.
+      </li>
+      <li>
+        <span class="man-spec-name">Memory</span>
+        Patterns, tracks, and settings in wear-levelled on-chip flash, retained without power and
+        across firmware updates. Automatic background saves on stop and after edits; no manual
+        save step.
+      </li>
+      <li>
+        <span class="man-spec-name">Combined Edition</span>
+        Dual-boot image: superOS-303 plus a cycle-accurate D650C emulator running the genuine
+        TB-303 mask ROM, each with its own pattern memory. Panel or SysEx firmware switching with
+        watchdog-guarded boot.
+      </li>
+      <li>
+        <span class="man-spec-name">Hardware</span>
+        VOX DEI CPU by Michigan Synth Works (AT90USB1286, Teensy++ 2.0 compatible), a drop-in
+        replacement for the TB-303's original CPU. Factory pitch standard: low C = 1.000&nbsp;V CV,
+        MIDI note 48.
+      </li>
+      <li>
+        <span class="man-spec-name">License</span>
+        Open source under the MIT License. Fork of DJ Phazer's OS-303.
+      </li>
+    </ul>
+  </section>
+
+  <!-- ── Footer ─────────────────────────────────────────────────── -->
+  <footer class="man-footer">
+    <p>superOS-303 Firmware Owner's Manual, Combined Edition v1.0-beta. Fork of DJ Phazer's open-source OS-303 (MIT License), built for the VOX DEI CPU by Nicholas Michalek / Michigan Synth Works. D650C mode runs the genuine TB-303 mask ROM via a cycle-accurate uCOM-43 core.</p>
+    <p>Roland and TB-303 are trademarks of Roland Corporation, used solely to identify compatibility. This project and site are not affiliated with, endorsed, or sponsored by Roland Corporation.</p>
+  </footer>
+
+</div>
