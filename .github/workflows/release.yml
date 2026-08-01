@@ -4,11 +4,12 @@ name: Release
 # builds the firmware and publishes a GitHub release with the one-file update
 # .syx, the full ISP .hex, and RELEASE_NOTES.md as the body.
 #
-# FIRMWARE_ENV selects the shipped build. combined-nousbc is the public
-# build: no USB-C, compatible with the ORIGINAL OS-303 bootloader (no
-# watchdog resets), and copyright-clean (no embedded D650C mask ROM; users
-# upload their own over DIN SysEx). combined-norom is the USB-C variant,
-# same ROM-clean policy. Never ship a ROM-embedded env publicly.
+# FIRMWARE_ENV selects the shipped build. This branch ships combined-nousbc,
+# the public no-USB-C build: DIN only, compatible with the ORIGINAL OS-303
+# bootloader (no watchdog resets), and copyright-clean (no embedded D650C
+# mask ROM; users upload their own over DIN SysEx). The USB-C build
+# (combined-norom) ships from the combined650csuperOS branch. Never ship a
+# ROM-embedded env publicly.
 
 on:
   push:
