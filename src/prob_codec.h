@@ -1,8 +1,8 @@
 #pragma once
 // prob_codec.h -- step-probability table storage codec (variation 1).
 //
-// Split out of persistent_settings.h so it can be exercised on the host
-// (tools/prob_hosttest.cpp). Include AFTER the FB_PROB_* constants, MAX_STEPS
+// Split out of persistent_settings.h so it can be exercised on the host.
+// Include AFTER the FB_PROB_* constants, MAX_STEPS
 // and the g_flash instance are in scope.
 
 // Probability tables: 3 bytes/step in RAM, sparse on flash. See the region
