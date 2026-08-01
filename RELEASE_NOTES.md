@@ -32,7 +32,7 @@ programmer needed.
 - **`.hex`**: full image (firmware + flash service + bootloader) for ISP
   programming of a blank CPU.
 - **D650C mode** ships without the mask ROM. Load your own dump from the web
-  editor ("Load ROM dump": a raw 2048-byte .bin or an RE-303-format .syx);
+  editor ("Load ROM dump": a raw 2048-byte .bin or a nibble-format .syx);
   superOS mode works fully without it.
 
 ## New since v0.9.9c

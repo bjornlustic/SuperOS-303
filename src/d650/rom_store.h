@@ -3,14 +3,14 @@
 //
 // The D650_ROM_IN_RAM build ships WITHOUT the (copyrighted) D650C mask ROM. The
 // user dumps their own chip (or uses a dump they are legally entitled to) and
-// uploads it over DIN MIDI in the RE-303/recpu nibble format:
+// uploads it over DIN MIDI in the following nibble format:
 //
 //   F0 7D 03 03 7E 03 <blk> <2048 nibbles hi,lo> <ck hi> <ck lo> F7   blk = 0,1
 //   F0 7D 03 03 7F 00 F7                                              end mark
 //
 // Each block carries 1024 ROM bytes; <ck> is the sum of those decoded bytes
 // mod 256. The web editor converts a raw 2048-byte .bin dump into this format
-// (or forwards an existing recpu-format .syx).
+// (or forwards an existing .syx already in this format).
 //
 // Storage: internal EEPROM (combined.h map). Data at EE_ROM_DATA, sum16 at
 // EE_ROM_SUM, magic byte at EE_ROM_MAGIC written LAST, so a torn upload can
