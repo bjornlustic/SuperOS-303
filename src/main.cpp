@@ -18,6 +18,7 @@
 // Combined build: combined.cpp owns the real setup/loop and dispatches here
 // or to the d650c emulator per the EEPROM firmware-select byte.
 #include "combined.h"
+#include <avr/eeprom.h>
 // avr-gcc ships no <new>; placement new for the g_fw_arena Engine.
 inline void *operator new(size_t, void *p) noexcept { return p; }
 #define setup superos_setup
@@ -843,6 +844,28 @@ static void process_config_menu() {
     midi_flush_pending_pattern_saves(engine);
     combined_switch_firmware(FW_D650);   // does not return
   }
+
+#ifdef SUPEROS_OLD_BOOTLOADER
+  // nousbc builds only: the USB combined build sits ~50 bytes under the
+  // flash-EEPROM arena base and this block does not fit.
+  // C# held 2 s = factory reset. Wipes the flash arena (patterns, variations,
+  // poly, tracks, probability tables, settings) and invalidates the d650 EEPROM
+  // magic (its settings + uPD444 store re-default on its next boot). The mask
+  // ROM at EE_ROM_DATA is keyed by EE_ROM_MAGIC and survives. Reboots; both
+  // sides then run their normal first-install clean-init paths.
+  static uint32_t s_cfg_fr_hold = 0;
+  if (inputs[CSHARP_KEY].held()) {
+    if (s_cfg_fr_hold == 0) s_cfg_fr_hold = millis();
+    Leds::Set(CSHARP_KEY_LED, bool((millis() >> 6) & 1)); // fast-blink warning
+    if (millis() - s_cfg_fr_hold >= 2000) {
+      g_flash.format();
+      eeprom_update_byte(EE_EMU_MAGIC, 0xFF);
+      combined_switch_firmware(FW_SUPEROS);   // reboot; does not return
+    }
+  } else {
+    s_cfg_fr_hold = 0;
+  }
+#endif
 #endif
 
   if (inputs[CLEAR_KEY].rising()) {
