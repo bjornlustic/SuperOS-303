@@ -638,7 +638,7 @@
       <span class="lbl">D650C mask ROM</span>
       <div class="group-inner" style="gap:6px;flex-wrap:wrap">
         <button class="btn" id="btnRomLoad"
-          title="The original TB-303 (D650C) mask ROM is copyrighted and is NOT distributed with SuperOS. Load your own dump: a raw 2048-byte .bin, or a recpu/RE-303-format .syx">&#8593; Load ROM dump</button>
+          title="The original TB-303 (D650C) mask ROM is copyrighted and is NOT distributed with SuperOS. Load your own dump: a raw 2048-byte .bin or a nibble-format .syx">&#8593; Load ROM dump</button>
         <input type="file" id="fileRom" accept=".bin,.syx" style="display:none" />
         <span id="romStatus" style="font-size:11px;font-weight:600;color:var(--gray-4)"
           title="File loaded into this converter (the chip in the MIDI strip shows what is installed on the device)">no file loaded</span>
@@ -3613,7 +3613,7 @@
     }, 100);
   }
 
-  // ── D650C mask ROM: convert + upload (SysEx, recpu/RE-303 nibble format) ──
+  // ── D650C mask ROM: convert + upload (SysEx, nibble-format .syx) ──
   //   F0 7D 03 03 7E 03 <blk> <2048 nibbles hi,lo> <ck hi> <ck lo> F7  (blk 0,1)
   //   F0 7D 03 03 7F 00 F7                                             (end)
   // ck = sum of the block's 1024 decoded bytes, mod 256. Byte-exact to the
@@ -3695,8 +3695,8 @@
       try {
         var rom;
         if (bytes.length === ROM_SIZE) rom = bytes;             // raw dump
-        else if (bytes[0] === 0xf0)    rom = romParseSyx(bytes); // recpu-format syx
-        else throw 'expected a raw 2048-byte .bin or a recpu-format .syx (got ' + bytes.length + ' bytes)';
+        else if (bytes[0] === 0xf0)    rom = romParseSyx(bytes); // nibble-format syx
+        else throw 'expected a raw 2048-byte .bin or a nibble-format .syx (got ' + bytes.length + ' bytes)';
         romLoaded(rom, f.name);
       } catch (e) {
         maskRom = null;
