@@ -1968,6 +1968,10 @@
                          fram:   'FRAM board (v1.2b)' };
   var FW_RELEASE_URL = 'https://github.com/bjornlustic/SuperOS-303/releases/latest';
   var hwVariant = '';   // build variant from the version suffix ('' = not reported)
+  // Parsed update held back after a failed automatic bootloader entry (original
+  // OS-303 bootloader): the user powers up holding WRITE/NEXT and sends it from
+  // the banner, with no second download and no file picker.
+  var osUpdPending = null;
   var hwOldWire = false;   // a 0x11 arrived in the pre-1.1.0 (52-byte) shape
   var hwWireOk  = false;   // a 0x11 parsed at the current PATTERN_SIZE
   // Compare dotted numeric versions; a pre-release suffix ('-beta') is ignored,
@@ -2007,7 +2011,9 @@
         'background:none;color:#fff;">&times;</button>';
       el.style.position = 'sticky';
       document.body.insertBefore(el, document.body.firstChild);
-      el.querySelector('#fwUpdateGo').onclick = function() { fwBrowserUpdate(); };
+      el.querySelector('#fwUpdateGo').onclick = function() {
+        if (osUpdPending) fwSendPending(); else fwBrowserUpdate();
+      };
       el.querySelector('#fwUpdateX').onclick = function() {
         try { localStorage.setItem(fwBannerKey(el.dataset.kind), '1'); } catch (e) {}
         el.style.display = 'none';
@@ -2017,7 +2023,14 @@
     var behind = deviceMode === 'superos' && !!hwVersion &&
                  cmpVersion(hwVersion, LATEST_FW_VERSION) < 0;
     var kind = '', bg = '', msg = '';
-    if (deviceMode === 'superos' && hwOldWire) {
+    if (osUpdPending) {
+      // Automatic entry failed; the file is loaded and waiting for a manual one.
+      // Shown whatever the device mode reads as - after 0x4A it reads 'unknown'.
+      kind = 'pending'; bg = '#b36b00';
+      msg = 'Update ready to send. Your 303 cannot be put into update mode over MIDI ' +
+            '(original OS-303 bootloader): power it OFF, hold WRITE/NEXT while powering ' +
+            'it back ON until the four mode LEDs are lit solid, then press Send to bootloader.';
+    } else if (deviceMode === 'superos' && hwOldWire) {
       kind = 'wire'; bg = '#cc0000';
       msg = 'Your 303 firmware' + (hwVersion ? ' (v' + hwVersion + ')' : '') +
         ' uses the pre-1.1.0 pattern format, so patterns cannot be read or written from this editor. ' +
@@ -2037,9 +2050,32 @@
     el.dataset.kind = kind;
     el.style.background = bg;
     el.querySelector('#fwUpdateText').textContent = msg;
-    el.querySelector('#fwUpdateGo').style.display = midiOut ? '' : 'none';
+    var go = el.querySelector('#fwUpdateGo');
+    go.style.display = midiOut ? '' : 'none';
+    go.textContent = osUpdPending ? 'Send to bootloader' : 'Update now';
+    go.title = osUpdPending
+      ? 'The update file is loaded. Power the 303 off, hold WRITE/NEXT while powering it ' +
+        'back on (four mode LEDs solid), then press this.'
+      : 'Download the matching firmware and install it over MIDI';
     el.style.display = 'block';
   }
+  // The unit is in its bootloader now (user powered up holding WRITE/NEXT), so
+  // stream the held file straight out: no 0x4A, no waiting for a port to appear.
+  function fwSendPending() {
+    if (!midiOut || osUpd || !osUpdPending) return;
+    if (!confirm('Send "' + osUpdPending.name + '" to a 303 that is in its bootloader NOW?\n\n' +
+                 'The four mode LEDs must be lit solid (power off, hold WRITE/NEXT, power on).\n' +
+                 osUpdPending.pages + ' flash pages will be written on output "' +
+                 (midiOut.name || midiOut.id) + '".\n\n' +
+                 'Do not power off the unit while the update runs.')) return;
+    osUpd = { msgs: osUpdPending.msgs, pages: osUpdPending.pages, name: osUpdPending.name,
+              origOut: midiOut, port: midiOut, sent: 0, t0: Date.now() };
+    osUpdPending = null;
+    checkFirmwareUpToDate();
+    osUpdateStatus('Updating OS: 0%');
+    setTimeout(osUpdateTick, 100);
+  }
+
   // Banner action: fetch the newest *-update.syx from this site and run the same
   // bootloader stream the "Update OS..." button uses. Without that file (or with
   // no network) fall back to the release page and the file picker.
@@ -6063,13 +6099,16 @@
       if (!osUpd.port) {
         if (Date.now() - osUpd.t0 > OS_BOOT_WAIT_MS) {
           if (osUpd.appAlive) {
+            osUpdPending = { msgs: osUpd.msgs, pages: osUpd.pages, name: osUpd.name };
             osUpdateStatus('Update aborted: the 303 never entered its bootloader');
             log('OS update: the 303 kept answering status requests after 0x4A, so it is ' +
                 'still running the app and would ignore every page message. Units with the ' +
-                'ORIGINAL OS-303 bootloader cannot be put into update mode over MIDI: power ' +
-                'the unit off, hold WRITE/NEXT while powering it back on (the four mode LEDs ' +
-                'light solid), then press Update OS... and pick the file. Nothing was written.',
+                'ORIGINAL OS-303 bootloader cannot be put into update mode over MIDI. ' +
+                'Nothing was written. To finish: power the unit OFF, hold WRITE/NEXT while ' +
+                'powering it back ON (the four mode LEDs light solid), then press ' +
+                '"Send to bootloader" in the banner - the file is still loaded here.',
                 'log-err');
+            checkFirmwareUpToDate();   // relabel the banner button
           } else {
             osUpdateStatus('Update aborted: bootloader never appeared');
             log('OS update: no bootloader port after ' + OS_BOOT_WAIT_MS + ' ms. ' +
