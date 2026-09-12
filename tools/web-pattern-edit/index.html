@@ -1953,15 +1953,16 @@
   var LATEST_FW_VERSION = '1.1.2';
   // The banner NOTIFIES and links to the release; it does not install anything.
   // Browser-side installing was removed on 2026-09-11: automatic bootloader
-  // entry (0x4A) does not exist on original OS-303 bootloader units, and the
-  // images are per-board, so people were offered updates they could not apply
-  // or should not apply. Firmware updates are a manual step again: download the
-  // file for YOUR board and send it with "Update OS..." or a SysEx tool.
+  // entry (0x4A) does not exist on original OS-303 bootloader units, so people
+  // were offered updates they could not apply. Firmware updates are a manual
+  // step again: download the file and send it with "Update OS..." or a SysEx
+  // tool, with the unit powered up into its bootloader.
   var FW_RELEASE_URL = 'https://github.com/bjornlustic/SuperOS-303/releases/latest';
-  var FW_VARIANTS    = { nousbc: 'no USB-C (original CPU board)',
-                         usbc:   'USB-C board',
-                         fram:   'FRAM board (v1.2b)' };
-  var hwVariant = '';   // build variant from the version suffix ('' = not reported)
+  // The 0x21 version tail can carry a "+tag" naming the build. It is parsed off
+  // so the tag never lands in a version comparison, and deliberately NOT shown:
+  // naming builds in the banner only raised "which one do I have?". (The v1.2b
+  // bench UI keys on "fram" appearing in the version string, not on this.)
+  var hwVariant = '';   // build tag from the version suffix ('' = not reported)
   var hwOldWire = false;   // a 0x11 arrived in the pre-1.1.0 (52-byte) shape
   var hwWireOk  = false;   // a 0x11 parsed at the current PATTERN_SIZE
   // Compare dotted numeric versions; a pre-release suffix ('-beta') is ignored,
@@ -2022,9 +2023,8 @@
         'this notice clears by itself once a pattern reads back correctly.';
     } else if (behind) {
       kind = 'behind'; bg = '#333';
-      msg = 'Firmware v' + LATEST_FW_VERSION + ' is available (your 303 reports v' + verCore(hwVersion) +
-        (hwVariant ? ', ' + (FW_VARIANTS[hwVariant] || hwVariant) : '') +
-        '). Download it for your board and send it with "Update OS..." below.';
+      msg = 'Firmware v' + LATEST_FW_VERSION + ' is available (your 303 reports v' +
+        verCore(hwVersion) + '). Download it and send it with "Update OS..." below.';
     }
     if (!kind || fwBannerDismissed(kind)) { el.style.display = 'none'; return; }
     el.dataset.kind = kind;
