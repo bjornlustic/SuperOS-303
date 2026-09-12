@@ -1233,7 +1233,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.2c (2026-09-12)';
+  var EDITOR_VERSION = '1.1.2d (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -2046,7 +2046,7 @@
       kind = 'pending'; bg = '#b36b00';
       msg = 'Update downloaded and ready to send. Your 303 cannot be put into update mode ' +
             'over MIDI, so do it by hand: power it OFF, hold WRITE/NEXT while powering it ' +
-            'back ON until the four mode LEDs are lit solid, then press Send to 303.';
+            'back ON until TIME, PITCH, FUNCTION and the A# key LED are lit, then press Send to 303.';
     } else if (deviceMode === 'superos' && hwOldWire) {
       kind = 'wire'; bg = '#cc0000';
       msg = 'Your 303 firmware' + (hwVersion ? ' (v' + hwVersion + ')' : '') +
@@ -2074,7 +2074,7 @@
                    : fwOfferable() ? 'Update now' : 'Get the update';
     go.title = osUpdPending
       ? 'The update is downloaded. Power the 303 off, hold WRITE/NEXT while powering it ' +
-        'back on (four mode LEDs solid), then press this.'
+        'back on (TIME, PITCH, FUNCTION and the A# key LED lit), then press this.'
       : fwOfferable() ? 'Download the update and install it over MIDI'
                       : 'Open the release page';
     el.style.display = 'block';
@@ -2084,7 +2084,8 @@
   function fwSendPending() {
     if (!midiOut || osUpd || !osUpdPending) return;
     if (!confirm('Send the v' + LATEST_FW_VERSION + ' update to your 303 now?\n\n' +
-                 'The four mode LEDs must be lit solid (power off, hold WRITE/NEXT, power on).\n' +
+                 'TIME, PITCH, FUNCTION and the A# key LED must be lit (power off, hold ' +
+                 'WRITE/NEXT, power on).\n' +
                  osUpdPending.pages + ' flash pages (' +
                  Math.ceil(osUpdPending.pages * osPageGap(midiOut) / 60000) + ' min) on output "' +
                  (midiOut.name || midiOut.id) + '".\n\n' +
@@ -6119,7 +6120,7 @@
                 'still running the app and would ignore every page message. Units with the ' +
                 'ORIGINAL OS-303 bootloader cannot be put into update mode over MIDI. ' +
                 'Nothing was written. To finish: power the unit OFF, hold WRITE/NEXT while ' +
-                'powering it back ON (the four mode LEDs light solid), then press ' +
+                'powering it back ON (TIME, PITCH, FUNCTION and the A# key LED light up), then press ' +
                 '"Send to 303" in the banner - the update is still loaded here.', 'log-err');
             checkFirmwareUpToDate();   // relabel the banner button
           } else {
@@ -6141,8 +6142,9 @@
       osUpd = null;
       osUpdateStatus('Update sent - the unit is rebooting');
       log('OS update: ' + name + ' sent completely; the unit reboots into the new firmware. ' +
-          'The mode LEDs cycle while the bootloader writes pages - if they never moved, ' +
-          'nothing was written: see the bootloader note above.', 'log-ack');
+          'Those four LEDs count up in binary while pages are written: still moving means it is ' +
+          'still working, stuck on one pattern means the stream stopped reaching the unit ' +
+          '(power cycle and try again), never moved at all means nothing was written.', 'log-ack');
       return;
     }
     try {
@@ -6188,7 +6190,7 @@
          'Do not power off the unit while the update runs.')
       : ('Send "' + name + '" to a unit already in the bootloader?\n\n' +
          'This assumes the unit is in bootloader mode NOW (hold WRITE/NEXT ' +
-         'while powering on; four mode LEDs lit solid) on output "' +
+         'while powering on; TIME, PITCH, FUNCTION and the A# key LED lit) on output "' +
          (midiOut.name || midiOut.id) + '".\n' +
          parsed.pages + ' flash pages will be written (' + mins + ').\n\n' +
          'Do not power off the unit while the update runs.');
