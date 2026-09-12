@@ -38,6 +38,7 @@
       min-width: 0;
     }
     .logo { font-size: clamp(20px, 4.5vw, 30px); font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase; line-height: 1; }
+    .logo-ver { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: var(--gray-4); padding-bottom: 3px; margin-left: auto; flex-shrink: 0; }
     .logo-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gray-4); padding-bottom: 2px; flex-shrink: 0; }
 
     /* ── Banner ── */
@@ -574,6 +575,7 @@
   <header class="header">
     <div class="logo">SuperOS&#x2011;303</div>
     <div class="logo-sub">Pattern Editor</div>
+    <div class="logo-ver" id="editorVersion" title="Editor build - quote this when reporting a bug"></div>
   </header>
 
   <div id="downloadToast"></div>
@@ -1227,8 +1229,16 @@
     pitchEditorFullRange = localStorage.getItem(LS_PITCH_MODE) === 'full';
   } catch (e) { /* ignore */ }
 
+  // Editor build, shown in the header and logged on start: bug reports that
+  // quote it say exactly which page the user is running, and a stale tab is
+  // obvious (the page is served no-cache, but an already-open tab keeps its JS
+  // until it is reloaded).
+  var EDITOR_VERSION = '1.1.2b (2026-09-12)';
+
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
+
+  document.getElementById('editorVersion').textContent = 'editor ' + EDITOR_VERSION;
 
   // ── Logging ────────────────────────────────────────────────────────
   var logEntries = 0;
@@ -1242,6 +1252,7 @@
     logEntries++;
     document.getElementById('logCount').textContent = logEntries;
   }
+  log('SuperOS-303 editor ' + EDITOR_VERSION + ' - quote this build when reporting a bug', 'log-edit');
   function logEditHistory(action, g, p) {
     if (typeof history === 'undefined' || !history[0]) return;
     if (g === undefined) g = activeGroup;
