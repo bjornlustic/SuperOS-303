@@ -725,6 +725,10 @@
           title="Save the loaded dump as a .syx in the format the device accepts">&#8595; Save .syx</button>
         <button class="btn" id="btnRomSend" disabled
           title="Send the ROM to the device over MIDI (USB-C or DIN). The device must be in D650C mode; with no ROM installed it waits there automatically.">&#8593; Send to device</button>
+        <label id="romSpeedWrap" style="font-size:11px;display:none;">Speed
+          <select id="romSpeed" style="font:inherit;font-size:11px;padding:1px 3px;"
+            title="Gap between the 16 ROM blocks. A block is ~270 bytes = ~87 ms of DIN wire time, so anything under ~100 ms is faster than the cable. Shared with the firmware update speed."></select>
+        </label>
       </div>
     </div>
   </div>
@@ -1268,7 +1272,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.6 (2026-09-12)';
+  var EDITOR_VERSION = '1.1.7 (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -2117,6 +2121,7 @@
   // Speed picker: rebuilt on every render so each option carries the time IT
   // would take. Hidden over the device's own USB port, where the gap is fixed.
   function fwRenderSpeed(pages) {
+    romSpeedRender();
     var wrap = document.getElementById('fwSpeedWrap');
     var din = !/superos|teensy|bootloader/i.test((midiOut && midiOut.name) || '');
     if (!din || !pages) { wrap.style.display = 'none'; return; }
@@ -2159,6 +2164,26 @@
   }
   // Kept as the name the rest of the editor calls after every config/pattern reply.
   function checkFirmwareUpToDate() { fwRender(); }
+
+  // After an update the unit reboots into the new firmware, so everything the
+  // editor knows about its version is stale. Forget it and ask again until it
+  // answers, otherwise the notice keeps telling the user to update a unit they
+  // just updated.
+  var fwReidTimer = null;
+  function fwReidentify() {
+    hwVersion = ''; hwVariant = ''; hwOldWire = false; hwWireOk = false;
+    fwRender();
+    if (fwReidTimer) clearInterval(fwReidTimer);
+    var tries = 0;
+    fwReidTimer = setInterval(function() {
+      if (!midiOut || hwVersion || ++tries > 20) {
+        clearInterval(fwReidTimer); fwReidTimer = null;
+        if (hwVersion) log('Device re-identified after the update: v' + hwVersion, 'log-ack');
+        return;
+      }
+      sendSysex(new Uint8Array([0x7d, 0x20]));
+    }, 2000);
+  }
 
   // Ask, then download the update and either send it (units that can enter
   // update mode over MIDI) or park it for the power-on combo (everything else).
@@ -4231,22 +4256,27 @@
   // (it saves and reboots on success), resend once in the old 2-block format.
   var romLegacyTried = false;
   function romSend(blocks) {
-    // One send() per block, spaced out: a cheap interface with a small SysEx
-    // buffer drops a long message, and back-to-back sends can overrun it too.
+    // One send() per block, paced by the SAME Send speed the firmware update
+    // uses: a ROM block is ~270 bytes = ~87 ms of DIN wire time, so the old
+    // fixed 25 ms was three times faster than the cable and the interface just
+    // dropped blocks. Over the device's own USB port the gap stays tiny.
+    var gap = osPageGap(midiOut);
     var msgs = romEncodeBlocks(maskRom, blocks), n = 0;
     for (var i = 0; i < msgs.length; i++) {
       n += msgs[i].length;
-      midiOut.send(msgs[i], performance.now() + i * 25);
+      midiOut.send(msgs[i], performance.now() + i * gap);
     }
-    log('TX mask ROM [' + n + ' bytes]: ' + blocks + ' blocks + end marker', 'log-syx');
+    var secs = Math.ceil(msgs.length * gap / 1000);
+    log('TX mask ROM [' + n + ' bytes]: ' + blocks + ' blocks + end marker at ' + gap +
+        ' ms/block (~' + secs + ' s)', 'log-syx');
     setTimeout(function() {
       if (romLegacyTried || !maskRom || !midiOut) return;
       if (devRomStatus === 1 || devRomStatus === 2) return;   // it landed
       romLegacyTried = true;
-      log('Mask ROM: no stored-ROM report after ' + blocks + ' blocks; retrying in the ' +
-          'pre-1.1.1 2-block format for older firmware', 'log-edit');
+      log('Mask ROM: no stored-ROM report; retrying in the pre-1.1.1 2-block format ' +
+          'for older firmware', 'log-edit');
       romSend(2);
-    }, 9000);
+    }, msgs.length * gap + 9000);
   }
   document.getElementById('btnRomSend').addEventListener('click', function() {
     if (!maskRom) return;
@@ -6160,6 +6190,31 @@
     var v = chromiumMajor();
     return v === 152 || v === 153;
   }
+  // The ROM upload and the firmware update share one Send speed, so the picker
+  // appears in both places and either one sets it.
+  function romSpeedRender() {
+    var wrap = document.getElementById('romSpeedWrap');
+    if (!wrap) return;
+    var din = !/superos|teensy|bootloader/i.test((midiOut && midiOut.name) || '');
+    wrap.style.display = din ? '' : 'none';
+    if (!din) return;
+    var sel = document.getElementById('romSpeed');
+    if (sel.options.length !== OS_DIN_GAPS.length) {
+      sel.innerHTML = '';
+      for (var i = 0; i < OS_DIN_GAPS.length; i++) {
+        var ms = OS_DIN_GAPS[i], o = document.createElement('option');
+        o.value = String(ms);
+        o.textContent = ms + ' ms - ' + Math.ceil(17 * ms / 1000) + ' s (' + osGapNote(ms) + ')';
+        sel.appendChild(o);
+      }
+      sel.onchange = function() {
+        osSpeedMs = parseInt(this.value, 10) || OS_DIN_GAP_DEFAULT;
+        try { localStorage.setItem(LS_OS_SPEED, String(osSpeedMs)); } catch (e) { /* ignore */ }
+        romSpeedRender();
+      };
+    }
+    sel.value = String(osSpeedMs);
+  }
   var midiTestBusy = false;
   function midiSelfTest() {
     if (midiTestBusy) return;
@@ -6448,6 +6503,7 @@
     if (osUpd.sent >= osUpd.msgs.length) {
       var name = osUpd.name;
       osUpd = null;
+      fwReidentify();          // the reported version is stale from here on
       osUpdateStatus('Update sent - the unit is rebooting');
       log('OS update: ' + name + ' sent completely; the unit reboots into the new firmware. ' +
           'Those four LEDs count up in binary while pages are written: still moving means it is ' +
