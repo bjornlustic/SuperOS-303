@@ -2049,25 +2049,37 @@
     // Known variant: take that image. Unknown (firmware older than 1.1.2):
     // the generic image is the public no-USB-C build, so say so and let the
     // user cancel.
-    var known = hwVariant && FW_VARIANTS[hwVariant];
-    var url  = known ? FW_UPDATE_DIR + 'superos-303-' + hwVariant + '-latest-update.syx'
-                     : FW_UPDATE_URL;
-    var name = 'superos-303-v' + LATEST_FW_VERSION +
-               (known ? '-' + hwVariant : '') + '-update.syx';
-    var note = known
-      ? ('Build: ' + FW_VARIANTS[hwVariant] + ' (matched to what your 303 reports).')
-      : ('Your firmware is too old to report which board it is, so this is the ' +
-         'PUBLIC no-USB-C build. If your unit has a USB-C or FRAM board, cancel ' +
-         'and use the file you were sent.');
+    var variant = hwVariant && FW_VARIANTS[hwVariant] ? hwVariant : '';
+    if (!variant) {
+      // Firmware before 1.1.2 does not say which build it runs, and the images
+      // are not interchangeable, so ask rather than guess. (This is about the
+      // FIRMWARE version, not the board revision: v1.1.0 simply never reported
+      // a build tag.)
+      var pick = prompt(
+        'Firmware v' + verCore(hwVersion) + ' does not report which build it is running ' +
+        '(versions before 1.1.2 do not), and the images are not interchangeable.\n\n' +
+        'Which board does this 303 have?\n' +
+        '  1 = original CPU board, DIN only (the public build)\n' +
+        '  2 = USB-C board\n' +
+        '  3 = FRAM board (v1.2b)\n\n' +
+        'If you are not sure, cancel and ask where you got the unit.', '1');
+      variant = { '1': 'nousbc', '2': 'usbc', '3': 'fram' }[String(pick || '').trim()];
+      if (!variant) return;
+    }
+    var url  = FW_UPDATE_DIR + 'superos-303-' + variant + '-latest-update.syx';
+    var name = 'superos-303-v' + LATEST_FW_VERSION + '-' + variant + '-update.syx';
+    var note = 'Build: ' + FW_VARIANTS[variant] +
+               (hwVariant ? ' (matched to what your 303 reports).' : ' (your choice).');
     fetch(url, { cache: 'no-store' }).then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.arrayBuffer();
     }).then(function(buf) {
       osUpdateFromBuffer(buf, name, note);
     }).catch(function(e) {
-      log('Firmware download failed (' + e.message + '); opening the release page', 'log-err');
+      log('No hosted image for the ' + (FW_VARIANTS[variant] || variant) + ' build (' +
+          e.message + '); opening the release page', 'log-err');
       window.open(FW_RELEASE_URL, '_blank', 'noopener');
-      showErrorToast('Download the *-update.syx from the release page, then pick it here');
+      showErrorToast('Download the update .syx for your board, then pick it here');
       document.getElementById('btnBootloader').click();
     });
   }
@@ -4055,6 +4067,11 @@
   // connected without the user re-clicking Connect. Harmless in SuperOS mode.
   setInterval(function() {
     if (!midiOut) return;
+    // While an OS update streams, the only thing on the wire must be the page
+    // messages: a probe between them is junk to the bootloader's SysEx parser.
+    // Before the first page it is the opposite - a 0x37 answer proves the unit
+    // is still running the app, i.e. it never entered the bootloader.
+    if (osUpd && osUpd.port) return;
     sendSysex(new Uint8Array([0x7d, 0x36]));
     if (deviceMode !== 'superos') sendSysex(new Uint8Array([0x7d, 0x40]));
   }, 2000);
@@ -4104,6 +4121,8 @@
     log('syxInner: cmd=0x' + cmd.toString(16) + ' len=' + bytes.length + ' expectDump=' + expectDump, 'log-syx');
 
     if (cmd === 0x37 && bytes.length >= 3) { // D650C mask-ROM status
+      // Only the running app answers this; the bootloader answers nothing.
+      if (osUpd && !osUpd.port) osUpd.appAlive = true;
       updateDevRom(bytes[2]);
       return;
     }
@@ -6018,7 +6037,12 @@
     var boot = outs.find(function(p) { return /bootloader/i.test(p.name || ''); });
     if (boot) return boot;
     // DIN: the MIDI interface port never went away; after the settle time,
-    // keep using the output the update started on.
+    // keep using the output the update started on - but only once the app has
+    // gone quiet. Units with the ORIGINAL OS-303 bootloader ignore 0x4A (it has
+    // no SysEx entry: GPIOR0/BOOT_MAGIC is a SuperOS-bootloader feature), come
+    // straight back up in the app, and then swallow every page message while
+    // the editor happily reports success.
+    if (osUpd.appAlive) return null;
     if (Date.now() - osUpd.t0 >= OS_BOOT_GRACE_MS && osUpd.origOut) {
       return outs.find(function(p) {
         return p.id === osUpd.origOut.id || (p.name && p.name === osUpd.origOut.name);
@@ -6038,10 +6062,20 @@
       osUpd.port = osUpdateFindPort();
       if (!osUpd.port) {
         if (Date.now() - osUpd.t0 > OS_BOOT_WAIT_MS) {
-          osUpdateStatus('Update aborted: bootloader never appeared');
-          log('OS update: no bootloader port after ' + OS_BOOT_WAIT_MS + ' ms. ' +
-              'The unit may be waiting in the bootloader (four LEDs lit): ' +
-              'send the file with SysEx Librarian / MIDI-OX or power cycle.', 'log-err');
+          if (osUpd.appAlive) {
+            osUpdateStatus('Update aborted: the 303 never entered its bootloader');
+            log('OS update: the 303 kept answering status requests after 0x4A, so it is ' +
+                'still running the app and would ignore every page message. Units with the ' +
+                'ORIGINAL OS-303 bootloader cannot be put into update mode over MIDI: power ' +
+                'the unit off, hold WRITE/NEXT while powering it back on (the four mode LEDs ' +
+                'light solid), then press Update OS... and pick the file. Nothing was written.',
+                'log-err');
+          } else {
+            osUpdateStatus('Update aborted: bootloader never appeared');
+            log('OS update: no bootloader port after ' + OS_BOOT_WAIT_MS + ' ms. ' +
+                'The unit may be waiting in the bootloader (four LEDs lit): ' +
+                'send the file with SysEx Librarian / MIDI-OX or power cycle.', 'log-err');
+          }
           osUpd = null;
           return;
         }
@@ -6054,7 +6088,9 @@
       var name = osUpd.name;
       osUpd = null;
       osUpdateStatus('Update sent - the unit is rebooting');
-      log('OS update: ' + name + ' sent completely; the unit reboots into the new firmware', 'log-ack');
+      log('OS update: ' + name + ' sent completely; the unit reboots into the new firmware. ' +
+          'The mode LEDs cycle while the bootloader writes pages - if they never moved, ' +
+          'nothing was written: see the bootloader note above.', 'log-ack');
       return;
     }
     try {
