@@ -2035,11 +2035,13 @@
     return !/fram|usbc/i.test(hwVersion);
   }
   // Can this unit put ITSELF into update mode (SysEx 0x4A)? Only where the
-  // SuperOS bootloader is flashed. The published build is compiled
-  // -DSUPEROS_OLD_BOOTLOADER for units running the ORIGINAL OS-303 bootloader:
-  // it has no SysEx entry and does not know BOOT_MAGIC, so 0x4A jumps into it
-  // and comes straight back to the app. Sending 0x4A there wastes 12 seconds
-  // and reads like a failure, so those units go to the manual step directly.
+  // SuperOS bootloader is flashed, which in practice means the USB-C and FRAM
+  // boards only: NO MSW unit has it (confirmed 2026-09-12). They all run the
+  // ORIGINAL OS-303 bootloader, which has no SysEx entry and does not know
+  // BOOT_MAGIC, so 0x4A jumps into it and comes straight back to the app -
+  // measured twice on a 1.1.0 MSW unit here. The bootloader cannot be replaced
+  // over MIDI either (an update never writes pages 0x1F0-0x1FD, by design), so
+  // this is permanent for those units and they go to the manual step directly.
   function fwCanSelfBoot() {
     return /usbc|fram/i.test(hwVersion);
   }
