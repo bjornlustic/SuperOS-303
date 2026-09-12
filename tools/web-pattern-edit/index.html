@@ -1266,7 +1266,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.3 (2026-09-12)';
+  var EDITOR_VERSION = '1.1.3a (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -3818,7 +3818,14 @@
       if (deviceMode === 'd650') { cfgReadAttempts = 0; return; } // 0x20 unanswered there
       if (cfgIsSynced()) { cfgReadAttempts = 0; return; }
       if (cfgReadAttempts >= maxAttempts) {
-        log('Config read: no 0x21 reply after ' + cfgReadAttempts + ' attempts — disconnecting', 'log-err');
+        log('Config read: no 0x21 reply after ' + cfgReadAttempts + ' attempts — disconnecting. ' +
+            (rxAnyCount === 0
+              ? 'NOTHING has arrived on In="' + (midiIn ? midiIn.name : '?') + '" since connecting: ' +
+                'either that is the wrong input port, the 303 MIDI OUT is not plugged into it, or ' +
+                'another application still holds the port.'
+              : rxAnyCount + ' MIDI messages did arrive, so the cable is fine - the device is ' +
+                'answering something else, or SysEx TX is disabled on it (config menu, F# LED off).'),
+            'log-err');
         cfgReadAttempts = 0;
         fwSwitchPending = false;
         disconnectPorts();
@@ -4868,9 +4875,11 @@
     if (start >= 0) rxBuf = rxBuf.slice(start);
     else rxBuf = [];
   }
+  var rxAnyCount = 0;
   function onMidi(ev) {
     var d = ev.data;
     if (!d || !d.length) return;
+    rxAnyCount++;
     if (d[0] >= 0x80 && d[0] < 0xf0) { for (var k = 0; k < d.length; k++) feedChannelByte(d[k]); return; }
     if (d[0] >= 0xf8) { handleRealtime(d[0]); return; }
     if (d[0] === 0xf0) {
@@ -5056,6 +5065,9 @@
     var ok       = !!midiOut && !!midiIn;
 
     if (ok) {
+      log('Bound: Out="' + midiOut.name + '"  In="' + midiIn.name + '". The In port must be the ' +
+          'one the 303 MIDI OUT is plugged into - a wrong In looks exactly like a dead device: ' +
+          'requests go out, nothing ever comes back.', 'log-ack');
       statusEl.textContent = midiOut.name + ' / ' + midiIn.name;
       statusEl.className   = 'is-ok';
       btn.classList.add('is-connected');
