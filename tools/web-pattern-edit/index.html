@@ -1233,7 +1233,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.2d (2026-09-12)';
+  var EDITOR_VERSION = '1.1.2e (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -1985,7 +1985,12 @@
   // published build, or it is too old to report a build at all (every unit that
   // old predates the custom boards).
   function fwOfferable() {
-    return !!midiOut && (!hwVariant || hwVariant === FW_PUBLIC_TAG);
+    if (!midiOut) return false;
+    if (hwVariant) return hwVariant === FW_PUBLIC_TAG;
+    // Builds older than 1.1.2 carry no "+tag", but the FRAM boards have always
+    // said "-fram" in the version string itself (e.g. "1.0.0-beta-fram"), and
+    // that image must never be replaced with the published one.
+    return !/fram|usbc/i.test(hwVersion);
   }
   var hwOldWire = false;   // a 0x11 arrived in the pre-1.1.0 (52-byte) shape
   var hwWireOk  = false;   // a 0x11 parsed at the current PATTERN_SIZE
@@ -2005,6 +2010,14 @@
   // A dismissed banner stays dismissed for that (severity, reported version)
   // pair only, so a different device - or the same one after a partial update -
   // raises it again.
+  // In-banner question, replacing confirm(): {msg, yes, onYes, onNo}. The banner
+  // is the only place the editor asks about firmware - no browser dialogs, which
+  // people were dismissing without reading (and which block the MIDI loop).
+  var fwAsk = null;
+  function fwConfirm(msg, yesLabel, onYes, onNo) {
+    fwAsk = { msg: msg, yes: yesLabel, onYes: onYes, onNo: onNo };
+    checkFirmwareUpToDate();
+  }
   function fwBannerKey(kind) { return 'fwBannerDismissed:' + kind + ':' + (hwVersion || '?'); }
   function fwBannerDismissed(kind) {
     try { return localStorage.getItem(fwBannerKey(kind)) === '1'; } catch (e) { return false; }
@@ -2021,15 +2034,24 @@
         '<button id="fwUpdateGo" style="margin-left:12px;padding:4px 10px;font:inherit;' +
         'font-size:13px;cursor:pointer;border:1px solid #fff;background:rgba(255,255,255,0.15);' +
         'color:#fff;">Update now</button>' +
+        '<button id="fwUpdateNo" style="margin-left:8px;padding:4px 10px;font:inherit;' +
+        'font-size:13px;cursor:pointer;border:1px solid rgba(255,255,255,0.5);' +
+        'background:none;color:#fff;display:none;">Cancel</button>' +
         '<button id="fwUpdateX" title="Dismiss" style="position:absolute;right:8px;top:6px;' +
         'padding:2px 8px;font:inherit;font-size:16px;line-height:1;cursor:pointer;border:0;' +
         'background:none;color:#fff;">&times;</button>';
       el.style.position = 'sticky';
       document.body.insertBefore(el, document.body.firstChild);
       el.querySelector('#fwUpdateGo').onclick = function() {
+        if (fwAsk) { var go = fwAsk.onYes; fwAsk = null; go(); checkFirmwareUpToDate(); return; }
         if (osUpdPending) fwSendPending();
         else if (fwOfferable()) fwBrowserUpdate();
         else window.open(FW_RELEASE_URL, '_blank', 'noopener');
+      };
+      el.querySelector('#fwUpdateNo').onclick = function() {
+        if (fwAsk && fwAsk.onNo) fwAsk.onNo();
+        fwAsk = null;
+        checkFirmwareUpToDate();
       };
       el.querySelector('#fwUpdateX').onclick = function() {
         try { localStorage.setItem(fwBannerKey(el.dataset.kind), '1'); } catch (e) {}
@@ -2040,6 +2062,20 @@
     var behind = deviceMode === 'superos' && !!hwVersion &&
                  cmpVersion(hwVersion, LATEST_FW_VERSION) < 0;
     var kind = '', bg = '', msg = '';
+    if (fwAsk) {
+      // A question is open: it owns the banner until it is answered.
+      el.dataset.kind = 'ask';
+      el.style.background = '#1a4d7a';
+      el.querySelector('#fwUpdateText').textContent = fwAsk.msg;
+      var goA = el.querySelector('#fwUpdateGo');
+      goA.style.display = ''; goA.textContent = fwAsk.yes; goA.title = '';
+      el.querySelector('#fwUpdateNo').style.display = '';
+      el.querySelector('#fwUpdateX').style.display = 'none';
+      el.style.display = 'block';
+      return;
+    }
+    el.querySelector('#fwUpdateNo').style.display = 'none';
+    el.querySelector('#fwUpdateX').style.display = '';
     if (osUpdPending) {
       // Automatic entry failed; the file is downloaded and waiting for a manual
       // one. Shown whatever the device mode reads as - 0x4A leaves it 'unknown'.
@@ -2083,13 +2119,15 @@
   // stream the held file straight out: no 0x4A, no waiting for a port to appear.
   function fwSendPending() {
     if (!midiOut || osUpd || !osUpdPending) return;
-    if (!confirm('Send the v' + LATEST_FW_VERSION + ' update to your 303 now?\n\n' +
-                 'TIME, PITCH, FUNCTION and the A# key LED must be lit (power off, hold ' +
-                 'WRITE/NEXT, power on).\n' +
-                 osUpdPending.pages + ' flash pages (' +
-                 Math.ceil(osUpdPending.pages * osPageGap(midiOut) / 60000) + ' min) on output "' +
-                 (midiOut.name || midiOut.id) + '".\n\n' +
-                 'Do not power off the unit while the update runs.')) return;
+    fwConfirm('Send the v' + LATEST_FW_VERSION + ' update now? TIME, PITCH, FUNCTION and the ' +
+              'A# key LED must be lit on the 303 first (power off, hold WRITE/NEXT, power on). ' +
+              osUpdPending.pages + ' pages, about ' +
+              Math.ceil(osUpdPending.pages * osPageGap(midiOut) / 60000) + ' min via "' +
+              (midiOut.name || midiOut.id) + '". Do not power the unit off while it runs.',
+              'Send it', fwSendPendingGo);
+  }
+  function fwSendPendingGo() {
+    if (!midiOut || osUpd || !osUpdPending) return;
     osUpd = { msgs: osUpdPending.msgs, pages: osUpdPending.pages, name: osUpdPending.name,
               origOut: midiOut, port: midiOut, sent: 0, t0: Date.now() };
     osUpdPending = null;
@@ -2102,13 +2140,13 @@
   // the same bootloader stream the "Update OS..." picker uses.
   function fwBrowserUpdate() {
     if (!midiOut || osUpd) return;
-    if (!confirm('Update your 303 to firmware v' + LATEST_FW_VERSION + '?\n\n' +
-                 'Your patterns are kept. The editor downloads the update, puts the unit ' +
-                 'into update mode and sends it. Over a MIDI cable that takes several ' +
-                 'minutes - leave the tab open and the unit powered.\n\n' +
-                 'If your 303 cannot enter update mode by itself, the editor will say so ' +
-                 'and tell you how to do it by hand. Nothing is written either way until ' +
-                 'the unit is actually in update mode.')) return;
+    fwConfirm('Update your 303 to firmware v' + LATEST_FW_VERSION + '? Patterns are kept. ' +
+              'Over a MIDI cable this takes several minutes - leave the tab open and the ' +
+              'unit powered. Nothing is written until the unit is really in update mode.',
+              'Yes, update', fwBrowserUpdateGo);
+  }
+  function fwBrowserUpdateGo() {
+    if (!midiOut || osUpd) return;
     osUpdateStatus('Downloading v' + LATEST_FW_VERSION + '...');
     fetch(FW_UPDATE_URL, { cache: 'no-store' }).then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -4111,6 +4149,9 @@
     // Before the first page it is the opposite - a 0x37 answer proves the unit
     // is still running the app, i.e. it never entered the bootloader.
     if (osUpd && osUpd.port) return;
+    // 0x20 (config) is answered by every SuperOS build; 0x36 is not, so the
+    // bootloader-entry check leans on 0x20 while an update is waiting.
+    if (osUpd) { sendSysex(new Uint8Array([0x7d, 0x20])); return; }
     sendSysex(new Uint8Array([0x7d, 0x36]));
     if (deviceMode !== 'superos') sendSysex(new Uint8Array([0x7d, 0x40]));
   }, 2000);
@@ -4159,9 +4200,13 @@
     var cmd = bytes[1];
     log('syxInner: cmd=0x' + cmd.toString(16) + ' len=' + bytes.length + ' expectDump=' + expectDump, 'log-syx');
 
+    // Waiting for the bootloader after 0x4A: the bootloader answers NOTHING, so
+    // any reply at all means the app is still running and the jump did not take.
+    // (Keyed on any command, not on 0x36/0x37: not every build answers that one
+    // - a FRAM build does not - and a missing answer used to read as "quiet".)
+    if (osUpd && !osUpd.port) osUpd.appAlive = true;
+
     if (cmd === 0x37 && bytes.length >= 3) { // D650C mask-ROM status
-      // Only the running app answers this; the bootloader answers nothing.
-      if (osUpd && !osUpd.port) osUpd.appAlive = true;
       updateDevRom(bytes[2]);
       return;
     }
@@ -6183,20 +6228,22 @@
     var mins = secs > 90 ? ('about ' + Math.ceil(secs / 60) + ' minutes')
                          : ('about ' + secs + ' seconds');
     var msg = live
-      ? ('Start the update now with "' + name + '"?\n\n' +
-         parsed.pages + ' flash pages will be written (' + mins + ').\n' +
-         'Pending edits are saved first, then the unit reboots into update mode ' +
-         'and the file is sent automatically.\n\n' +
-         'Do not power off the unit while the update runs.')
-      : ('Send "' + name + '" to a unit already in the bootloader?\n\n' +
-         'This assumes the unit is in bootloader mode NOW (hold WRITE/NEXT ' +
-         'while powering on; TIME, PITCH, FUNCTION and the A# key LED lit) on output "' +
-         (midiOut.name || midiOut.id) + '".\n' +
-         parsed.pages + ' flash pages will be written (' + mins + ').\n\n' +
-         'Do not power off the unit while the update runs.');
-    if (note) msg += '\n\n' + note;
-    if (preAsked) log('OS update: ' + name + ', ' + parsed.pages + ' pages (' + mins + ')', 'log-edit');
-    else if (!confirm(msg)) return;
+      ? ('Send "' + name + '" to your 303? ' + parsed.pages + ' pages, ' + mins + '. ' +
+         'Pending edits are saved first, then the unit reboots into update mode and the ' +
+         'file is sent. Do not power the unit off while it runs.')
+      : ('Send "' + name + '" to a 303 that is in update mode NOW (hold WRITE/NEXT while ' +
+         'powering on; TIME, PITCH, FUNCTION and the A# key LED lit) via "' +
+         (midiOut.name || midiOut.id) + '"? ' + parsed.pages + ' pages, ' + mins + '. ' +
+         'Do not power the unit off while it runs.');
+    if (note) msg += ' ' + note;
+    if (preAsked) {
+      log('OS update: ' + name + ', ' + parsed.pages + ' pages (' + mins + ')', 'log-edit');
+      osUpdateRun(parsed, name, live);
+    } else {
+      fwConfirm(msg, 'Send it', function() { osUpdateRun(parsed, name, live); });
+    }
+  }
+  function osUpdateRun(parsed, name, live) {
     clearCfgReadRetry();
     expectDump = 0; bulkNextPat = -1;
     hideSyncOverlay();
