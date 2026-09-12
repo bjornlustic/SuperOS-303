@@ -1233,7 +1233,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.2f (2026-09-12)';
+  var EDITOR_VERSION = '1.1.2g (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -1972,6 +1972,10 @@
   var FW_UPDATE_URL  = 'firmware/superos-303-latest-update.syx';
   var FW_PUBLIC_TAG  = 'nousbc';   // build tag the hosted image carries
   var FW_RELEASE_URL = 'https://github.com/bjornlustic/SuperOS-303/releases/latest';
+  // Commands only the DEVICE sends. Used to tell a real answer from our own
+  // request coming back through MIDI thru.
+  var FW_DEVICE_REPLIES = [0x11, 0x14, 0x15, 0x17, 0x18, 0x1A, 0x1C, 0x1E, 0x1F,
+                           0x21, 0x23, 0x25, 0x27, 0x2D, 0x31, 0x37, 0x41];
   // The 0x21 version tail can carry a "+tag" naming the build. It is parsed off
   // so the tag never lands in a version comparison, and deliberately NOT shown:
   // naming builds in the banner only raised "which one do I have?". (The v1.2b
@@ -4235,10 +4239,11 @@
     log('syxInner: cmd=0x' + cmd.toString(16) + ' len=' + bytes.length + ' expectDump=' + expectDump, 'log-syx');
 
     // Waiting for the bootloader after 0x4A: the bootloader answers NOTHING, so
-    // any reply at all means the app is still running and the jump did not take.
-    // (Keyed on any command, not on 0x36/0x37: not every build answers that one
-    // - a FRAM build does not - and a missing answer used to read as "quiet".)
-    if (osUpd && !osUpd.port) osUpd.appAlive = true;
+    // a DEVICE-ORIGINATED message means the app is still running and the jump
+    // did not take. It must be a reply opcode, not any SysEx: with MIDI thru on
+    // (the default on some units) our own requests come straight back, and a
+    // thru box or a DAW loopback echoes them too.
+    if (osUpd && !osUpd.port && FW_DEVICE_REPLIES.indexOf(cmd) >= 0) osUpd.appAlive = true;
 
     if (cmd === 0x37 && bytes.length >= 3) { // D650C mask-ROM status
       updateDevRom(bytes[2]);
