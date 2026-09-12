@@ -1266,7 +1266,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.3b (2026-09-12)';
+  var EDITOR_VERSION = '1.1.3c (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -3710,8 +3710,22 @@
     msg[0] = 0xf0; msg.set(inner, 1); msg[msg.length - 1] = 0xf7;
     var hex = Array.from(msg.subarray(0, Math.min(msg.length, 12))).map(function(b){ return b.toString(16).padStart(2,'0'); }).join(' ');
     log('TX SysEx [' + msg.length + ' bytes]: ' + hex + (msg.length > 12 ? ' ...' : ''), 'log-syx');
-    midiOut.send(msg);
+    // send() THROWS when the page may not send SysEx (InvalidAccessError). The
+    // TX line above is printed first, so an unreported throw reads as "we sent
+    // it and the device ignored us" - report it instead, once.
+    try {
+      midiOut.send(msg);
+    } catch (e) {
+      if (!sysexSendFailed) {
+        sysexSendFailed = true;
+        log('SEND FAILED: ' + e.name + ': ' + e.message + '. Nothing has actually left the ' +
+            'browser. This is the SysEx permission: open the padlock in the address bar and ' +
+            'allow MIDI device control, or reload and accept the prompt.', 'log-err');
+        showErrorToast('MIDI send blocked: ' + e.name);
+      }
+    }
   }
+  var sysexSendFailed = false;
   function requestPattern(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15])); }
   // Request variation 3 of a slot (device replies 0x25 if poly, else 0x11).
   function requestPoly(pat) { sendSysex(new Uint8Array([0x7d, 0x10, pat & 15, 2])); }
@@ -5082,6 +5096,13 @@
     var ok       = !!midiOut && !!midiIn;
 
     if (ok) {
+      if (navigator.permissions && navigator.permissions.query) {
+        try {
+          navigator.permissions.query({ name: 'midi', sysex: true }).then(function(st) {
+            log('SysEx permission: ' + st.state, st.state === 'granted' ? 'log-ack' : 'log-err');
+          }).catch(function() { /* not queryable in this browser */ });
+        } catch (e) { /* ignore */ }
+      }
       log('Bound: Out="' + midiOut.name + '"  In="' + midiIn.name + '". The In port must be the ' +
           'one the 303 MIDI OUT is plugged into - a wrong In looks exactly like a dead device: ' +
           'requests go out, nothing ever comes back.', 'log-ack');
