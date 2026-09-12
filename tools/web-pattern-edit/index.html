@@ -1951,27 +1951,17 @@
   // worth taking (grey notice) - 1.1.1 splits the mask-ROM upload into 16 small
   // SysEx blocks so interfaces with small SysEx buffers stop dropping it.
   var LATEST_FW_VERSION = '1.1.2';
-  // Same-origin copies of the newest *-update.syx, so the banner's "Update now"
-  // can flash the unit without the user finding a file. GitHub release assets
-  // are not CORS-readable, so a cross-origin fetch is not an option: where the
-  // file is absent (local copy of the editor) the button falls back to the
-  // release page plus the normal file picker.
-  // One image per BUILD VARIANT. From 1.1.2 the device reports its variant as a
-  // "+suffix" on the version in the 0x21 reply ("1.1.2+usbc"), because the
-  // images are not interchangeable: a no-USB-C image on a USB-C board loses USB
-  // (DIN-only recovery). Older firmware reports no suffix, so the generic file
-  // is used and the confirm dialog carries the warning instead.
-  var FW_UPDATE_DIR  = 'firmware/';
-  var FW_UPDATE_URL  = FW_UPDATE_DIR + 'superos-303-latest-update.syx';
+  // The banner NOTIFIES and links to the release; it does not install anything.
+  // Browser-side installing was removed on 2026-09-11: automatic bootloader
+  // entry (0x4A) does not exist on original OS-303 bootloader units, and the
+  // images are per-board, so people were offered updates they could not apply
+  // or should not apply. Firmware updates are a manual step again: download the
+  // file for YOUR board and send it with "Update OS..." or a SysEx tool.
+  var FW_RELEASE_URL = 'https://github.com/bjornlustic/SuperOS-303/releases/latest';
   var FW_VARIANTS    = { nousbc: 'no USB-C (original CPU board)',
                          usbc:   'USB-C board',
                          fram:   'FRAM board (v1.2b)' };
-  var FW_RELEASE_URL = 'https://github.com/bjornlustic/SuperOS-303/releases/latest';
   var hwVariant = '';   // build variant from the version suffix ('' = not reported)
-  // Parsed update held back after a failed automatic bootloader entry (original
-  // OS-303 bootloader): the user powers up holding WRITE/NEXT and sends it from
-  // the banner, with no second download and no file picker.
-  var osUpdPending = null;
   var hwOldWire = false;   // a 0x11 arrived in the pre-1.1.0 (52-byte) shape
   var hwWireOk  = false;   // a 0x11 parsed at the current PATTERN_SIZE
   // Compare dotted numeric versions; a pre-release suffix ('-beta') is ignored,
@@ -2003,17 +1993,14 @@
         'padding:10px 16px;font:600 14px/1.4 var(--font);text-align:center;display:none;';
       el.innerHTML =
         '<span id="fwUpdateText"></span>' +
-        '<button id="fwUpdateGo" style="margin-left:12px;padding:4px 10px;font:inherit;' +
-        'font-size:13px;cursor:pointer;border:1px solid #fff;background:rgba(255,255,255,0.15);' +
-        'color:#fff;">Update now</button>' +
+        '<a id="fwUpdateGo" target="_blank" rel="noopener" style="margin-left:12px;' +
+        'padding:4px 10px;font:inherit;font-size:13px;border:1px solid #fff;' +
+        'background:rgba(255,255,255,0.15);color:#fff;text-decoration:none;">Get the update</a>' +
         '<button id="fwUpdateX" title="Dismiss" style="position:absolute;right:8px;top:6px;' +
         'padding:2px 8px;font:inherit;font-size:16px;line-height:1;cursor:pointer;border:0;' +
         'background:none;color:#fff;">&times;</button>';
       el.style.position = 'sticky';
       document.body.insertBefore(el, document.body.firstChild);
-      el.querySelector('#fwUpdateGo').onclick = function() {
-        if (osUpdPending) fwSendPending(); else fwBrowserUpdate();
-      };
       el.querySelector('#fwUpdateX').onclick = function() {
         try { localStorage.setItem(fwBannerKey(el.dataset.kind), '1'); } catch (e) {}
         el.style.display = 'none';
@@ -2023,14 +2010,7 @@
     var behind = deviceMode === 'superos' && !!hwVersion &&
                  cmpVersion(hwVersion, LATEST_FW_VERSION) < 0;
     var kind = '', bg = '', msg = '';
-    if (osUpdPending) {
-      // Automatic entry failed; the file is loaded and waiting for a manual one.
-      // Shown whatever the device mode reads as - after 0x4A it reads 'unknown'.
-      kind = 'pending'; bg = '#b36b00';
-      msg = 'Update ready to send. Your 303 cannot be put into update mode over MIDI ' +
-            '(original OS-303 bootloader): power it OFF, hold WRITE/NEXT while powering ' +
-            'it back ON until the four mode LEDs are lit solid, then press Send to bootloader.';
-    } else if (deviceMode === 'superos' && hwOldWire) {
+    if (deviceMode === 'superos' && hwOldWire) {
       kind = 'wire'; bg = '#cc0000';
       msg = 'Your 303 firmware' + (hwVersion ? ' (v' + hwVersion + ')' : '') +
         ' uses the pre-1.1.0 pattern format, so patterns cannot be read or written from this editor. ' +
@@ -2044,80 +2024,17 @@
       kind = 'behind'; bg = '#333';
       msg = 'Firmware v' + LATEST_FW_VERSION + ' is available (your 303 reports v' + verCore(hwVersion) +
         (hwVariant ? ', ' + (FW_VARIANTS[hwVariant] || hwVariant) : '') +
-        '). The editor can install it for you over MIDI.';
+        '). Download it for your board and send it with "Update OS..." below.';
     }
     if (!kind || fwBannerDismissed(kind)) { el.style.display = 'none'; return; }
     el.dataset.kind = kind;
     el.style.background = bg;
     el.querySelector('#fwUpdateText').textContent = msg;
     var go = el.querySelector('#fwUpdateGo');
-    go.style.display = midiOut ? '' : 'none';
-    go.textContent = osUpdPending ? 'Send to bootloader' : 'Update now';
-    go.title = osUpdPending
-      ? 'The update file is loaded. Power the 303 off, hold WRITE/NEXT while powering it ' +
-        'back on (four mode LEDs solid), then press this.'
-      : 'Download the matching firmware and install it over MIDI';
+    go.href = FW_RELEASE_URL;
+    go.title = 'Open the release page: download the update .syx for your board, then send ' +
+               'it with "Update OS..." or a SysEx tool';
     el.style.display = 'block';
-  }
-  // The unit is in its bootloader now (user powered up holding WRITE/NEXT), so
-  // stream the held file straight out: no 0x4A, no waiting for a port to appear.
-  function fwSendPending() {
-    if (!midiOut || osUpd || !osUpdPending) return;
-    if (!confirm('Send "' + osUpdPending.name + '" to a 303 that is in its bootloader NOW?\n\n' +
-                 'The four mode LEDs must be lit solid (power off, hold WRITE/NEXT, power on).\n' +
-                 osUpdPending.pages + ' flash pages will be written on output "' +
-                 (midiOut.name || midiOut.id) + '".\n\n' +
-                 'Do not power off the unit while the update runs.')) return;
-    osUpd = { msgs: osUpdPending.msgs, pages: osUpdPending.pages, name: osUpdPending.name,
-              origOut: midiOut, port: midiOut, sent: 0, t0: Date.now() };
-    osUpdPending = null;
-    checkFirmwareUpToDate();
-    osUpdateStatus('Updating OS: 0%');
-    setTimeout(osUpdateTick, 100);
-  }
-
-  // Banner action: fetch the newest *-update.syx from this site and run the same
-  // bootloader stream the "Update OS..." button uses. Without that file (or with
-  // no network) fall back to the release page and the file picker.
-  function fwBrowserUpdate() {
-    if (!midiOut) { showErrorToast('Connect the 303 first'); return; }
-    if (osUpd) return;
-    // Known variant: take that image. Unknown (firmware older than 1.1.2):
-    // the generic image is the public no-USB-C build, so say so and let the
-    // user cancel.
-    var variant = hwVariant && FW_VARIANTS[hwVariant] ? hwVariant : '';
-    if (!variant) {
-      // Firmware before 1.1.2 does not say which build it runs, and the images
-      // are not interchangeable, so ask rather than guess. (This is about the
-      // FIRMWARE version, not the board revision: v1.1.0 simply never reported
-      // a build tag.)
-      var pick = prompt(
-        'Firmware v' + verCore(hwVersion) + ' does not report which build it is running ' +
-        '(versions before 1.1.2 do not), and the images are not interchangeable.\n\n' +
-        'Which board does this 303 have?\n' +
-        '  1 = original CPU board, DIN only (the public build)\n' +
-        '  2 = USB-C board\n' +
-        '  3 = FRAM board (v1.2b)\n\n' +
-        'If you are not sure, cancel and ask where you got the unit.', '1');
-      variant = { '1': 'nousbc', '2': 'usbc', '3': 'fram' }[String(pick || '').trim()];
-      if (!variant) return;
-    }
-    var url  = FW_UPDATE_DIR + 'superos-303-' + variant + '-latest-update.syx';
-    var name = 'superos-303-v' + LATEST_FW_VERSION + '-' + variant + '-update.syx';
-    var note = 'Build: ' + FW_VARIANTS[variant] +
-               (hwVariant ? ' (matched to what your 303 reports).' : ' (your choice).');
-    fetch(url, { cache: 'no-store' }).then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.arrayBuffer();
-    }).then(function(buf) {
-      osUpdateFromBuffer(buf, name, note);
-    }).catch(function(e) {
-      log('No hosted image for the ' + (FW_VARIANTS[variant] || variant) + ' build (' +
-          e.message + '); opening the release page', 'log-err');
-      window.open(FW_RELEASE_URL, '_blank', 'noopener');
-      showErrorToast('Download the update .syx for your board, then pick it here');
-      document.getElementById('btnBootloader').click();
-    });
   }
   // True from the moment the user sends 0x2F/0x4D until the device is re-identified
   // (or we give up). Widens the config-read retry budget so the reboot + USB
@@ -6099,16 +6016,13 @@
       if (!osUpd.port) {
         if (Date.now() - osUpd.t0 > OS_BOOT_WAIT_MS) {
           if (osUpd.appAlive) {
-            osUpdPending = { msgs: osUpd.msgs, pages: osUpd.pages, name: osUpd.name };
             osUpdateStatus('Update aborted: the 303 never entered its bootloader');
             log('OS update: the 303 kept answering status requests after 0x4A, so it is ' +
                 'still running the app and would ignore every page message. Units with the ' +
                 'ORIGINAL OS-303 bootloader cannot be put into update mode over MIDI. ' +
                 'Nothing was written. To finish: power the unit OFF, hold WRITE/NEXT while ' +
                 'powering it back ON (the four mode LEDs light solid), then press ' +
-                '"Send to bootloader" in the banner - the file is still loaded here.',
-                'log-err');
-            checkFirmwareUpToDate();   // relabel the banner button
+                'Update OS... and pick the file again.', 'log-err');
           } else {
             osUpdateStatus('Update aborted: bootloader never appeared');
             log('OS update: no bootloader port after ' + OS_BOOT_WAIT_MS + ' ms. ' +
