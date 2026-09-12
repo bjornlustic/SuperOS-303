@@ -1266,7 +1266,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.3a (2026-09-12)';
+  var EDITOR_VERSION = '1.1.3b (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -5049,6 +5049,23 @@
 
     if (midiIn)  midiIn.onmidimessage  = onMidi;
     if (midiKbd) midiKbd.onmidimessage = onKeyboard;
+    // Attaching a handler opens the port implicitly, but that open is ASYNC and
+    // a rebind can cancel it, leaving a port that is bound and silent. Open it
+    // explicitly and say what state it actually reached.
+    if (midiIn && midiIn.open) {
+      midiIn.open().then(function() {
+        log('In port "' + midiIn.name + '" open: state=' + midiIn.state +
+            ' connection=' + midiIn.connection, 'log-ack');
+      }).catch(function(e) {
+        log('In port "' + midiIn.name + '" FAILED to open: ' + e.message +
+            '. Another application is holding it, or the interface needs replugging.', 'log-err');
+      });
+    }
+    if (midiOut && midiOut.open) {
+      midiOut.open().catch(function(e) {
+        log('Out port failed to open: ' + e.message, 'log-err');
+      });
+    }
 
     var kbdEl = document.getElementById('kbdStatus');
     if (midiKbd && midiIn && midiKbd.id === midiIn.id) {
