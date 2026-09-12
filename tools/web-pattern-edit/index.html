@@ -1233,7 +1233,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.2b (2026-09-12)';
+  var EDITOR_VERSION = '1.1.2c (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -2085,7 +2085,8 @@
     if (!midiOut || osUpd || !osUpdPending) return;
     if (!confirm('Send the v' + LATEST_FW_VERSION + ' update to your 303 now?\n\n' +
                  'The four mode LEDs must be lit solid (power off, hold WRITE/NEXT, power on).\n' +
-                 osUpdPending.pages + ' flash pages will be written on output "' +
+                 osUpdPending.pages + ' flash pages (' +
+                 Math.ceil(osUpdPending.pages * osPageGap(midiOut) / 60000) + ' min) on output "' +
                  (midiOut.name || midiOut.id) + '".\n\n' +
                  'Do not power off the unit while the update runs.')) return;
     osUpd = { msgs: osUpdPending.msgs, pages: osUpdPending.pages, name: osUpdPending.name,
@@ -2102,7 +2103,8 @@
     if (!midiOut || osUpd) return;
     if (!confirm('Update your 303 to firmware v' + LATEST_FW_VERSION + '?\n\n' +
                  'Your patterns are kept. The editor downloads the update, puts the unit ' +
-                 'into update mode and sends it - about a minute.\n\n' +
+                 'into update mode and sends it. Over a MIDI cable that takes several ' +
+                 'minutes - leave the tab open and the unit powered.\n\n' +
                  'If your 303 cannot enter update mode by itself, the editor will say so ' +
                  'and tell you how to do it by hand. Nothing is written either way until ' +
                  'the unit is actually in update mode.')) return;
@@ -6018,7 +6020,19 @@
   // fixed gap -- the bootloader has no per-page ACK, so pacing is the
   // throttle, same as SysEx Librarian's. The file's trailing 0x02 reboots
   // into the new firmware and the remembered-port reconnect takes over.
-  var OS_PAGE_GAP_MS   = 50;
+  // Gap between page messages. A page is ~300 wire bytes; DIN MIDI carries
+  // ~3125 bytes/s, so one page needs ~96 ms of wire time ALONE and 50 ms means
+  // sending at twice the speed of the cable - the interface buffers, then drops.
+  // 1050 ms is the pacing a full update was proven at on hardware over a DIN
+  // interface, so DIN gets that and only the unit's own USB port gets 50 ms.
+  var OS_PAGE_GAP_USB_MS = 50;
+  var OS_PAGE_GAP_DIN_MS = 1050;
+  function osPageGap(port) {
+    // The 303's own USB MIDI port, or the bootloader's, enumerates under its own
+    // name; anything else is a MIDI interface with a DIN cable behind it.
+    var n = (port && port.name) || '';
+    return /superos|teensy|bootloader/i.test(n) ? OS_PAGE_GAP_USB_MS : OS_PAGE_GAP_DIN_MS;
+  }
   var OS_BOOT_WAIT_MS  = 12000; // give USB re-enumeration time before giving up
   var OS_BOOT_GRACE_MS = 2500;  // settle time before the first page
   var osUpd = null;             // active update: {msgs, pages, name, origOut, port, sent, t0}
@@ -6144,7 +6158,7 @@
     osUpd.sent++;
     if (osUpd.sent === osUpd.msgs.length || osUpd.sent % 16 === 0)
       osUpdateStatus('Updating OS: ' + Math.floor(100 * osUpd.sent / osUpd.msgs.length) + '%');
-    setTimeout(osUpdateTick, OS_PAGE_GAP_MS);
+    setTimeout(osUpdateTick, osPageGap(osUpd.port));
   }
 
   // Confirm, reboot into the bootloader if the unit is live, and stream the file.
@@ -6163,7 +6177,9 @@
       log('OS update: rejected ' + name + ': ' + parsed.err, 'log-err');
       return;
     }
-    var mins = 'about ' + Math.ceil(parsed.pages * OS_PAGE_GAP_MS / 1000) + ' seconds';
+    var secs = Math.ceil(parsed.pages * osPageGap(midiOut) / 1000);
+    var mins = secs > 90 ? ('about ' + Math.ceil(secs / 60) + ' minutes')
+                         : ('about ' + secs + ' seconds');
     var msg = live
       ? ('Start the update now with "' + name + '"?\n\n' +
          parsed.pages + ' flash pages will be written (' + mins + ').\n' +
