@@ -1268,7 +1268,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.4 (2026-09-12)';
+  var EDITOR_VERSION = '1.1.5 (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -6080,6 +6080,18 @@
   //                                    (seen on Chrome: send() does not throw,
   //                                    permission reads "granted", notes pass,
   //                                    and SysEx never reaches the wire)
+  // Chromium 152 and the early 153 builds mis-frame outgoing SysEx (a regression
+  // in the MIDI 1.0 -> UMP conversion). Measured here: F0 7D 20 F7 leaves as
+  // F0 F0 7D 20 F7 F7. Channel messages are fine, which is why notes work and
+  // the editor does not.
+  function chromiumMajor() {
+    var m = /Chrom(?:e|ium)\/(\d+)/.exec(navigator.userAgent || '');
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  function chromiumSysexBug() {
+    var v = chromiumMajor();
+    return v === 152 || v === 153;
+  }
   var midiTestBusy = false;
   function midiSelfTest() {
     if (midiTestBusy) return;
@@ -6117,13 +6129,24 @@
       }
       var uniq = hits.filter(function(v, i) { return hits.indexOf(v) === i; });
       if (!uniq.length) {
-        log('Test MIDI: NO SysEx arrived on ANY input. Either the 303 is off / not cabled to ' +
-            'this interface, or this browser is not transmitting SysEx at all - a known ' +
-            'browser-side fault where send() succeeds, the permission reads "granted", plain ' +
-            'notes get through, and SysEx never reaches the wire. Quit the browser completely ' +
-            '(not just the tab) and reopen it; if that does not fix it, try another browser. ' +
-            'The 303 and the cable are not at fault in that case.', 'log-err');
-        showErrorToast('No SysEx reply on any input - see the log');
+        log('Test MIDI: NO SysEx arrived on ANY input.', 'log-err');
+        if (chromiumSysexBug()) {
+          // Measured on a UX16 + Chrome 153.0.7979.3: every outgoing SysEx goes
+          // out with doubled framing (F0 F0 7D 20 F7 F7 instead of F0 7D 20 F7),
+          // channel messages are untouched, and nothing usable reaches the
+          // device. send() does not throw and the permission reads "granted".
+          log('Your browser is Chrome/Chromium ' + chromiumMajor() + ', which has a known bug ' +
+              'that corrupts outgoing SysEx (it doubles the F0/F7 framing bytes), so the 303 ' +
+              'never sees a valid request. Nothing is wrong with your 303, cable or interface. ' +
+              'Use a different browser for now, or a Chrome build where this is fixed. Firmware ' +
+              'updates are unaffected if you send the .syx with a SysEx tool instead.', 'log-err');
+          showErrorToast('This Chrome version corrupts SysEx - use another browser');
+        } else {
+          log('Either the 303 is off / not cabled to this interface, or this browser is not ' +
+              'transmitting SysEx. Quit the browser completely (not just the tab) and reopen; ' +
+              'if that does not fix it, try another browser.', 'log-err');
+          showErrorToast('No SysEx reply on any input - see the log');
+        }
         return;
       }
       var onSelected = inName && uniq.indexOf(inName) >= 0;
