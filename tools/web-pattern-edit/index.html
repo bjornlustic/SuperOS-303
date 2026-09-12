@@ -1950,21 +1950,33 @@
   // device at all (red); between the two everything works but there are fixes
   // worth taking (grey notice) - 1.1.1 splits the mask-ROM upload into 16 small
   // SysEx blocks so interfaces with small SysEx buffers stop dropping it.
-  var LATEST_FW_VERSION = '1.1.1';
-  // Same-origin copy of the newest *-update.syx, so the banner's "Update now"
+  var LATEST_FW_VERSION = '1.1.2';
+  // Same-origin copies of the newest *-update.syx, so the banner's "Update now"
   // can flash the unit without the user finding a file. GitHub release assets
-  // are not CORS-readable, so a cross-origin fetch is not an option: where this
+  // are not CORS-readable, so a cross-origin fetch is not an option: where the
   // file is absent (local copy of the editor) the button falls back to the
   // release page plus the normal file picker.
-  var FW_UPDATE_URL  = 'firmware/superos-303-latest-update.syx';
+  // One image per BUILD VARIANT. From 1.1.2 the device reports its variant as a
+  // "+suffix" on the version in the 0x21 reply ("1.1.2+usbc"), because the
+  // images are not interchangeable: a no-USB-C image on a USB-C board loses USB
+  // (DIN-only recovery). Older firmware reports no suffix, so the generic file
+  // is used and the confirm dialog carries the warning instead.
+  var FW_UPDATE_DIR  = 'firmware/';
+  var FW_UPDATE_URL  = FW_UPDATE_DIR + 'superos-303-latest-update.syx';
+  var FW_VARIANTS    = { nousbc: 'no USB-C (original CPU board)',
+                         usbc:   'USB-C board',
+                         fram:   'FRAM board (v1.2b)' };
   var FW_RELEASE_URL = 'https://github.com/bjornlustic/SuperOS-303/releases/latest';
+  var hwVariant = '';   // build variant from the version suffix ('' = not reported)
   var hwOldWire = false;   // a 0x11 arrived in the pre-1.1.0 (52-byte) shape
   var hwWireOk  = false;   // a 0x11 parsed at the current PATTERN_SIZE
   // Compare dotted numeric versions; a pre-release suffix ('-beta') is ignored,
   // so 1.0.0-beta reads as 1.0.0. Returns -1/0/1.
+  // A '+variant' build tag and a '-beta' pre-release suffix are both ignored here.
+  function verCore(v) { return String(v).split('+')[0].split('-')[0]; }
   function cmpVersion(a, b) {
-    var pa = String(a).split('-')[0].split('.');
-    var pb = String(b).split('-')[0].split('.');
+    var pa = verCore(a).split('.');
+    var pb = verCore(b).split('.');
     for (var i = 0; i < 3; i++) {
       var na = parseInt(pa[i], 10) || 0, nb = parseInt(pb[i], 10) || 0;
       if (na !== nb) return na < nb ? -1 : 1;
@@ -2017,7 +2029,8 @@
         'this notice clears by itself once a pattern reads back correctly.';
     } else if (behind) {
       kind = 'behind'; bg = '#333';
-      msg = 'Firmware v' + LATEST_FW_VERSION + ' is available (your 303 reports v' + hwVersion +
+      msg = 'Firmware v' + LATEST_FW_VERSION + ' is available (your 303 reports v' + verCore(hwVersion) +
+        (hwVariant ? ', ' + (FW_VARIANTS[hwVariant] || hwVariant) : '') +
         '). The editor can install it for you over MIDI.';
     }
     if (!kind || fwBannerDismissed(kind)) { el.style.display = 'none'; return; }
@@ -2033,14 +2046,24 @@
   function fwBrowserUpdate() {
     if (!midiOut) { showErrorToast('Connect the 303 first'); return; }
     if (osUpd) return;
-    fetch(FW_UPDATE_URL, { cache: 'no-store' }).then(function(r) {
+    // Known variant: take that image. Unknown (firmware older than 1.1.2):
+    // the generic image is the public no-USB-C build, so say so and let the
+    // user cancel.
+    var known = hwVariant && FW_VARIANTS[hwVariant];
+    var url  = known ? FW_UPDATE_DIR + 'superos-303-' + hwVariant + '-latest-update.syx'
+                     : FW_UPDATE_URL;
+    var name = 'superos-303-v' + LATEST_FW_VERSION +
+               (known ? '-' + hwVariant : '') + '-update.syx';
+    var note = known
+      ? ('Build: ' + FW_VARIANTS[hwVariant] + ' (matched to what your 303 reports).')
+      : ('Your firmware is too old to report which board it is, so this is the ' +
+         'PUBLIC no-USB-C build. If your unit has a USB-C or FRAM board, cancel ' +
+         'and use the file you were sent.');
+    fetch(url, { cache: 'no-store' }).then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.arrayBuffer();
     }).then(function(buf) {
-      osUpdateFromBuffer(buf, 'superos-303-v' + LATEST_FW_VERSION + '-update.syx',
-        'This is the PUBLIC combined build (the one the GitHub releases ship). ' +
-        'If your unit runs a custom build (USB-C boards, FRAM boards), cancel and ' +
-        'use the file you were sent.');
+      osUpdateFromBuffer(buf, name, note);
     }).catch(function(e) {
       log('Firmware download failed (' + e.message + '); opening the release page', 'log-err');
       window.open(FW_RELEASE_URL, '_blank', 'noopener');
@@ -2435,7 +2458,7 @@
   function setDeviceMode(mode) {
     deviceMode = mode;
     if (mode !== 'unknown') fwSwitchPending = false; // device re-identified: reconnect done
-    if (mode === 'unknown') { hwVersion = ''; hwOldWire = false; hwWireOk = false; }
+    if (mode === 'unknown') { hwVersion = ''; hwVariant = ''; hwOldWire = false; hwWireOk = false; }
     updateV12bUi();
     document.body.classList.toggle('mode-d650', mode === 'd650');
     var el = document.getElementById('fwModeStatus');
@@ -4643,6 +4666,7 @@
           if (vc >= 0x20 && vc < 0x7f) vs += String.fromCharCode(vc);
         }
         hwVersion = vs;
+        hwVariant = vs.indexOf('+') >= 0 ? vs.split('+')[1] : '';
       }
       setDeviceMode('superos');
       checkFirmwareUpToDate();   // warn if the 303 needs a firmware update
