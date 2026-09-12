@@ -532,6 +532,19 @@
     .ml-empty { padding: 10px; font-size: 10px; color: var(--gray-3); text-align: center; flex: 1 1 100%; }
 
     /* ── Error toast ── */
+    #fwOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.82); display: none; align-items: center; justify-content: center; z-index: 10001; padding: 16px; }
+    #fwOverlay.visible { display: flex; }
+    #fwOverlay .fw-card { background: var(--white); border: 2px solid var(--black); padding: 20px 24px; max-width: 460px; width: 100%; box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
+    #fwOverlay .fw-title { font-size: 12px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 8px; }
+    #fwOverlay .fw-msg { font-size: 11px; color: var(--gray-4); margin-bottom: 14px; font-family: var(--mono); line-height: 1.5; }
+    #fwOverlay .fw-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    #fwOverlay .fw-speed { font-size: 11px; font-family: var(--mono); color: var(--gray-4); margin-bottom: 12px; display: none; }
+    #fwOverlay .fw-speed select { font: inherit; font-size: 11px; padding: 2px 4px; max-width: 250px; }
+    #fwNoticeWrap { display: none; align-items: center; gap: 6px; }
+    #fwNoticeWrap.visible { display: inline-flex; }
+    #fwNotice { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+    #fwNotice.is-old { color: #c00; }
+    #fwNoticeX { border: 0; background: none; cursor: pointer; font-size: 14px; line-height: 1; color: var(--gray-4); padding: 0 2px; }
     #errorToast { position: fixed; right: 16px; bottom: 16px; background: #c80000; color: #fff; border: 2px solid #800; padding: 10px 14px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; border-radius: 2px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 9999; display: none; }
     #errorToast.visible { display: block; }
     /* Variation-3 poly chord editor: each note is the same vertical pitch-knob
@@ -600,6 +613,21 @@
 
   <div id="errorToast"></div>
 
+  <!-- Firmware update dialog: the editor's own, not a browser popup -->
+  <div id="fwOverlay">
+    <div class="fw-card">
+      <div class="fw-title" id="fwCardTitle">Firmware update</div>
+      <div class="fw-msg" id="fwCardMsg"></div>
+      <label class="fw-speed" id="fwSpeedWrap">Send speed
+        <select id="fwSpeed"></select>
+      </label>
+      <div class="fw-row">
+        <button class="btn" id="fwCardGo">Update now</button>
+        <button class="btn-ghost" id="fwCardNo">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MIDI Connection -->
   <div class="strip" id="midiStrip">
     <div class="group">
@@ -616,6 +644,11 @@
         <button class="btn" id="btnBootloader" disabled
           title="Pick a *-update.syx file: the unit reboots into the SysEx bootloader and the editor sends the update itself (no power-on button combo, no external SysEx tool)">Update OS&#8230;</button>
         <span id="fwModeStatus">Firmware: unknown</span>
+        <span id="fwNoticeWrap">
+          <span id="fwNotice"></span>
+          <button class="btn" id="fwNoticeBtn">Update&#8230;</button>
+          <button id="fwNoticeX" title="Dismiss">&times;</button>
+        </span>
       </div>
     </div>
     <div class="group">
@@ -1233,7 +1266,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.2g (2026-09-12)';
+  var EDITOR_VERSION = '1.1.3 (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -2023,180 +2056,135 @@
     }
     return 0;
   }
-  // A dismissed banner stays dismissed for that (severity, reported version)
+  // A dismissed notice stays dismissed for that (severity, reported version)
   // pair only, so a different device - or the same one after a partial update -
   // raises it again.
-  // In-banner question, replacing confirm(): {msg, yes, onYes, onNo}. The banner
-  // is the only place the editor asks about firmware - no browser dialogs, which
-  // people were dismissing without reading (and which block the MIDI loop).
-  var fwAsk = null;
-  function fwConfirm(msg, yesLabel, onYes, onNo) {
-    fwAsk = { msg: msg, yes: yesLabel, onYes: onYes, onNo: onNo };
-    checkFirmwareUpToDate();
+  // Firmware notices live in the editor's own UI: a line in the MIDI strip and
+  // the #fwOverlay card. No injected page banner, and no browser dialogs.
+  var fwAsk = null;   // open question: {title, msg, yes, onYes, pages}
+  function fwConfirm(msg, yesLabel, onYes, onNo, pages, title) {
+    fwAsk = { msg: msg, yes: yesLabel, onYes: onYes, onNo: onNo,
+              pages: pages || 0, title: title || 'Firmware update' };
+    fwRender();
   }
-  function fwBannerKey(kind) { return 'fwBannerDismissed:' + kind + ':' + (hwVersion || '?'); }
+  function fwCloseCard() {
+    if (fwAsk && fwAsk.onNo) fwAsk.onNo();
+    fwAsk = null;
+    document.getElementById('fwOverlay').classList.remove('visible');
+    fwRender();
+  }
+  // Which notice applies, if any: {kind, short, full, old}
+  function fwStatus() {
+    if (osUpdPending)
+      return { kind: 'pending', old: true,
+               short: 'Update ready - put the 303 in update mode',
+               full: 'The v' + LATEST_FW_VERSION + ' update is downloaded (' + osUpdPending.pages +
+                     ' pages). This firmware cannot enter update mode over MIDI, so do it by ' +
+                     'hand: power the 303 OFF, hold WRITE/NEXT while powering it back ON until ' +
+                     'TIME, PITCH, FUNCTION and the A# key LED are lit. Then press Send to 303 ' +
+                     'and leave the unit powered until it finishes.' };
+    if (deviceMode === 'superos' && hwOldWire)
+      return { kind: 'wire', old: true,
+               short: 'Firmware too old for this editor',
+               full: 'Your 303' + (hwVersion ? ' (v' + verCore(hwVersion) + ')' : '') +
+                     ' uses the pre-1.1.0 pattern format, so patterns cannot be read or written ' +
+                     'here. Update it to v' + LATEST_FW_VERSION + '.' };
+    var versionOld = deviceMode === 'superos' && !!hwVersion &&
+                     cmpVersion(hwVersion, MIN_FW_VERSION) < 0;
+    if (versionOld && !hwWireOk)
+      return { kind: 'version', old: true,
+               short: 'Firmware v' + verCore(hwVersion) + ' - update available',
+               full: 'Your 303 reports v' + verCore(hwVersion) + ', older than the v' +
+                     MIN_FW_VERSION + ' this editor is built for. If patterns fail to load, ' +
+                     'update it; this clears by itself once a pattern reads back correctly.' };
+    if (deviceMode === 'superos' && !!hwVersion && cmpVersion(hwVersion, LATEST_FW_VERSION) < 0)
+      return { kind: 'behind', old: false,
+               short: 'v' + LATEST_FW_VERSION + ' available (you have v' + verCore(hwVersion) + ')',
+               full: 'Firmware v' + LATEST_FW_VERSION + ' is available; your 303 reports v' +
+                     verCore(hwVersion) + '. Patterns are kept by the update.' +
+                     (fwOfferable() ? '' : ' This unit runs a build the editor does not host, ' +
+                      'so get the file from the release page and send it with Update OS...') };
+    return null;
+  }
+  function fwBannerKey(kind) { return 'fwDismissed:' + kind + ':' + (hwVersion || '?'); }
   function fwBannerDismissed(kind) {
     try { return localStorage.getItem(fwBannerKey(kind)) === '1'; } catch (e) { return false; }
   }
-  function checkFirmwareUpToDate() {
-    var el = document.getElementById('fwUpdateBanner');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'fwUpdateBanner';
-      el.style.cssText = 'position:sticky;top:0;z-index:9999;color:#fff;' +
-        'padding:10px 16px;font:600 14px/1.4 var(--font);text-align:center;display:none;';
-      el.innerHTML =
-        '<span id="fwUpdateText"></span>' +
-        '<button id="fwUpdateGo" style="margin-left:12px;padding:4px 10px;font:inherit;' +
-        'font-size:13px;cursor:pointer;border:1px solid #fff;background:rgba(255,255,255,0.15);' +
-        'color:#fff;">Update now</button>' +
-        '<button id="fwUpdateNo" style="margin-left:8px;padding:4px 10px;font:inherit;' +
-        'font-size:13px;cursor:pointer;border:1px solid rgba(255,255,255,0.5);' +
-        'background:none;color:#fff;display:none;">Cancel</button>' +
-        '<button id="fwUpdateX" title="Dismiss" style="position:absolute;right:8px;top:6px;' +
-        'padding:2px 8px;font:inherit;font-size:16px;line-height:1;cursor:pointer;border:0;' +
-        'background:none;color:#fff;">&times;</button>';
-      el.style.position = 'sticky';
-      document.body.insertBefore(el, document.body.firstChild);
-      el.querySelector('#fwUpdateGo').onclick = function() {
-        if (fwAsk) { var go = fwAsk.onYes; fwAsk = null; go(); checkFirmwareUpToDate(); return; }
-        if (osUpdPending) fwSendPending();
-        else if (fwOfferable()) fwBrowserUpdate();
-        else window.open(FW_RELEASE_URL, '_blank', 'noopener');
-      };
-      el.querySelector('#fwUpdateNo').onclick = function() {
-        if (fwAsk && fwAsk.onNo) fwAsk.onNo();
-        fwAsk = null;
-        checkFirmwareUpToDate();
-      };
-      el.querySelector('#fwUpdateX').onclick = function() {
-        try { localStorage.setItem(fwBannerKey(el.dataset.kind), '1'); } catch (e) {}
-        el.style.display = 'none';
-      };
+  // Speed picker: rebuilt on every render so each option carries the time IT
+  // would take. Hidden over the device's own USB port, where the gap is fixed.
+  function fwRenderSpeed(pages) {
+    var wrap = document.getElementById('fwSpeedWrap');
+    var din = !/superos|teensy|bootloader/i.test((midiOut && midiOut.name) || '');
+    if (!din || !pages) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'block';
+    var sel = document.getElementById('fwSpeed');
+    sel.innerHTML = '';
+    for (var i = 0; i < OS_DIN_GAPS.length; i++) {
+      var ms = OS_DIN_GAPS[i], o = document.createElement('option');
+      var secs = Math.ceil(pages * ms / 1000);
+      o.value = String(ms);
+      o.textContent = ms + ' ms - ' + (secs > 90 ? Math.ceil(secs / 60) + ' min' : secs + ' s') +
+                      ' (' + osGapNote(ms) + ')';
+      sel.appendChild(o);
     }
-    var versionOld = deviceMode === 'superos' && !!hwVersion && cmpVersion(hwVersion, MIN_FW_VERSION) < 0;
-    var behind = deviceMode === 'superos' && !!hwVersion &&
-                 cmpVersion(hwVersion, LATEST_FW_VERSION) < 0;
-    var kind = '', bg = '', msg = '';
+    sel.value = String(osSpeedMs);
+  }
+  function fwRender() {
+    var st = fwStatus();
+    var wrap = document.getElementById('fwNoticeWrap');
+    var note = document.getElementById('fwNotice');
+    var show = !!st && !fwBannerDismissed(st.kind);
+    wrap.classList.toggle('visible', show);
+    if (show) {
+      note.textContent = st.short;
+      note.className = st.old ? 'is-old' : '';
+      wrap.dataset.kind = st.kind;
+      document.getElementById('fwNoticeBtn').textContent =
+        osUpdPending ? 'Send to 303' : 'Update\u2026';
+    }
+    var ov = document.getElementById('fwOverlay');
     if (fwAsk) {
-      // A question is open: it owns the banner until it is answered.
-      el.dataset.kind = 'ask';
-      el.style.background = '#1a4d7a';
-      el.querySelector('#fwUpdateText').textContent = fwAsk.msg;
-      var goA = el.querySelector('#fwUpdateGo');
-      goA.style.display = ''; goA.textContent = fwAsk.yes; goA.title = '';
-      el.querySelector('#fwUpdateNo').style.display = '';
-      el.querySelector('#fwUpdateX').style.display = 'none';
-      el.style.display = 'block';
-      return;
+      document.getElementById('fwCardTitle').textContent = fwAsk.title;
+      document.getElementById('fwCardMsg').textContent = fwAsk.msg;
+      document.getElementById('fwCardGo').textContent = fwAsk.yes;
+      document.getElementById('fwCardGo').style.display = '';
+      document.getElementById('fwCardNo').textContent = 'Cancel';
+      fwRenderSpeed(fwAsk.pages);
+      ov.classList.add('visible');
     }
-    el.querySelector('#fwUpdateNo').style.display = 'none';
-    el.querySelector('#fwUpdateX').style.display = '';
-    if (osUpdPending) {
-      // Automatic entry failed; the file is downloaded and waiting for a manual
-      // one. Shown whatever the device mode reads as - 0x4A leaves it 'unknown'.
-      kind = 'pending'; bg = '#b36b00';
-      msg = 'Update downloaded (' + osUpdPending.pages + ' pages). Your 303 cannot be put into ' +
-            'update mode over MIDI, so do it by hand: power it OFF, hold WRITE/NEXT while ' +
-            'powering it back ON until TIME, PITCH, FUNCTION and the A# key LED are lit, then ' +
-            'press Send to 303.';
-    } else if (deviceMode === 'superos' && hwOldWire) {
-      kind = 'wire'; bg = '#cc0000';
-      msg = 'Your 303 firmware' + (hwVersion ? ' (v' + hwVersion + ')' : '') +
-        ' uses the pre-1.1.0 pattern format, so patterns cannot be read or written from this editor. ' +
-        'Please update your 303 to firmware v' + MIN_FW_VERSION + ' or newer.';
-    } else if (versionOld && !hwWireOk) {
-      kind = 'version'; bg = '#b36b00';
-      msg = 'Your 303 reports firmware v' + hwVersion + ', older than the v' + MIN_FW_VERSION +
-        ' this editor is built for. If patterns fail to load, update the 303 firmware; ' +
-        'this notice clears by itself once a pattern reads back correctly.';
-    } else if (behind) {
-      kind = 'behind'; bg = '#333';
-      msg = 'Firmware v' + LATEST_FW_VERSION + ' is available (your 303 reports v' +
-        verCore(hwVersion) + '). ' + (fwOfferable()
-          ? 'The editor can do the update for you.'
-          : 'Download it and send it with "Update OS..." below.');
-    }
-    if (!kind || fwBannerDismissed(kind)) { el.style.display = 'none'; return; }
-    el.dataset.kind = kind;
-    el.style.background = bg;
-    el.querySelector('#fwUpdateText').textContent = msg;
-    var go = el.querySelector('#fwUpdateGo');
-    go.style.display = midiOut ? '' : 'none';
-    go.textContent = osUpdPending ? 'Send to 303'
-                   : fwOfferable() ? 'Update now' : 'Get the update';
-    go.title = osUpdPending
-      ? 'The update is downloaded. Power the 303 off, hold WRITE/NEXT while powering it ' +
-        'back on (TIME, PITCH, FUNCTION and the A# key LED lit), then press this.'
-      : fwOfferable() ? 'Download the update and install it over MIDI'
-                      : 'Open the release page';
-    el.style.display = 'block';
   }
-  // The unit is in its bootloader now (user powered up holding WRITE/NEXT), so
-  // stream the held file straight out: no 0x4A, no waiting for a port to appear.
-  function fwSendPending() {
-    if (!midiOut || osUpd || !osUpdPending) return;
-    fwConfirm('Send the v' + LATEST_FW_VERSION + ' update now? TIME, PITCH, FUNCTION and the ' +
-              'A# key LED must be lit on the 303 first (power off, hold WRITE/NEXT, power on). ' +
-              osUpdPending.pages + ' pages, about ' +
-              Math.ceil(osUpdPending.pages * osPageGap(midiOut) / 60000) + ' min via "' +
-              (midiOut.name || midiOut.id) + '". Do not power the unit off while it runs.',
-              'Send it', fwSendPendingGo);
-  }
-  function fwSendPendingGo() {
-    if (!midiOut || osUpd || !osUpdPending) return;
-    osUpd = { msgs: osUpdPending.msgs, pages: osUpdPending.pages, name: osUpdPending.name,
-              origOut: midiOut, port: midiOut, sent: 0, t0: Date.now() };
-    osUpdPending = null;
-    checkFirmwareUpToDate();
-    osUpdateStatus('Updating OS: 0%');
-    setTimeout(osUpdateTick, 100);
-  }
+  // Kept as the name the rest of the editor calls after every config/pattern reply.
+  function checkFirmwareUpToDate() { fwRender(); }
 
-  // Banner action: ask, then fetch the update from this site and run it through
-  // the same bootloader stream the "Update OS..." picker uses.
-  function fwBrowserUpdate() {
-    if (!midiOut || osUpd) return;
-    var self = fwCanSelfBoot();
-    fwConfirm('Update your 303 to firmware v' + LATEST_FW_VERSION + '? Patterns are kept, and ' +
-              'over a MIDI cable this takes several minutes. ' + (self
-                ? 'The editor puts the unit into update mode and sends the file.'
-                : 'Your 303 has to be put into update mode by hand: the editor downloads the ' +
-                  'update, then tells you when to power the unit off, hold WRITE/NEXT and ' +
-                  'power it back on.') +
-              ' Nothing is written until the unit is really in update mode.',
-              'Yes, update', fwBrowserUpdateGo);
-  }
-  function fwBrowserUpdateGo() {
-    if (!midiOut || osUpd) return;
-    osUpdateStatus('Downloading v' + LATEST_FW_VERSION + '...');
-    fetch(FW_UPDATE_URL, { cache: 'no-store' }).then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.arrayBuffer();
-    }).then(function(buf) {
-      var name = 'superos-303-v' + LATEST_FW_VERSION + '-update.syx';
-      if (fwCanSelfBoot()) { osUpdateFromBuffer(buf, name, null, true); return; }
-      // Old-bootloader unit: park the file and ask for the power-on combo. No
-      // 0x4A, so nothing to fail and nothing to wait for.
-      var parsed = osUpdateParse(buf);
-      if (parsed.err) {
-        log('OS update: rejected ' + name + ': ' + parsed.err, 'log-err');
-        showErrorToast('Not sent: ' + parsed.err);
-        return;
-      }
-      osUpdPending = { msgs: parsed.msgs, pages: parsed.pages, name: name };
-      osUpdateStatus('Update downloaded - put the 303 into update mode');
-      log('OS update: ' + name + ' downloaded (' + parsed.pages + ' pages). This firmware ' +
-          'cannot enter update mode over MIDI, so power the 303 OFF, hold WRITE/NEXT while ' +
-          'powering it back ON until TIME, PITCH, FUNCTION and the A# key LED are lit, then ' +
-          'press "Send to 303".', 'log-edit');
-      checkFirmwareUpToDate();
-    }).catch(function(e) {
-      log('Firmware download failed (' + e.message + '); opening the release page', 'log-err');
-      window.open(FW_RELEASE_URL, '_blank', 'noopener');
-      showErrorToast('Download the update .syx, then send it with Update OS...');
-    });
-  }
+  document.getElementById('fwNoticeBtn').onclick = function() {
+    if (osUpdPending) { fwSendPending(); return; }
+    if (fwOfferable()) { fwBrowserUpdate(); return; }
+    var st = fwStatus();
+    fwConfirm((st ? st.full + ' ' : '') +
+              'Open the release page to download the update for this unit?',
+              'Open release page', function() {
+                window.open(FW_RELEASE_URL, '_blank', 'noopener');
+              });
+  };
+  document.getElementById('fwNoticeX').onclick = function() {
+    var k = document.getElementById('fwNoticeWrap').dataset.kind;
+    try { localStorage.setItem(fwBannerKey(k), '1'); } catch (e) { /* ignore */ }
+    document.getElementById('fwNoticeWrap').classList.remove('visible');
+  };
+  document.getElementById('fwCardNo').onclick = fwCloseCard;
+  document.getElementById('fwCardGo').onclick = function() {
+    if (!fwAsk) { fwCloseCard(); return; }
+    var go = fwAsk.onYes;
+    fwAsk = null;
+    document.getElementById('fwOverlay').classList.remove('visible');
+    go();
+    fwRender();
+  };
+  document.getElementById('fwSpeed').onchange = function() {
+    osSpeedMs = parseInt(this.value, 10) || OS_DIN_GAP_DEFAULT;
+    try { localStorage.setItem(LS_OS_SPEED, String(osSpeedMs)); } catch (e) { /* ignore */ }
+    fwRender();
+  };
 
   // True from the moment the user sends 0x2F/0x4D until the device is re-identified
   // (or we give up). Widens the config-read retry budget so the reboot + USB
@@ -6111,12 +6099,33 @@
   // 1050 ms is the pacing a full update was proven at on hardware over a DIN
   // interface, so DIN gets that and only the unit's own USB port gets 50 ms.
   var OS_PAGE_GAP_USB_MS = 50;
-  var OS_PAGE_GAP_DIN_MS = 1050;
+  // DIN pacing the user can pick, milliseconds between page messages. A page is
+  // ~303 bytes = ~97 ms of wire time at 31250 baud, so anything under ~100 ms is
+  // faster than the cable itself and will drop pages; the rest is headroom for
+  // whatever the interface does with back-to-back SysEx. Too fast does not
+  // damage anything: the bootloader stalls (its LED counter freezes) or catches
+  // a bad checksum, and the update is simply redone.
+  var OS_DIN_GAPS = [2000, 1500, 1050, 800, 600, 450, 300, 250, 200, 150, 120, 100];
+  var OS_DIN_GAP_DEFAULT = 1050;   // the pacing a full update was proven at
+  var LS_OS_SPEED = 'superos303.osSpeedMs';
+  var osSpeedMs = OS_DIN_GAP_DEFAULT;
+  try {
+    var _sp = parseInt(localStorage.getItem(LS_OS_SPEED), 10);
+    if (OS_DIN_GAPS.indexOf(_sp) >= 0) osSpeedMs = _sp;
+  } catch (e) { /* ignore */ }
+  function osDinGap() { return osSpeedMs; }
+  function osGapNote(ms) {
+    if (ms >= 1000) return 'safest';
+    if (ms >= 400)  return 'safe';
+    if (ms >= 200)  return 'usually fine';
+    if (ms >= 120)  return 'risky';
+    return 'below the wire speed';
+  }
   function osPageGap(port) {
     // The 303's own USB MIDI port, or the bootloader's, enumerates under its own
     // name; anything else is a MIDI interface with a DIN cable behind it.
     var n = (port && port.name) || '';
-    return /superos|teensy|bootloader/i.test(n) ? OS_PAGE_GAP_USB_MS : OS_PAGE_GAP_DIN_MS;
+    return /superos|teensy|bootloader/i.test(n) ? OS_PAGE_GAP_USB_MS : osDinGap();
   }
   var OS_BOOT_WAIT_MS  = 12000; // give USB re-enumeration time before giving up
   var OS_BOOT_GRACE_MS = 2500;  // settle time before the first page
@@ -6282,7 +6291,7 @@
       log('OS update: ' + name + ', ' + parsed.pages + ' pages (' + mins + ')', 'log-edit');
       osUpdateRun(parsed, name, live);
     } else {
-      fwConfirm(msg, 'Send it', function() { osUpdateRun(parsed, name, live); });
+      fwConfirm(msg, 'Send it', function() { osUpdateRun(parsed, name, live); }, null, parsed.pages);
     }
   }
   function osUpdateRun(parsed, name, live) {
