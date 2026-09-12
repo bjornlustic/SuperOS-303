@@ -633,6 +633,8 @@
     <div class="group">
       <div class="group-inner">
         <button class="btn-ghost" id="btnMidi">Connect MIDI</button>
+        <button class="btn" id="btnMidiTest"
+          title="Send a harmless request to the 303 and listen on EVERY MIDI input for the answer. Says whether the browser is transmitting SysEx at all, whether the answer came back on a different input, or whether the device is silent.">Test MIDI</button>
         <span id="midiStatus">Not connected</span>
         <span id="devRom" style="font-size:11px;font-weight:600;padding-left:8px"
           title="Whether a D650C mask ROM is installed on the device (uploaded to EEPROM or built into the firmware)"></span>
@@ -1266,7 +1268,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.3c (2026-09-12)';
+  var EDITOR_VERSION = '1.1.4 (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -3840,6 +3842,7 @@
               : rxAnyCount + ' MIDI messages did arrive, so the cable is fine - the device is ' +
                 'answering something else, or SysEx TX is disabled on it (config menu, F# LED off).'),
             'log-err');
+        if (rxAnyCount === 0) setTimeout(midiSelfTest, 300);   // name the cause
         cfgReadAttempts = 0;
         fwSwitchPending = false;
         disconnectPorts();
@@ -6068,6 +6071,74 @@
   syncVariationUI();
 
   // ── MIDI connect ───────────────────────────────────────────────────
+  // MIDI self-test: ask the 303 for its config on the selected output while
+  // listening on EVERY input. Three outcomes, and they need different fixes:
+  //   answer on the selected input  -> everything works
+  //   answer on a DIFFERENT input   -> the In port is set wrong
+  //   nothing anywhere              -> either the device is not connected/powered,
+  //                                    or the browser is dropping SysEx on output
+  //                                    (seen on Chrome: send() does not throw,
+  //                                    permission reads "granted", notes pass,
+  //                                    and SysEx never reaches the wire)
+  var midiTestBusy = false;
+  function midiSelfTest() {
+    if (midiTestBusy) return;
+    if (!midiAccess) { log('Test MIDI: click Connect MIDI first so the browser grants access', 'log-err'); return; }
+    if (!midiOut) { log('Test MIDI: pick an Out port first', 'log-err'); return; }
+    midiTestBusy = true;
+    // Captured: the auto-run fires as the editor is disconnecting, so midiOut /
+    // midiIn may be null by the time the listen window closes.
+    var outPort = midiOut, inName = midiIn ? midiIn.name : '';
+    var hits = [], saved = [], ins = Array.from(midiAccess.inputs.values());
+    log('Test MIDI: listening on ' + ins.length + ' input port(s), asking "' +
+        outPort.name + '" for the device config...', 'log-syx');
+    ins.forEach(function(p) {
+      saved.push({ port: p, handler: p.onmidimessage });
+      p.onmidimessage = function(ev) {
+        var d = ev.data;
+        if (d && d.length && d[0] === 0xf0) hits.push(p.name);
+        if (saved.length) { var h = null;
+          for (var i = 0; i < saved.length; i++) if (saved[i].port === p) h = saved[i].handler;
+          if (h) h.call(p, ev); }
+      };
+    });
+    var threw = null;
+    for (var k = 0; k < 3; k++) {
+      try { outPort.send([0xf0, 0x7d, 0x20, 0xf7]); }
+      catch (e) { threw = e.name + ': ' + e.message; break; }
+    }
+    setTimeout(function() {
+      saved.forEach(function(sv) { sv.port.onmidimessage = sv.handler; });
+      midiTestBusy = false;
+      if (threw) {
+        log('Test MIDI: the browser REFUSED to send (' + threw + '). Allow MIDI device ' +
+            'control for this site (padlock in the address bar) and reload.', 'log-err');
+        return;
+      }
+      var uniq = hits.filter(function(v, i) { return hits.indexOf(v) === i; });
+      if (!uniq.length) {
+        log('Test MIDI: NO SysEx arrived on ANY input. Either the 303 is off / not cabled to ' +
+            'this interface, or this browser is not transmitting SysEx at all - a known ' +
+            'browser-side fault where send() succeeds, the permission reads "granted", plain ' +
+            'notes get through, and SysEx never reaches the wire. Quit the browser completely ' +
+            '(not just the tab) and reopen it; if that does not fix it, try another browser. ' +
+            'The 303 and the cable are not at fault in that case.', 'log-err');
+        showErrorToast('No SysEx reply on any input - see the log');
+        return;
+      }
+      var onSelected = inName && uniq.indexOf(inName) >= 0;
+      if (onSelected) {
+        log('Test MIDI: OK - the 303 answered on "' + inName + '".', 'log-ack');
+      } else {
+        log('Test MIDI: the 303 answered on "' + uniq.join('", "') + '", which is NOT the ' +
+            'selected In port' + (inName ? ' ("' + inName + '")' : '') +
+            '. Pick that port as 303 -> In and connect again.', 'log-err');
+        showErrorToast('Answer arrived on a different input port - see the log');
+      }
+    }, 2500);
+  }
+  document.getElementById('btnMidiTest').onclick = midiSelfTest;
+
   function disconnectPorts() {
     if (midiIn)  midiIn.onmidimessage  = null;
     if (midiKbd) midiKbd.onmidimessage = null;
