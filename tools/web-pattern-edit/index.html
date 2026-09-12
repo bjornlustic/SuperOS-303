@@ -2037,7 +2037,10 @@
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.arrayBuffer();
     }).then(function(buf) {
-      osUpdateFromBuffer(buf, 'superos-303-v' + LATEST_FW_VERSION + '-update.syx');
+      osUpdateFromBuffer(buf, 'superos-303-v' + LATEST_FW_VERSION + '-update.syx',
+        'This is the PUBLIC combined build (the one the GitHub releases ship). ' +
+        'If your unit runs a custom build (USB-C boards, FRAM boards), cancel and ' +
+        'use the file you were sent.');
     }).catch(function(e) {
       log('Firmware download failed (' + e.message + '); opening the release page', 'log-err');
       window.open(FW_RELEASE_URL, '_blank', 'noopener');
@@ -6047,8 +6050,10 @@
   }
 
   // Confirm, reboot into the bootloader if the unit is live, and stream the file.
-  // Shared by the "Update OS..." picker and the update banner's "Update now".
-  function osUpdateFromBuffer(buf, name) {
+  // Shared by the "Update OS..." picker and the update banner's "Update now";
+  // `note` adds a line to the confirm dialog (the banner names which build it
+  // is about to install, since the site hosts the public one).
+  function osUpdateFromBuffer(buf, name, note) {
     if (!midiOut || osUpd) return;
     // Identified device: reboot it into the bootloader ourselves (0x4A).
     // Unidentified: assume the unit is ALREADY in the bootloader (original
@@ -6074,6 +6079,7 @@
          (midiOut.name || midiOut.id) + '".\n' +
          parsed.pages + ' flash pages will be written (' + mins + ').\n\n' +
          'Do not power off the unit while the update runs.');
+    if (note) msg += '\n\n' + note;
     if (!confirm(msg)) return;
     clearCfgReadRetry();
     expectDump = 0; bulkNextPat = -1;
