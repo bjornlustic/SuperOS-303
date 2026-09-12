@@ -6063,9 +6063,7 @@
   }
 
   // Confirm, reboot into the bootloader if the unit is live, and stream the file.
-  // Shared by the "Update OS..." picker and the update banner's "Update now";
-  // `note` adds a line to the confirm dialog (the banner names which build it
-  // is about to install, since the site hosts the public one).
+  // Used by the "Update OS..." picker; `note` adds a line to the confirm dialog.
   function osUpdateFromBuffer(buf, name, note) {
     if (!midiOut || osUpd) return;
     // Identified device: reboot it into the bootloader ourselves (0x4A).
