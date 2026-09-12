@@ -1268,7 +1268,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.5a (2026-09-12)';
+  var EDITOR_VERSION = '1.1.6 (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -2157,6 +2157,72 @@
   }
   // Kept as the name the rest of the editor calls after every config/pattern reply.
   function checkFirmwareUpToDate() { fwRender(); }
+
+  // Ask, then download the update and either send it (units that can enter
+  // update mode over MIDI) or park it for the power-on combo (everything else).
+  function fwBrowserUpdate() {
+    if (!midiOut || osUpd) return;
+    var self = fwCanSelfBoot();
+    fwConfirm('Update your 303 to firmware v' + LATEST_FW_VERSION + '? Patterns are kept, and ' +
+              'over a MIDI cable this takes several minutes. ' + (self
+                ? 'The editor puts the unit into update mode and sends the file.'
+                : 'Your 303 has to be put into update mode by hand: the editor downloads the ' +
+                  'update, then tells you when to power the unit off, hold WRITE/NEXT and ' +
+                  'power it back on.') +
+              ' Nothing is written until the unit is really in update mode.',
+              'Yes, update', fwBrowserUpdateGo);
+  }
+  function fwBrowserUpdateGo() {
+    if (!midiOut || osUpd) return;
+    osUpdateStatus('Downloading v' + LATEST_FW_VERSION + '...');
+    log('OS update: downloading ' + FW_UPDATE_URL, 'log-syx');
+    fetch(FW_UPDATE_URL, { cache: 'no-store' }).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    }).then(function(buf) {
+      var name = 'superos-303-v' + LATEST_FW_VERSION + '-update.syx';
+      if (fwCanSelfBoot()) { osUpdateFromBuffer(buf, name, null, true); return; }
+      var parsed = osUpdateParse(buf);
+      if (parsed.err) {
+        log('OS update: rejected ' + name + ': ' + parsed.err, 'log-err');
+        showErrorToast('Not sent: ' + parsed.err);
+        return;
+      }
+      osUpdPending = { msgs: parsed.msgs, pages: parsed.pages, name: name };
+      osUpdateStatus('Update downloaded - put the 303 into update mode');
+      log('OS update: ' + name + ' downloaded (' + parsed.pages + ' pages). This firmware ' +
+          'cannot enter update mode over MIDI, so power the 303 OFF, hold WRITE/NEXT while ' +
+          'powering it back ON until TIME, PITCH, FUNCTION and the A# key LED are lit, then ' +
+          'press "Send to 303".', 'log-edit');
+      fwRender();
+    }).catch(function(e) {
+      log('OS update: download failed (' + e.message + '). Get the .syx from the release page ' +
+          'and send it with "Update OS..." instead.', 'log-err');
+      showErrorToast('Firmware download failed: ' + e.message);
+      window.open(FW_RELEASE_URL, '_blank', 'noopener');
+    });
+  }
+
+  // The unit is in its bootloader now (powered up holding WRITE/NEXT), so stream
+  // the held file straight out: no 0x4A, no waiting for a port to appear.
+  function fwSendPending() {
+    if (!midiOut || osUpd || !osUpdPending) return;
+    fwConfirm('Send the v' + LATEST_FW_VERSION + ' update now? TIME, PITCH, FUNCTION and the ' +
+              'A# key LED must be lit on the 303 first (power off, hold WRITE/NEXT, power on). ' +
+              osUpdPending.pages + ' pages, about ' +
+              Math.ceil(osUpdPending.pages * osPageGap(midiOut) / 60000) + ' min via "' +
+              (midiOut.name || midiOut.id) + '". Do not power the unit off while it runs.',
+              'Send it', fwSendPendingGo, null, osUpdPending.pages);
+  }
+  function fwSendPendingGo() {
+    if (!midiOut || osUpd || !osUpdPending) return;
+    osUpd = { msgs: osUpdPending.msgs, pages: osUpdPending.pages, name: osUpdPending.name,
+              origOut: midiOut, port: midiOut, sent: 0, t0: Date.now() };
+    osUpdPending = null;
+    fwRender();
+    osUpdateStatus('Updating OS: 0%');
+    setTimeout(osUpdateTick, 100);
+  }
 
   document.getElementById('fwNoticeBtn').onclick = function() {
     if (osUpdPending) { fwSendPending(); return; }
