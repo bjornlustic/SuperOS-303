@@ -1233,7 +1233,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.2e (2026-09-12)';
+  var EDITOR_VERSION = '1.1.2f (2026-09-12)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -1986,11 +1986,23 @@
   // old predates the custom boards).
   function fwOfferable() {
     if (!midiOut) return false;
+    // The device's own USB port only exists on the USB-C boards; the published
+    // build has no USB at all, so it is always reached through an interface.
+    if (/superos|teensy/i.test(midiOut.name || '')) return false;
     if (hwVariant) return hwVariant === FW_PUBLIC_TAG;
     // Builds older than 1.1.2 carry no "+tag", but the FRAM boards have always
     // said "-fram" in the version string itself (e.g. "1.0.0-beta-fram"), and
     // that image must never be replaced with the published one.
     return !/fram|usbc/i.test(hwVersion);
+  }
+  // Can this unit put ITSELF into update mode (SysEx 0x4A)? Only where the
+  // SuperOS bootloader is flashed. The published build is compiled
+  // -DSUPEROS_OLD_BOOTLOADER for units running the ORIGINAL OS-303 bootloader:
+  // it has no SysEx entry and does not know BOOT_MAGIC, so 0x4A jumps into it
+  // and comes straight back to the app. Sending 0x4A there wastes 12 seconds
+  // and reads like a failure, so those units go to the manual step directly.
+  function fwCanSelfBoot() {
+    return /usbc|fram/i.test(hwVersion);
   }
   var hwOldWire = false;   // a 0x11 arrived in the pre-1.1.0 (52-byte) shape
   var hwWireOk  = false;   // a 0x11 parsed at the current PATTERN_SIZE
@@ -2080,9 +2092,10 @@
       // Automatic entry failed; the file is downloaded and waiting for a manual
       // one. Shown whatever the device mode reads as - 0x4A leaves it 'unknown'.
       kind = 'pending'; bg = '#b36b00';
-      msg = 'Update downloaded and ready to send. Your 303 cannot be put into update mode ' +
-            'over MIDI, so do it by hand: power it OFF, hold WRITE/NEXT while powering it ' +
-            'back ON until TIME, PITCH, FUNCTION and the A# key LED are lit, then press Send to 303.';
+      msg = 'Update downloaded (' + osUpdPending.pages + ' pages). Your 303 cannot be put into ' +
+            'update mode over MIDI, so do it by hand: power it OFF, hold WRITE/NEXT while ' +
+            'powering it back ON until TIME, PITCH, FUNCTION and the A# key LED are lit, then ' +
+            'press Send to 303.';
     } else if (deviceMode === 'superos' && hwOldWire) {
       kind = 'wire'; bg = '#cc0000';
       msg = 'Your 303 firmware' + (hwVersion ? ' (v' + hwVersion + ')' : '') +
@@ -2140,9 +2153,14 @@
   // the same bootloader stream the "Update OS..." picker uses.
   function fwBrowserUpdate() {
     if (!midiOut || osUpd) return;
-    fwConfirm('Update your 303 to firmware v' + LATEST_FW_VERSION + '? Patterns are kept. ' +
-              'Over a MIDI cable this takes several minutes - leave the tab open and the ' +
-              'unit powered. Nothing is written until the unit is really in update mode.',
+    var self = fwCanSelfBoot();
+    fwConfirm('Update your 303 to firmware v' + LATEST_FW_VERSION + '? Patterns are kept, and ' +
+              'over a MIDI cable this takes several minutes. ' + (self
+                ? 'The editor puts the unit into update mode and sends the file.'
+                : 'Your 303 has to be put into update mode by hand: the editor downloads the ' +
+                  'update, then tells you when to power the unit off, hold WRITE/NEXT and ' +
+                  'power it back on.') +
+              ' Nothing is written until the unit is really in update mode.',
               'Yes, update', fwBrowserUpdateGo);
   }
   function fwBrowserUpdateGo() {
@@ -2152,7 +2170,23 @@
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.arrayBuffer();
     }).then(function(buf) {
-      osUpdateFromBuffer(buf, 'superos-303-v' + LATEST_FW_VERSION + '-update.syx', null, true);
+      var name = 'superos-303-v' + LATEST_FW_VERSION + '-update.syx';
+      if (fwCanSelfBoot()) { osUpdateFromBuffer(buf, name, null, true); return; }
+      // Old-bootloader unit: park the file and ask for the power-on combo. No
+      // 0x4A, so nothing to fail and nothing to wait for.
+      var parsed = osUpdateParse(buf);
+      if (parsed.err) {
+        log('OS update: rejected ' + name + ': ' + parsed.err, 'log-err');
+        showErrorToast('Not sent: ' + parsed.err);
+        return;
+      }
+      osUpdPending = { msgs: parsed.msgs, pages: parsed.pages, name: name };
+      osUpdateStatus('Update downloaded - put the 303 into update mode');
+      log('OS update: ' + name + ' downloaded (' + parsed.pages + ' pages). This firmware ' +
+          'cannot enter update mode over MIDI, so power the 303 OFF, hold WRITE/NEXT while ' +
+          'powering it back ON until TIME, PITCH, FUNCTION and the A# key LED are lit, then ' +
+          'press "Send to 303".', 'log-edit');
+      checkFirmwareUpToDate();
     }).catch(function(e) {
       log('Firmware download failed (' + e.message + '); opening the release page', 'log-err');
       window.open(FW_RELEASE_URL, '_blank', 'noopener');
@@ -6217,7 +6251,10 @@
     // Unidentified: assume the unit is ALREADY in the bootloader (original
     // OS-303 bootloader has no SysEx entry; the user held TAP at power-on)
     // and stream straight to the selected output port.
-    var live = deviceMode !== 'unknown';
+    // 'live' = ask the unit to enter update mode itself. Only where that works;
+    // otherwise the file is streamed to a unit the user has already booted into
+    // update mode by hand (which is also the deviceMode === 'unknown' case).
+    var live = deviceMode !== 'unknown' && fwCanSelfBoot();
     var parsed = osUpdateParse(buf);
     if (parsed.err) {
       showErrorToast('Not sent: ' + parsed.err);
