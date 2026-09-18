@@ -39,6 +39,7 @@
 
 #pragma once
 #include <Arduino.h>
+#include <stddef.h>   // offsetof, for the PATTERN_LEN_OFF assert
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 #define CONSTRAIN(x, lb, ub) do { if (x < (lb)) x = lb; else if (x > (ub)) x = ub; } while (0)
