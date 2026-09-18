@@ -1253,9 +1253,9 @@ static const OutputIndex kDirLeds[DIR_COUNT] = {C_KEY_LED, D_KEY_LED, E_KEY_LED,
 
 // `persist` = Pattern Write: write reserved[0] so direction persists per-pattern.
 // `persist` false = Pattern Play / Track Play: RAM-only, undo SetDirection's stale
-// flag so the change does not get saved on the next flush. Boot reload of the
-// per-pattern direction byte is a Phase 3 task; today this just keeps RAM and
-// EEPROM consistent with the user's intent for the current session.
+// flag so the change does not get saved on the next flush -- that change lasts
+// until the next pattern select, which adopts the incoming pattern's stored
+// direction (Engine::adopt_pattern_direction, also run at boot from Load).
 void ProcessDirectionMode(bool persist) {
   Leds::Set(TIME_MODE_LED, clk_count & 4);
   const uint8_t ev = engine.get_edit_var();
