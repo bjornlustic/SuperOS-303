@@ -390,7 +390,7 @@ struct Engine {
     if ((pat & uint8_t(NUM_PATTERNS - 1)) != p_select) return false;
     Sequence &sh = shadow_[var - 1];
     memcpy(sh.pitch, raw, PATTERN_SIZE);     // pitch[]+time_data[]+meta, length at end
-    uint8_t L = raw[PATTERN_SIZE - 1];
+    uint8_t L = raw[PATTERN_LEN_OFF];
     sh.length = (L >= 1 && L <= MAX_STEPS) ? L : 8;
     sequence_rebuild_pitch_count(sh);
     normalize_pattern_times(sh);
@@ -447,7 +447,7 @@ struct Engine {
         (shadow_edit_slot_ != int16_t(slot) || shadow_edit_var_ != var))
       flush_shadow_edit();
     deserialize_pattern(shadow_edit_, raw);
-    shadow_edit_.length = raw[PATTERN_SIZE - 1];
+    shadow_edit_.length = raw[PATTERN_LEN_OFF];
     sequence_rebuild_pitch_count(shadow_edit_);
     normalize_pattern_times(shadow_edit_);
     shadow_edit_slot_  = int16_t(slot);
@@ -1725,7 +1725,7 @@ struct Engine {
 
   bool import_pattern_blob(uint8_t idx, const uint8_t *blob, bool persist_eeprom = true) {
     idx &= 0xf;
-    uint8_t L = blob[PATTERN_SIZE - 1];
+    uint8_t L = blob[PATTERN_LEN_OFF];
     if (L < 1 || uint8_t(L) > MAX_STEPS) return false;
     const uint8_t gmax = MAX_STEPS;
     if (L > gmax) L = gmax;

@@ -1272,7 +1272,7 @@
   // quote it say exactly which page the user is running, and a stale tab is
   // obvious (the page is served no-cache, but an already-open tab keeps its JS
   // until it is reloaded).
-  var EDITOR_VERSION = '1.1.7 (2026-09-12)';
+  var EDITOR_VERSION = '1.1.8 (2026-09-18)';
 
   if (location.protocol === 'file:')
     document.getElementById('httpBanner').classList.add('visible');
@@ -5350,8 +5350,11 @@
     for (var ti = 0; ti < pd.times.length; ti++)   validateTime(pd.times[ti],   ti + 1);
     for (var pi = 0; pi < pd.pitches.length; pi++) validatePitch(pd.pitches[pi], pi + 1);
   }
-  function applyPatJSON(pd) {
-    var g = pd.group - 1, p = pd.pattern - 1;
+  // g/p override the file's stored slot: a single-pattern file loads into the
+  // slot the editor is on, so a shared .json lands where the user is looking
+  // instead of silently overwriting whatever slot it was saved from.
+  function applyPatJSON(pd, g, p) {
+    if (g === undefined) { g = pd.group - 1; p = pd.pattern - 1; }
     var blob = groups[g][p];
     for (var z = 0; z < PATTERN_SIZE; z++) blob[z] = 0;
     for (var z2 = 0; z2 < MAX_STEPS; z2++) blob[z2] = PITCH_EMPTY;
@@ -5400,9 +5403,18 @@
         if (!Array.isArray(obj.data) || obj.data.length === 0) throw new Error('data array missing or empty');
         // Validate all patterns before applying any
         for (var i = 0; i < obj.data.length; i++) validatePatJSON(obj.data[i], i + 1);
-        // Apply
-        for (var j = 0; j < obj.data.length; j++) applyPatJSON(obj.data[j]);
-        log('Loaded ' + obj.data.length + ' pattern(s) from JSON (' + obj.type + ', saved ' + (obj.saved_at || 'unknown') + ')', 'log-syx');
+        // Apply. One pattern goes to the current slot and is pushed like a
+        // paste; multi-pattern files keep their stored slots and are not pushed.
+        var single = obj.data.length === 1;
+        for (var j = 0; j < obj.data.length; j++)
+          applyPatJSON(obj.data[j], single ? activeGroup : undefined,
+                                    single ? activePat  : undefined);
+        log('Loaded ' + obj.data.length + ' pattern(s) from JSON (' + obj.type + ', saved ' + (obj.saved_at || 'unknown') + ')' +
+            (single ? ' into group ' + (activeGroup+1) + ' pattern ' + (activePat+1) : ''), 'log-syx');
+        if (single) {
+          document.getElementById('patLen').value = String(getLength(activeBlob()));
+          pushFullPatternNow();
+        }
       } catch(err) {
         alert('JSON load error: ' + err.message);
         log('JSON load error: ' + err.message, 'log-err');

@@ -681,7 +681,7 @@ static void handle_sysex_body(const uint8_t *p, unsigned n) {
       // write halts the CPU long enough to drop the next SysEx, and the editor's
       // live-edit debounce would burn a flash write per edit.
       if (!g_eng->apply_shadow_blob(pat, var, raw)) {
-        const uint8_t L = raw[PATTERN_SIZE - 1];
+        const uint8_t L = raw[PATTERN_LEN_OFF];
         if (L < 1 || L > MAX_STEPS) { send_ack(2); return; }
         g_eng->shadow_edit_blob(g_eng->abs_slot(pat), var, raw);
       }
