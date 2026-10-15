@@ -354,7 +354,7 @@ struct Engine {
         const uint8_t npos = uint8_t((unsigned(s.time_pos) +
                                       (next_step_dir >= 0 ? 1u : unsigned(len) - 1u)) % unsigned(len));
         const bool next_is_rest = (s.time(npos) == 0);
-        shadow_slide_gate_[i] = (!next_is_rest && s.get_slide()) || next_is_tie || tie_slide;
+        shadow_slide_gate_[i] = (!next_is_rest && (s.get_slide() || tie_slide)) || next_is_tie;
       } else {
         shadow_slide_gate_[i] = false;
       }
@@ -966,7 +966,7 @@ struct Engine {
       const bool cur_slide = (prob_slide_pend_ != 0xFF)
                                ? (prob_slide_pend_ == 1)
                                : get_sequence().get_slide();
-      slide_gate = (!next_is_rest && cur_slide) || next_is_tie || tie_slide;
+      slide_gate = (!next_is_rest && (cur_slide || tie_slide)) || next_is_tie;
     }
     // Ratchet latch. Only a plain detached NOTE retriggers: never a TIE (the
     // held note must not chop), never a slide destination (a retrigger kills
